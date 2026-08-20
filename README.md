@@ -35,19 +35,15 @@
 
 ## 特性
 
-| 功能      | 说明                                 |
-| ------- | ---------------------------------- |
-| 便携运行    | 解压即用，程序与数据分离，可整体迁移                 |
-| Mihomo  | 内置 Mihomo 内核，无需额外安装                |
-| 代理模式    | Rule / Global / Direct             |
-| 节点选择    | 人工选择 / 自动优选                        |
-| 智能分流    | 人工智能 / 影音视听 / 默认代理                 |
-| 订阅管理    | 导入、更新、热重载                          |
-| 配置管理    | 新建、导入、导出、重命名、原始编辑                  |
-| Windows | 系统代理、TUN、托盘、开机启动                   |
-| 状态监控    | 延迟、连接、流量、日志                        |
-| 界面      | 中文 / English、浅色 / 深色               |
-| 安全      | Controller Secret、SSRF 防护、CSP、路径限制 |
+| 功能 | 说明 |
+| --- | --- |
+| 便携运行 | 解压即用，程序与数据分离，可整体迁移 |
+| Mihomo | 内置 Mihomo 内核，无需额外安装 |
+| 分流规则 | Rule / Global / Direct，人工选择 / 自动优选，场景化分流 |
+| 配置管理 | 订阅导入、更新、热重载及配置编辑 |
+| 系统集成 | 系统代理、TUN、托盘、开机启动 |
+| 状态监控 | 延迟、连接、流量、日志 |
+| 使用体验 | 中文 / English，浅色 / 深色 |
 
 ## 使用
 
@@ -69,45 +65,39 @@ ClashEdge.exe
 
 > 支持 Windows 10 / 11、中文路径、空格路径及整体目录迁移。
 
+
 ## 分流
 
-ClashEdge 内置 [External](https://github.com/akaspyrean/external) 分流规则，开箱即用，并支持自定义配置与规则。
+ClashEdge 内置 [External](https://github.com/akaspyrean/external) 分流规则，默认每日更新；订阅提供节点，规则与策略开箱即用，并支持自定义配置与规则。
 
 ```mermaid
-flowchart TB
-    A[订阅节点]
+flowchart LR
+    A[规则匹配]
 
-    A --> B[人工优选]
-    A --> C[自动优选]
+    A -->|直连| D[DIRECT]
+    A -->|人工智能| AI[人工智能]
+    A -->|影音视听| M[影音视听]
+    A -->|代理 / 未匹配| P[扶梯出行]
 
-    B --> D[扶梯出行]
-    C --> D
+    AI --> U[人工优选]
+    AI --> T[自动优选]
+    M --> U
+    M --> T
+    P --> U
+    P --> T
 
-    B --> E[人工智能]
-    C --> E
-
-    B --> F[影音视听]
-    C --> F
+    U --> N[订阅节点]
+    T --> N
 ```
 
-| 规则   | 策略     |
-| ---- | ------ |
-| 直连   | DIRECT |
-| 人工智能 | 人工智能   |
-| 影音视听 | 影音视听   |
-| 代理   | 扶梯出行   |
-| 未匹配  | 扶梯出行   |
+| 类型   | 策略     | 规则                                                                                |
+| ---- | ------ | --------------------------------------------------------------------------------- |
+| 直连   | DIRECT | [direct.yaml](https://github.com/akaspyrean/external/blob/main/rules/direct.yaml) |
+| 人工智能 | 人工智能   | [ai.yaml](https://github.com/akaspyrean/external/blob/main/rules/ai.yaml)         |
+| 影音视听 | 影音视听   | [media.yaml](https://github.com/akaspyrean/external/blob/main/rules/media.yaml)   |
+| 代理   | 扶梯出行   | [proxy.yaml](https://github.com/akaspyrean/external/blob/main/rules/proxy.yaml)   |
+| 未匹配  | 扶梯出行   | MATCH                                                                             |
 
-内置规则：
-
-| 类型     | 来源                                                                                |
-| ------ | --------------------------------------------------------------------------------- |
-| Direct | [direct.yaml](https://github.com/akaspyrean/external/blob/main/rules/direct.yaml) |
-| AI     | [ai.yaml](https://github.com/akaspyrean/external/blob/main/rules/ai.yaml)         |
-| Media  | [media.yaml](https://github.com/akaspyrean/external/blob/main/rules/media.yaml)   |
-| Proxy  | [proxy.yaml](https://github.com/akaspyrean/external/blob/main/rules/proxy.yaml)   |
-
-规则默认每日更新。
 
 ## 许可
 
