@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  // 安全说明：前端不直连任何外部 HTTP/WebSocket —— 订阅 / geodata 拉取均由后端
+  // reqwest 完成，日志走 Tauri 事件通道，前端仅通过 invoke 调后端命令。
+  // 故 CSP 的 connect-src 仅保留 'self'（同源 invoke / 事件），并显式关闭
+  // object / frame 注入面。style-src 保留 'unsafe-inline' 因 Element Plus 需要。
+  "productName": "ClashEdge",
+  "version": "0.8.5",
+  "identifier": "com.clashedge.portable",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    // 前端全部通过显式 import 调命令，无需注入全局 __TAURI__。
+    // 主窗口不在配置中声明：Tauri 2 的 on_navigation 导航锁定仅在
+    // WebviewWindowBuilder 上可用（配置式窗口无法挂接），故在 main.rs setup
+    // 中通过 WebviewWindowBuilder 创建，窗口属性与旧配置保持一致。
+    "withGlobalTauri": false,
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": [
+      "icons/cat-32x32.png",
+      "icons/cat-128x128.png",
+      "icons/cat-256x256.png",
+      "icons/cat.icns",
+      "icons/cat.ico"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    }
+  },
+  "plugins": {
+    // 前端未使用 shell 插件；打开目录等需求由后端 Rust 实现（open_data_dir 等命令）。
+    "shell": {
+      "open": false
+    }
+  }
+}

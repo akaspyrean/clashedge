@@ -1,0 +1,32 @@
+# ---- 日志 ----
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Node 前端 ----
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ---- Rust/Tauri 构建缓存 ----
+src-tauri/target/
+src-tauri/gen/
+
+# ---- 打包产物 ----
+release/
+portable-out/
+
+# ---- 编辑器 ----
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
