@@ -4,7 +4,7 @@
 
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-4F6D7A)
 ![Version](https://img.shields.io/badge/version-0.8.5-66856A)
-![License](https://img.shields.io/github/license/akaspyrean/clashedge?label=license\&color=A98652)
+![License](https://img.shields.io/badge/license-MIT-A98652)
 
 **轻量、便携的 Windows Mihomo 客户端**
 
