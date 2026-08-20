@@ -16,16 +16,16 @@
 
 <table>
 <tr>
-<td width="50%"><img src="docs/images/overview.png" alt="概览"></td>
-<td width="50%"><img src="docs/images/proxies.png" alt="代理"></td>
+<td width="50%"><img src="docs/images/clashedge-001.webp" alt="概览"></td>
+<td width="50%"><img src="docs/images/clashedge-002.webp" alt="代理"></td>
 </tr>
 <tr>
 <td align="center">概览</td>
 <td align="center">代理</td>
 </tr>
 <tr>
-<td><img src="docs/images/profiles.png" alt="配置"></td>
-<td><img src="docs/images/settings.png" alt="设置"></td>
+<td><img src="docs/images/clashedge-003.webp" alt="配置"></td>
+<td><img src="docs/images/clashedge-004.webp" alt="设置"></td>
 </tr>
 <tr>
 <td align="center">配置</td>
