@@ -550,25 +550,25 @@ pub fn default_rule_providers() -> HashMap<String, serde_yaml::Value> {
 direct:
   type: http
   behavior: classical
-  url: https://raw.githubusercontent.com/Akaspyrean/external/main/rules/direct.yaml
+  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/direct.yaml
   path: ./rules/direct.yaml
   interval: 86400
 ai:
   type: http
   behavior: classical
-  url: https://raw.githubusercontent.com/Akaspyrean/external/main/rules/ai.yaml
+  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/ai.yaml
   path: ./rules/ai.yaml
   interval: 86400
 media:
   type: http
   behavior: classical
-  url: https://raw.githubusercontent.com/Akaspyrean/external/main/rules/media.yaml
+  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/media.yaml
   path: ./rules/media.yaml
   interval: 86400
 proxy:
   type: http
   behavior: classical
-  url: https://raw.githubusercontent.com/Akaspyrean/external/main/rules/proxy.yaml
+  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/proxy.yaml
   path: ./rules/proxy.yaml
   interval: 86400
 "#;
