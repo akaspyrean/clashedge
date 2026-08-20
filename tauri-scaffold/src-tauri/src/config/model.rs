@@ -43,7 +43,7 @@ pub struct Config {
     #[serde(default = "default_locale")]
     pub locale: String,
 
-    /// 规则提供者（订阅来源；内置基线 4 组 direct/ai/media/proxy，
+    /// 规则提供者（订阅来源；内置基线 5 组 direct/ai/media/proxy/ad，
     /// 对应 profile-preprocessor.cjs 的 rule-providers 段）
     #[serde(default = "default_rule_providers")]
     pub rule_providers: HashMap<String, serde_yaml::Value>,
@@ -571,6 +571,12 @@ proxy:
   url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/proxy.yaml
   path: ./rules/proxy.yaml
   interval: 86400
+ad:
+  type: http
+  behavior: classical
+  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/ad.yaml
+  path: ./rules/ad.yaml
+  interval: 86400
 "#;
     serde_yaml::from_str(YAML).unwrap_or_default()
 }
@@ -611,11 +617,13 @@ pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
 
 /// 内置路由规则：对应 profile-preprocessor.cjs buildPreset 的内置规则段。
 /// 采用经典分流：国内直连、广告拦截、AI/影音走专属组、其余（proxy 规则集 + MATCH）
-/// 走"扶梯出行"主组。
+/// 走"扶梯出行"主组。广告拦截双保险：内置 ad 规则集（external/ad.yaml，约 21 万条）
+/// 优先于 GEOSITE category-ads-all 兜底，确保离线也有基础拦截。
 pub fn default_rules() -> Vec<String> {
     vec![
         "GEOSITE,private,DIRECT".into(),
         "RULE-SET,direct,DIRECT".into(),
+        "RULE-SET,ad,REJECT".into(),
         "GEOSITE,category-ads-all,REJECT".into(),
         "RULE-SET,ai,人工智能".into(),
         "RULE-SET,media,影音视听".into(),
@@ -785,7 +793,7 @@ hosts:
             config.rules
         );
         assert_eq!(config.proxy_groups.len(), 6, "default proxy groups");
-        assert_eq!(config.rule_providers.len(), 4, "default rule providers");
+        assert_eq!(config.rule_providers.len(), 5, "default rule providers");
         // GLOBAL 组只含 DIRECT/REJECT/两个叶子组，不含节点
         let global = config
             .proxy_groups
@@ -819,6 +827,11 @@ hosts:
         assert!(
             yaml.contains("RULE-SET,direct,DIRECT"),
             "builtin rule:\n{}",
+            yaml
+        );
+        assert!(
+            yaml.contains("RULE-SET,ad,REJECT"),
+            "builtin ad rule:\n{}",
             yaml
         );
     }
