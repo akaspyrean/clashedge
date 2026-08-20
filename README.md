@@ -90,14 +90,6 @@ flowchart LR
     T --> N
 ```
 
-| 类型   | 策略     | 规则                                                                                |
-| ---- | ------ | --------------------------------------------------------------------------------- |
-| 直连   | DIRECT | [direct.yaml](https://github.com/akaspyrean/external/blob/main/rules/direct.yaml) |
-| 人工智能 | 人工智能   | [ai.yaml](https://github.com/akaspyrean/external/blob/main/rules/ai.yaml)         |
-| 影音视听 | 影音视听   | [media.yaml](https://github.com/akaspyrean/external/blob/main/rules/media.yaml)   |
-| 代理   | 扶梯出行   | [proxy.yaml](https://github.com/akaspyrean/external/blob/main/rules/proxy.yaml)   |
-| 未匹配  | 扶梯出行   | MATCH                                                                             |
-
 
 ## 许可
 
