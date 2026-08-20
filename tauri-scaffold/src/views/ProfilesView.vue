@@ -1,0 +1,484 @@
+<!-- src/views/ProfilesView.vue - 配置文件管理（独立导航页）：
+     页面级完整管理：工具栏（订阅 / 新建 / [更多▾: 导入/导出]）+ 配置文件卡片列表
+     （激活 / 更新 / 重命名 / 原始编辑 / 删除）。 -->
+<script setup lang="ts">
+import { onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { profilesApi } from "@/api/profiles";
+import { useProfilesStore } from "@/stores/profiles";
+
+const { t } = useI18n();
+const profilesStore = useProfilesStore();
+
+// 对话框提交 in-flight 守卫：同一时刻只允许一个提交进行（对话框互斥打开），
+// 双击/连点确认按钮时直接忽略后续触发，避免重复创建/导入/订阅。
+const submitting = ref(false);
+
+onMounted(() => {
+  void profilesStore.list();
+});
+
+// ---- 订阅（URL 导入）----
+const subscribeVisible = ref(false);
+const subscribeUrl = ref("");
+const subscribeName = ref("");
+
+async function onSubscribe() {
+  if (submitting.value) return;
+  const url = subscribeUrl.value.trim();
+  if (!url) return;
+  submitting.value = true;
+  try {
+    await profilesApi.importFromUrl(subscribeName.value.trim(), url);
+    await profilesStore.list();
+    ElMessage.success(t("common.success"));
+    subscribeVisible.value = false;
+    subscribeUrl.value = "";
+    subscribeName.value = "";
+  } catch (e) {
+    ElMessage.error(String(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+// ---- 新建 ----
+const newVisible = ref(false);
+const newName = ref("");
+const newContent = ref("");
+
+async function onCreate() {
+  if (submitting.value) return;
+  const name = newName.value.trim();
+  if (!name) return;
+  submitting.value = true;
+  try {
+    await profilesStore.create(name, newContent.value);
+    ElMessage.success(t("common.success"));
+    newVisible.value = false;
+    newName.value = "";
+    newContent.value = "";
+  } catch (e) {
+    ElMessage.error(String(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+// ---- 导入（[更多▾]）----
+const importVisible = ref(false);
+const importName = ref("");
+const importContent = ref("");
+
+async function onImport() {
+  if (submitting.value) return;
+  const name = importName.value.trim();
+  if (!name) return;
+  submitting.value = true;
+  try {
+    await profilesApi.import(name, importContent.value);
+    await profilesStore.list();
+    ElMessage.success(t("common.success"));
+    importVisible.value = false;
+    importName.value = "";
+    importContent.value = "";
+  } catch (e) {
+    ElMessage.error(String(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+// ---- 导出（[更多▾]）----
+const exportVisible = ref(false);
+const exportTarget = ref("");
+const exportContent = ref("");
+
+function onExportOpen() {
+  exportContent.value = "";
+  exportTarget.value = profilesStore.profiles[0]?.name ?? "";
+  exportVisible.value = true;
+}
+
+async function onExport() {
+  if (submitting.value) return;
+  const name = exportTarget.value;
+  if (!name) return;
+  submitting.value = true;
+  try {
+    exportContent.value = await profilesApi.export(name);
+  } catch (e) {
+    ElMessage.error(String(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+// ---- 激活 ----
+async function onActivate(name: string) {
+  try {
+    await profilesStore.activate(name);
+    ElMessage.success(t("common.success"));
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+
+// ---- 更新订阅（重新拉取 URL 内容；激活中则后端热重载生效）----
+async function onUpdate(name: string) {
+  try {
+    await profilesApi.updateProfile(name);
+    await profilesStore.list();
+    ElMessage.success(t("common.success"));
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+
+// ---- 重命名 ----
+const renameVisible = ref(false);
+const renaming = ref<string | null>(null);
+const renameNewName = ref("");
+
+function onRenameOpen(name: string) {
+  renaming.value = name;
+  renameNewName.value = name;
+  renameVisible.value = true;
+}
+
+async function onRename() {
+  if (submitting.value) return;
+  if (renaming.value === null) return;
+  const newName = renameNewName.value.trim();
+  if (!newName) return;
+  submitting.value = true;
+  try {
+    await profilesStore.rename(renaming.value, newName);
+    ElMessage.success(t("common.success"));
+    renameVisible.value = false;
+  } catch (e) {
+    ElMessage.error(String(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+// ---- 编辑（原始内容）----
+const editVisible = ref(false);
+const editing = ref<string | null>(null);
+const editContent = ref("");
+
+function onEditOpen(name: string) {
+  editing.value = name;
+  editVisible.value = true;
+}
+
+async function onEditDialogOpen() {
+  if (editing.value === null) return;
+  editContent.value = "";
+  try {
+    editContent.value = await profilesApi.getContent(editing.value);
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+
+async function onEditSave() {
+  if (submitting.value) return;
+  if (editing.value === null) return;
+  submitting.value = true;
+  try {
+    await profilesApi.updateContent(editing.value, editContent.value);
+    ElMessage.success(t("common.success"));
+    editVisible.value = false;
+  } catch (e) {
+    ElMessage.error(String(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+// ---- 删除 ----
+async function onDelete(name: string) {
+  try {
+    await ElMessageBox.confirm(t("common.confirm"), t("common.delete"), {
+      type: "warning",
+      confirmButtonText: t("common.confirm"),
+      cancelButtonText: t("profiles.cancel"),
+    });
+  } catch {
+    return;
+  }
+  try {
+    await profilesStore.remove(name);
+    ElMessage.success(t("common.success"));
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+</script>
+
+<template>
+  <div class="page">
+    <h2 class="page-title">{{ $t("profiles.title") }}</h2>
+
+    <!-- 工具栏：订阅管理 / 新建配置 / 导入配置 / 导出配置 -->
+    <div class="toolbar">
+      <el-button type="primary" @click="subscribeVisible = true">
+        {{ $t("profiles.subscribe_manage") }}
+      </el-button>
+      <el-button @click="newVisible = true">
+        {{ $t("profiles.new") }}
+      </el-button>
+      <el-button @click="importVisible = true">
+        {{ $t("profiles.import") }}
+      </el-button>
+      <el-button @click="onExportOpen">
+        {{ $t("profiles.export") }}
+      </el-button>
+    </div>
+
+    <el-empty
+      v-if="profilesStore.profiles.length === 0"
+      :description="profilesStore.loading
+        ? $t('common.loading')
+        : $t('profiles.empty')"
+    />
+
+    <div v-else class="profile-list">
+      <el-card
+        v-for="profile in profilesStore.profiles"
+        :key="profile.name"
+        class="profile-card"
+      >
+        <template #header>
+          <div class="card-header">
+            <span class="profile-name">{{ profile.name }}</span>
+            <el-tag v-if="profile.active" type="success" size="small">
+              {{ $t("profiles.active") }}
+            </el-tag>
+          </div>
+        </template>
+        <div class="card-actions">
+           <el-button
+            v-if="!profile.active"
+            size="small"
+            type="info"
+            plain
+            @click="onActivate(profile.name)"
+          >
+            {{ $t("profiles.activate") }}
+          </el-button>
+          <el-button
+            v-if="profile.url"
+            size="small"
+            type="success"
+            plain
+            @click="onUpdate(profile.name)"
+          >
+            {{ $t("profiles.update") }}
+          </el-button>
+          <el-button size="small" type="info" plain @click="onRenameOpen(profile.name)">
+            {{ $t("profiles.rename") }}
+          </el-button>
+          <el-button size="small" type="info" plain @click="onEditOpen(profile.name)">
+            {{ $t("profiles.raw_edit") }}
+          </el-button>
+          <el-button size="small" type="danger" plain @click="onDelete(profile.name)">
+            {{ $t("profiles.delete") }}
+          </el-button>
+        </div>
+      </el-card>
+    </div>
+
+    <!-- 订阅配置 -->
+    <el-dialog v-model="subscribeVisible" :title="$t('profiles.subscribe')" width="520px">
+      <el-form label-position="top">
+        <el-form-item :label="$t('profiles.subscribe_url')">
+          <el-input
+            v-model="subscribeUrl"
+            :placeholder="$t('profiles.url_placeholder')"
+          />
+        </el-form-item>
+        <el-form-item :label="$t('profiles.name_optional')">
+          <el-input
+            v-model="subscribeName"
+            :placeholder="$t('profiles.name_optional_hint')"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="subscribeVisible = false">{{ $t("profiles.cancel") }}</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!subscribeUrl.trim()" @click="onSubscribe">
+          {{ $t("profiles.subscribe") }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新建配置 -->
+    <el-dialog v-model="newVisible" :title="$t('profiles.new')" width="520px">
+      <el-form label-position="top">
+        <el-form-item :label="$t('profiles.name')">
+          <el-input v-model="newName" :placeholder="$t('profiles.name')" />
+        </el-form-item>
+        <el-form-item :label="$t('profiles.content')">
+          <el-input v-model="newContent" type="textarea" :rows="10" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="newVisible = false">{{ $t("profiles.cancel") }}</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!newName.trim()" @click="onCreate">
+          {{ $t("profiles.save") }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 导入配置 -->
+    <el-dialog v-model="importVisible" :title="$t('profiles.import')" width="520px">
+      <el-form label-position="top">
+        <el-form-item :label="$t('profiles.name')">
+          <el-input v-model="importName" :placeholder="$t('profiles.name')" />
+        </el-form-item>
+        <el-form-item :label="$t('profiles.content')">
+          <el-input v-model="importContent" type="textarea" :rows="10" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="importVisible = false">{{ $t("profiles.cancel") }}</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!importName.trim()" @click="onImport">
+          {{ $t("profiles.save") }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 导出配置 -->
+    <el-dialog v-model="exportVisible" :title="$t('profiles.export')" width="560px">
+      <el-form label-position="top">
+        <el-form-item :label="$t('profiles.name')">
+          <el-select v-model="exportTarget" style="width: 100%">
+            <el-option
+              v-for="profile in profilesStore.profiles"
+              :key="profile.name"
+              :label="profile.name"
+              :value="profile.name"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="$t('profiles.content')">
+          <el-input
+            v-model="exportContent"
+            type="textarea"
+            :rows="10"
+            readonly
+            class="export-textarea"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="exportVisible = false">{{ $t("profiles.cancel") }}</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!exportTarget" @click="onExport">
+          {{ $t("profiles.export") }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重命名 -->
+    <el-dialog v-model="renameVisible" :title="$t('profiles.rename')" width="420px">
+      <el-form label-position="top">
+        <el-form-item :label="$t('profiles.name')">
+          <el-input v-model="renameNewName" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="renameVisible = false">{{ $t("profiles.cancel") }}</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!renameNewName.trim()" @click="onRename">
+          {{ $t("profiles.save") }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 编辑原始内容 -->
+    <el-dialog
+      v-model="editVisible"
+      :title="$t('profiles.raw_edit')"
+      width="640px"
+      @open="onEditDialogOpen"
+    >
+      <el-input
+        v-model="editContent"
+        type="textarea"
+        :rows="16"
+        class="edit-textarea"
+      />
+      <template #footer>
+        <el-button @click="editVisible = false">{{ $t("profiles.cancel") }}</el-button>
+        <el-button type="primary" :loading="submitting" @click="onEditSave">
+          {{ $t("profiles.save") }}
+        </el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped>
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.profile-card {
+  --el-card-bg-color: var(--bg-raised);
+  --el-card-border-color: var(--card-border);
+  --el-card-header-bg-color: transparent;
+  --el-card-border-radius: var(--r-md);
+  border: 1px solid var(--card-border);
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.profile-card:hover {
+  border-color: var(--border-subtle);
+  box-shadow: 0 2px 12px rgba(16, 24, 40, 0.06);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.profile-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.card-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.card-actions .el-button {
+  border-radius: var(--r-sm);
+}
+
+.edit-textarea,
+.export-textarea {
+  font-family: "Consolas", "Menlo", monospace;
+}
+</style>

@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tauri-scaffold/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-scaffold/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: tauri-scaffold
+        run: npm ci
+
+      - name: Run Rust unit tests
+        working-directory: tauri-scaffold/src-tauri
+        run: cargo test
+
+      - name: Tauri release build (--no-bundle)
+        working-directory: tauri-scaffold
+        run: npm run tauri -- build --no-bundle
+
+      - name: Assemble portable package + SHA256
+        run: .\tools\build-portable.ps1
+
+      - name: Read version for asset names
+        id: meta
+        shell: pwsh
+        run: |
+          $raw = Get-Content .\tauri-scaffold\src-tauri\tauri.conf.json -Encoding UTF8 -Raw
+          $m = [regex]::Match($raw, '"version"\s*:\s*"([^"]+)"')
+          if (-not $m.Success) { throw "Cannot extract version from tauri.conf.json" }
+          Add-Content $env:GITHUB_OUTPUT "version=$($m.Groups[1].Value)"
+
+      - name: Publish release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          $zip = ".\release\ClashEdge-portable-${{ steps.meta.outputs.version }}-win64.zip"
+          $sha = "$zip.sha256"
+          gh release create $tag $zip $sha --title $tag --generate-notes

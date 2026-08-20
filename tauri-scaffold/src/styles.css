@@ -1,0 +1,408 @@
+/* src/styles.css - 全局样式与主题变量（浅色/深色）
+ * 设计系统：:root 为浅色；html[data-theme="dark"] 为深色。
+ * Element Plus 深色主题（dark/css-vars.css）依赖 html.dark class，
+ * 故 theme.ts/main.ts 同时维护 data-theme 属性（本设计系统）与 dark class（EP）。
+ * 窗口原生底色由 tauri.conf.json 的 backgroundColor 固定（深色），不再由前端同步。 */
+
+@import "element-plus/theme-chalk/dark/css-vars.css";
+
+/* ---- 浅色主题（设计系统）---- */
+:root {
+  color-scheme: light;
+
+  /* ===== 背景 ===== */
+  --bg-app: #F5F7FA;
+  --bg-surface: #FFFFFF;
+  --bg-raised: #FBFCFD;
+  --bg-sidebar: #EDF1F6;
+  --bg-soft: #EAF0F7;
+
+  /* ===== 文本 ===== */
+  --text-primary: #1C1F24;
+  --text-secondary: #475467;
+  --text-tertiary: #667085;
+
+  /* ===== 边框 ===== */
+  --border-subtle: #D8DEE6;
+
+  /* ===== 强调色 ===== */
+  --accent: #2A62CC;
+  --accent-soft: #E8F0FF;
+
+  /* ===== 状态色 ===== */
+  --approval: #B45309;
+  --done: #15803D;
+  --error: #B42318;
+  --idle: #475467;
+
+  /* ===== 尺寸/字体 ===== */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --font:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "PingFang SC",
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+
+  /* ---- 派生 token：设计系统未显式提供，按语义补齐 ----
+   * --on-error：error 底上的前景（浅色主题 error 深、用白；深色主题 error 浅、用深字）。
+   * --interactive-hover：hover/激活底色，取自 bg-soft。
+   * --card-border：卡片描边，比全局 border-subtle 略弱，保证卡片与页底分层但克制。
+   * --menu-active-bg：侧边栏选中项底色（accent 极淡），配合左侧指示条。 */
+  --on-error: #FFFFFF;
+  --interactive-hover: var(--bg-soft);
+  --card-border: #E3E8F0;
+  --menu-active-bg: var(--accent-soft);
+
+  /* ---- Element Plus 主题映射（浅色）----
+   * 色阶按 EP 约定派生：light-3/5/7/8/9 = 主色向白混合 70/50/30/20/10%，
+   * dark-2 = 主色向黑混合 80%。 */
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #fff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #000);
+
+  --el-color-success: var(--done);
+  --el-color-success-light-3: color-mix(in srgb, var(--done) 70%, #fff);
+  --el-color-success-light-5: color-mix(in srgb, var(--done) 50%, #fff);
+  --el-color-success-light-7: color-mix(in srgb, var(--done) 30%, #fff);
+  --el-color-success-light-8: color-mix(in srgb, var(--done) 20%, #fff);
+  --el-color-success-light-9: color-mix(in srgb, var(--done) 10%, #fff);
+  --el-color-success-dark-2: color-mix(in srgb, var(--done) 80%, #000);
+
+  --el-color-warning: var(--approval);
+  --el-color-warning-light-3: color-mix(in srgb, var(--approval) 70%, #fff);
+  --el-color-warning-light-5: color-mix(in srgb, var(--approval) 50%, #fff);
+  --el-color-warning-light-7: color-mix(in srgb, var(--approval) 30%, #fff);
+  --el-color-warning-light-8: color-mix(in srgb, var(--approval) 20%, #fff);
+  --el-color-warning-light-9: color-mix(in srgb, var(--approval) 10%, #fff);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--approval) 80%, #000);
+
+  --el-color-danger: var(--error);
+  --el-color-danger-light-3: color-mix(in srgb, var(--error) 70%, #fff);
+  --el-color-danger-light-5: color-mix(in srgb, var(--error) 50%, #fff);
+  --el-color-danger-light-7: color-mix(in srgb, var(--error) 30%, #fff);
+  --el-color-danger-light-8: color-mix(in srgb, var(--error) 20%, #fff);
+  --el-color-danger-light-9: color-mix(in srgb, var(--error) 10%, #fff);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--error) 80%, #000);
+
+  --el-color-error: var(--error);
+  --el-color-error-light-3: color-mix(in srgb, var(--error) 70%, #fff);
+  --el-color-error-light-5: color-mix(in srgb, var(--error) 50%, #fff);
+  --el-color-error-light-7: color-mix(in srgb, var(--error) 30%, #fff);
+  --el-color-error-light-8: color-mix(in srgb, var(--error) 20%, #fff);
+  --el-color-error-light-9: color-mix(in srgb, var(--error) 10%, #fff);
+  --el-color-error-dark-2: color-mix(in srgb, var(--error) 80%, #000);
+
+  --el-color-info: var(--idle);
+  --el-color-info-light-3: color-mix(in srgb, var(--idle) 70%, #fff);
+  --el-color-info-light-5: color-mix(in srgb, var(--idle) 50%, #fff);
+  --el-color-info-light-7: color-mix(in srgb, var(--idle) 30%, #fff);
+  --el-color-info-light-8: color-mix(in srgb, var(--idle) 20%, #fff);
+  --el-color-info-light-9: color-mix(in srgb, var(--idle) 10%, #fff);
+  --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #000);
+}
+
+/* ---- 深色主题（设计系统）---- */
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* ===== 背景 ===== */
+  --bg-app: #101214;
+  --bg-surface: #171A1D;
+  --bg-raised: #1D2125;
+  --bg-sidebar: #14171A;
+  --bg-soft: #20262D;
+
+  /* ===== 文本 ===== */
+  --text-primary: #F4F6F8;
+  --text-secondary: #C0C7D0;
+  --text-tertiary: #A7B0BA;
+
+  /* ===== 边框 ===== */
+  --border-subtle: #353C44;
+
+  /* ===== 强调色 ===== */
+  --accent: #77A7FF;
+  --accent-soft: #1C2C47;
+
+  /* ===== 状态色 ===== */
+  --approval: #F2B866;
+  --done: #7EDB99;
+  --error: #FF9A93;
+  --idle: #C0C7D0;
+
+  /* ===== 尺寸/字体 ===== */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --font:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "PingFang SC",
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+
+  /* ---- 派生 token（深色）---- */
+  --on-error: #101214;
+  --interactive-hover: var(--bg-soft);
+  --card-border: #2A3038;
+  --menu-active-bg: var(--accent-soft);
+
+  /* ---- Element Plus 主题映射（深色）----
+   * EP 深色约定：light-3/5/7/8/9 = 主色向深色底（--bg-app）混合 70/50/30/20/10%，
+   * dark-2 = 主色向白混合 80%。 */
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #101214);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #101214);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #101214);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #101214);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #101214);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #fff);
+
+  --el-color-success: var(--done);
+  --el-color-success-light-3: color-mix(in srgb, var(--done) 70%, #101214);
+  --el-color-success-light-5: color-mix(in srgb, var(--done) 50%, #101214);
+  --el-color-success-light-7: color-mix(in srgb, var(--done) 30%, #101214);
+  --el-color-success-light-8: color-mix(in srgb, var(--done) 20%, #101214);
+  --el-color-success-light-9: color-mix(in srgb, var(--done) 10%, #101214);
+  --el-color-success-dark-2: color-mix(in srgb, var(--done) 80%, #fff);
+
+  --el-color-warning: var(--approval);
+  --el-color-warning-light-3: color-mix(in srgb, var(--approval) 70%, #101214);
+  --el-color-warning-light-5: color-mix(in srgb, var(--approval) 50%, #101214);
+  --el-color-warning-light-7: color-mix(in srgb, var(--approval) 30%, #101214);
+  --el-color-warning-light-8: color-mix(in srgb, var(--approval) 20%, #101214);
+  --el-color-warning-light-9: color-mix(in srgb, var(--approval) 10%, #101214);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--approval) 80%, #fff);
+
+  --el-color-danger: var(--error);
+  --el-color-danger-light-3: color-mix(in srgb, var(--error) 70%, #101214);
+  --el-color-danger-light-5: color-mix(in srgb, var(--error) 50%, #101214);
+  --el-color-danger-light-7: color-mix(in srgb, var(--error) 30%, #101214);
+  --el-color-danger-light-8: color-mix(in srgb, var(--error) 20%, #101214);
+  --el-color-danger-light-9: color-mix(in srgb, var(--error) 10%, #101214);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--error) 80%, #fff);
+
+  --el-color-error: var(--error);
+  --el-color-error-light-3: color-mix(in srgb, var(--error) 70%, #101214);
+  --el-color-error-light-5: color-mix(in srgb, var(--error) 50%, #101214);
+  --el-color-error-light-7: color-mix(in srgb, var(--error) 30%, #101214);
+  --el-color-error-light-8: color-mix(in srgb, var(--error) 20%, #101214);
+  --el-color-error-light-9: color-mix(in srgb, var(--error) 10%, #101214);
+  --el-color-error-dark-2: color-mix(in srgb, var(--error) 80%, #fff);
+
+  --el-color-info: var(--idle);
+  --el-color-info-light-3: color-mix(in srgb, var(--idle) 70%, #101214);
+  --el-color-info-light-5: color-mix(in srgb, var(--idle) 50%, #101214);
+  --el-color-info-light-7: color-mix(in srgb, var(--idle) 30%, #101214);
+  --el-color-info-light-8: color-mix(in srgb, var(--idle) 20%, #101214);
+  --el-color-info-light-9: color-mix(in srgb, var(--idle) 10%, #101214);
+  --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #fff);
+}
+
+/* ---- 深色主题 EP 对比度修正 ----
+ * 深色 --accent 为浅蓝 #77A7FF，Element Plus 默认在 accent 底上使用白字，
+ * 对比度不足（WCAG < 3:1）。主按钮 / 选中单选按钮文字改用深色保证可读性。 */
+html[data-theme="dark"] .el-button--primary {
+  --el-button-text-color: #101214;
+  --el-button-hover-text-color: #101214;
+  --el-button-active-text-color: #101214;
+  --el-button-disabled-text-color: rgba(16, 18, 20, 0.5);
+}
+
+html[data-theme="dark"] .el-button--primary.is-plain,
+html[data-theme="dark"] .el-button--primary.is-text,
+html[data-theme="dark"] .el-button--primary.is-link {
+  --el-button-hover-text-color: #101214;
+  --el-button-active-text-color: #101214;
+}
+
+html[data-theme="dark"] .el-radio-button {
+  --el-radio-button-checked-text-color: #101214;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  height: 100vh;
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+}
+
+/* ---- 布局骨架 ---- */
+.app-shell {
+  height: 100vh;
+}
+
+.app-aside {
+  background-color: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+}
+
+.app-menu {
+  flex: 1;
+  border-right: none;
+  background: transparent;
+  --el-menu-bg-color: transparent;
+  --el-menu-hover-bg-color: var(--interactive-hover);
+  --el-menu-active-color: var(--accent);
+  --el-menu-text-color: var(--text-secondary);
+}
+
+.app-footer {
+  flex: none;
+  padding: 12px 20px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.app-main {
+  padding: 20px 24px;
+  overflow: auto;
+  background-color: var(--bg-app);
+}
+
+/* ---- 通用页面 ---- */
+.page {
+  max-width: 1080px;
+}
+
+.page-title {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ---- 精致化精修 ----
+ * 统一卡片 / 侧边栏 / 滚动条 / 空态，使各视图层次一致、克制的阴影与描边。
+ * 原则：只在现有结构上加细节，不做布局重构。 */
+
+/* 卡片：默认无阴影，靠底色与极细描边分层；hover 轻微抬升（可点击卡片场景）。 */
+.el-card {
+  --el-card-bg-color: var(--bg-surface);
+  --el-card-border-color: var(--card-border);
+  --el-card-border-radius: var(--r-md);
+  border-radius: var(--r-md);
+  box-shadow: none;
+}
+
+/* 侧边栏：选中项显示左侧强调指示条 + 淡底色，比 EP 默认整块高亮更克制耐看。 */
+.app-menu .el-menu-item {
+  position: relative;
+  border-radius: var(--r-sm);
+  margin: 2px 8px;
+  height: 40px;
+  line-height: 40px;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.app-menu .el-menu-item.is-active {
+  background: var(--menu-active-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.app-menu .el-menu-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.app-menu .el-menu-item:hover {
+  background: var(--interactive-hover);
+  color: var(--text-primary);
+}
+
+/* 全局细滚动条：贴合深/浅主题，避免系统默认粗滚动条破坏精致感。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 表格：表头与行间分隔更柔和，圆角由容器决定（ConnectionsView 已设）。 */
+.el-table {
+  --el-table-header-text-color: var(--text-tertiary);
+  --el-table-text-color: var(--text-primary);
+  --el-table-border-color: var(--border-subtle);
+  --el-table-row-hover-bg-color: var(--interactive-hover);
+}
+
+/* 空态：图标/文案颜色跟随文本弱化层级，间距更舒展。 */
+.el-empty__description {
+  color: var(--text-tertiary);
+}
+
+.el-empty {
+  --el-empty-fill-color-0: var(--bg-soft);
+  --el-empty-fill-color-1: var(--border-subtle);
+  --el-empty-fill-color-2: var(--bg-soft);
+  --el-empty-fill-color-3: var(--border-subtle);
+  --el-empty-fill-color-4: var(--bg-soft);
+  --el-empty-fill-color-5: var(--border-subtle);
+  --el-empty-fill-color-6: var(--bg-soft);
+  --el-empty-fill-color-7: var(--border-subtle);
+  --el-empty-fill-color-8: var(--bg-soft);
+  --el-empty-fill-color-9: var(--border-subtle);
+}
+
+/* 对话框：更明确的圆角与浅阴影，避免默认直角生硬。 */
+.el-dialog {
+  border-radius: var(--r-md);
+  --el-dialog-bg-color: var(--bg-surface);
+}
+
+/* 页签（Settings 左侧标签）：选中项底色与文字层级统一。 */
+.el-tabs__item {
+  color: var(--text-secondary);
+}
+
+.el-tabs__item.is-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 描述列表（About）：底色随 surface，分隔更含蓄。 */
+.el-descriptions {
+  --el-descriptions-item-bordered-label-background: var(--bg-soft);
+}

@@ -1,0 +1,57 @@
+[package]
+name = "clash-edge"
+version = "0.8.5"
+description = "ClashEdge - Lightweight Clash Client for Windows"
+authors = ["Fong"]
+edition = "2021"
+
+[[bin]]
+name = "ClashEdge"
+path = "src/main.rs"
+
+[lib]
+name = "clash_edge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+# config-json5：tauri.conf.json 按 JSON5 解析，允许在配置里写注释（见 tauri.conf.json 顶部安全说明）。
+tauri-build = { version = "2", features = ["config-json5"] }
+
+[dependencies]
+# config-json5 与 tauri-build 对应启用，保证 cargo build 阶段与运行时都能解析带注释的配置。
+tauri = { version = "2", features = ["common-controls-v6", "tray-icon", "config-json5", "devtools"] }
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-log = { version = "2", features = ["tracing"] }
+tauri-plugin-notification = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+
+# devtools（open_devtools）不放到 target.cfg 依赖里：Cargo 不支持 cfg(debug_assertions)
+# 参与依赖/feature 选择。等价做法是 feature 常开，但所有调用点（托盘菜单项、事件分发）
+# 均用 #[cfg(debug_assertions)] 门控，release 构建不编译任何 devtools 调用面。
+
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+tokio = { version = "1.38", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+log = "0.4"
+anyhow = "1.0"
+thiserror = "1.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "stream", "rustls-tls-webpki-roots", "socks"] }
+winreg = "0.11"
+# 已作为传递依赖存在于 Cargo.lock（tauri/tokio 体系），无需新增下载。
+# Win32_Networking_WinInet：写入系统代理注册表后通知 WinINet 立即刷新。
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet"] }
+directories = "5"
+once_cell = "1.19"
+parking_lot = "0.12"
+base64 = "0.21"
+rand = "0.8"
+# 托盘图标运行时着色（系统代理开=绿 / 关=灰）；
+# 已作为传递依赖存在于 Cargo.lock（image 0.25.10），无需新增下载。
+image = { version = "0.25", default-features = false, features = ["png"] }
