@@ -50,14 +50,55 @@
 
 ## 开箱即用
 
-| 📦 便携运行   | 🔗 订阅管理 | 🧭 分流策略                | 🌐 系统网络   | 📊 状态体验      |
-| --------- | ------- | ---------------------- | --------- | ------------ |
-| 解压即用      | 订阅导入    | 内置规则                   | 系统代理      | 延迟监测         |
-| 整体迁移      | 订阅更新    | Rule / Global / Direct | TUN       | 流量 / 连接      |
-| 中文 / 空格路径 | 配置编辑    | 人工优选 / 自动优选            | Mihomo 接入 | 日志           |
-| 程序与数据分离   | 热重载     | AI / 影音 / 广告 / 代理分流    | —         | 中文 / English |
-| —         | —       | 广告拦截 `ad.yaml`         | —         | 浅色 / 深色      |
+<table>
+<tr>
+<th width="20%" nowrap>📦&nbsp;便携运行</th>
+<th width="20%" nowrap>🔗&nbsp;订阅管理</th>
+<th width="20%" nowrap>🧭&nbsp;分流策略</th>
+<th width="20%" nowrap>🌐&nbsp;系统网络</th>
+<th width="20%" nowrap>📊&nbsp;状态体验</th>
+</tr>
 
+<tr>
+<td>解压即用</td>
+<td>订阅导入</td>
+<td>内置规则</td>
+<td>系统代理</td>
+<td>延迟监测</td>
+</tr>
+
+<tr>
+<td>整体迁移</td>
+<td>订阅更新</td>
+<td>Rule / Global / Direct</td>
+<td>TUN</td>
+<td>流量 / 连接</td>
+</tr>
+
+<tr>
+<td>中文 / 空格路径</td>
+<td>配置编辑</td>
+<td>人工优选 / 自动优选</td>
+<td>Mihomo 接入</td>
+<td>日志</td>
+</tr>
+
+<tr>
+<td>程序与数据分离</td>
+<td>热重载</td>
+<td>AI / 影音 / 广告 / 代理分流</td>
+<td>—</td>
+<td>中文 / English</td>
+</tr>
+
+<tr>
+<td>—</td>
+<td>—</td>
+<td>广告拦截 <code>ad.yaml</code></td>
+<td>—</td>
+<td>浅色 / 深色</td>
+</tr>
+</table>
 
 ---
 
@@ -167,7 +208,7 @@ flowchart LR
     G --> C
     S --> C
 
-    C --> M((你的 Mihomo))
+    C --> M((你的  ClashEdge))
 ```
 
 默认配置用于开箱即用。
