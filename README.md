@@ -190,9 +190,7 @@ Portable：
 
 ## 许可
 
-ClashEdge 源代码采用 [MIT License](LICENSE)。
-
-Mihomo、Wintun、GeoData 等第三方组件保留各自许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+ClashEdge 源代码采用 [MIT License](LICENSE)。Mihomo、Wintun、GeoData 等第三方组件保留各自许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 声明
 
