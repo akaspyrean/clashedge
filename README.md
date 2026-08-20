@@ -4,7 +4,7 @@
 
 **轻量、便携、开箱即用的 Windows Mihomo 客户端**
 
-订阅负责节点，ClashEdge 负责分流与策略。
+订阅提供节点，ClashEdge 负责分流与策略。内置规则开箱即用，也可自由配置。
 
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-4F6D7A?style=flat-square)
 ![Version](https://img.shields.io/badge/version-0.8.5-66856A?style=flat-square)
@@ -50,27 +50,14 @@
 
 ## 开箱即用
 
-<table>
-<tr>
-<td align="center" width="20%"><b>📦 便携</b><br><sub>解压即用</sub></td>
-<td align="center" width="20%"><b>🧭 分流</b><br><sub>规则预置</sub></td>
-<td align="center" width="20%"><b>⚡ 优选</b><br><sub>自动测速</sub></td>
-<td align="center" width="20%"><b>🛡️ 拦截</b><br><sub>广告过滤</sub></td>
-<td align="center" width="20%"><b>🎛️ 可控</b><br><sub>支持自定义</sub></td>
-</tr>
-</table>
+| 📦 便携运行   | 🔗 订阅管理 | 🧭 分流策略                | 🌐 系统网络   | 📊 状态体验      |
+| --------- | ------- | ---------------------- | --------- | ------------ |
+| 解压即用      | 订阅导入    | 内置规则                   | 系统代理      | 延迟监测         |
+| 整体迁移      | 订阅更新    | Rule / Global / Direct | TUN       | 流量 / 连接      |
+| 中文 / 空格路径 | 配置编辑    | 人工优选 / 自动优选            | Mihomo 接入 | 日志           |
+| 程序与数据分离   | 热重载     | AI / 影音 / 广告 / 代理分流    | —         | 中文 / English |
+| —         | —       | 广告拦截 `ad.yaml`         | —         | 浅色 / 深色      |
 
-<br>
-
-|        |                        |
-| ------ | ---------------------- |
-| **节点** | 导入订阅即可                 |
-| **模式** | Rule / Global / Direct |
-| **策略** | 人工优选 / 自动优选            |
-| **网络** | 系统代理 / TUN             |
-| **管理** | 订阅更新 / 配置编辑 / 热重载      |
-| **状态** | 延迟 / 流量 / 连接 / 日志      |
-| **界面** | 中文 / English · 浅色 / 深色 |
 
 ---
 
@@ -106,23 +93,9 @@ flowchart LR
     T --> N
 ```
 
-### 内置规则
-
-<table>
-<tr>
-<td align="center"><b>🛡️ 广告</b><br><code>ad.yaml</code><br>↓<br><b>REJECT</b></td>
-<td align="center"><b>🇨🇳 直连</b><br><code>direct.yaml</code><br>↓<br><b>DIRECT</b></td>
-<td align="center"><b>✦ AI</b><br><code>ai.yaml</code><br>↓<br><b>人工智能</b></td>
-<td align="center"><b>▶ 影音</b><br><code>media.yaml</code><br>↓<br><b>影音视听</b></td>
-<td align="center"><b>↗ 代理</b><br><code>proxy.yaml</code><br>↓<br><b>扶梯出行</b></td>
-</tr>
-</table>
-
-规则来自 [External](https://github.com/akaspyrean/external)，随程序提供并支持更新。
-
 ---
 
-## 两种节点选择
+## 两种节点
 
 ```mermaid
 flowchart LR
@@ -136,20 +109,6 @@ flowchart LR
     T --> T1[自动测速]
     T1 --> T2[选择低延迟节点]
 ```
-
-<table>
-<tr>
-<td width="50%" align="center">
-<h3>人工优选</h3>
-手动决定使用哪个节点
-</td>
-<td width="50%" align="center">
-<h3>自动优选</h3>
-自动测速并选择低延迟节点
-</td>
-</tr>
-</table>
-
 ---
 
 ## 三种模式
@@ -166,8 +125,6 @@ flowchart LR
     G --> G1[全部使用指定代理]
     D --> D1[全部直接连接]
 ```
-
-日常使用选择 **Rule** 即可。
 
 ---
 
@@ -193,10 +150,6 @@ ClashEdge-portable-<version>-win64.zip
 ```text
 ClashEdge.exe
 ```
-
-支持：
-
-**中文路径 · 空格路径 · 更换目录 · 更换盘符 · 整体迁移**
 
 ---
 
