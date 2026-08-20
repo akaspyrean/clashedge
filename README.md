@@ -46,7 +46,7 @@ ClashEdge 是一个面向 Windows 的轻量 Clash 图形客户端。基于 **Tau
 ├── tauri-scaffold/        # Tauri 应用源码（前端 src/ + Rust 后端 src-tauri/src/）
 ├── portable-template/     # 便携版模板：内核/侧车二进制、默认数据、规则文件
 ├── tools/                 # 构建/打包脚本（build-portable.ps1）、图标
-├── docs/                  # 文档：发布报告、安全审核报告、交接日志、历史规划
+├── docs/                  # 文档：工作交接日志
 ├── release/               # 打包产物（便携目录 + zip + SHA256，不入库）
 └── .claude/               # 项目级协作规则
 ```
@@ -103,9 +103,4 @@ npm run tauri -- build --no-bundle
 
 ## 文档
 
-- [`docs/RELEASE_REPORT.md`](docs/RELEASE_REPORT.md) — 0.8.5 稳定版发布报告（含上线前安全审核与最终修订）
-- [`docs/PRE-LAUNCH-AUDIT-REPORT.md`](docs/PRE-LAUNCH-AUDIT-REPORT.md) — 上线前安全/BUG 审核报告
 - [`docs/HANDOVER.md`](docs/HANDOVER.md) — 工作交接日志（当前状态、修订内容、构建约定）
-- [`docs/REFACTOR-PLAN-TAURI.md`](docs/REFACTOR-PLAN-TAURI.md) — Tauri 2 重构实施规划
-- [`docs/REPAIR_PLAN.md`](docs/REPAIR_PLAN.md) — 内部修复方案（历史）
-- [`docs/archive/R8.3-REVISION-NOTES.md`](docs/archive/R8.3-REVISION-NOTES.md) — R8.3 修订说明（Electron 时代，归档）
