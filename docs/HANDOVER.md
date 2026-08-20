@@ -69,7 +69,7 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
    - 扶梯出行 / 人工智能 / 影音视听：`type: select`，子项 `[人工优选, 自动优选]`
    - 人工优选：`type: select`（含全部节点，手动选择）
    - 自动优选：`type: url-test`（url `https://cp.cloudflare.com/generate_204`，interval 300，tolerance 100）
-   - 规则链：`GEOSITE,private,DIRECT` → `RULE-SET,direct,DIRECT` → `GEOSITE,category-ads-all,REJECT` → `RULE-SET,ai,人工智能` → `RULE-SET,media,影音视听` → `RULE-SET,proxy,扶梯出行` → `GEOSITE,cn,DIRECT` → `GEOIP,CN,DIRECT` → `MATCH,扶梯出行`
+   - 规则链：`GEOSITE,private,DIRECT` → `RULE-SET,direct,DIRECT` → `RULE-SET,ad,REJECT` → `GEOSITE,category-ads-all,REJECT` → `RULE-SET,ai,人工智能` → `RULE-SET,media,影音视听` → `RULE-SET,proxy,扶梯出行` → `GEOSITE,cn,DIRECT` → `GEOIP,CN,DIRECT` → `MATCH,扶梯出行`
 2. **代理端口绑定失败不再假成功**：`core/manager.rs` 新增绑定冲突检测（读取 `Data/logs/mihomo-stdout.log`，匹配 `level=error` + `bind`），检测到即停止内核、状态置 `Error`、前端顶部红条如实提示。单测 `test_parse_bind_error_detects_port_conflict` 覆盖。
 3. **配置文件页默认「订阅」**：工具栏「订阅」为主按钮，置于「新建配置」之前。
 4. **ai 规则集修复**：`portable-template/App/DefaultData/rules/ai.yaml` 移除 `ip-asn,20473,no-resolve` 行——mihomo `behavior: classical` 遇到 `ip-asn` 会整文件失败（0 规则）。移除后实测加载 **81 条**规则。
@@ -147,7 +147,7 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
 ## 6. 已知问题与注意事项
 
 - **旧版 Clash.F.Win 端口冲突（重点）**：若旧版 Clash.F.Win（Electron）仍在运行，会占用 `127.0.0.1:7890` 与 DNS `9053`，新内核绑定失败。新版本会如实报错（顶部红条），**不会**再假装运行中。用户需先关闭旧版。
-- **规则集网络刷新**：`direct/proxy/media/ai` 为 HTTP 型 rule-provider，首次用内置本地文件；若机器无法直连 `raw.githubusercontent.com`（无可用代理），刷新会失败但保留本地已加载规则，不影响启动。
+- **规则集网络刷新**：`direct/proxy/media/ai/ad` 为 HTTP 型 rule-provider，首次用内置本地文件；若机器无法直连 `raw.githubusercontent.com`（无可用代理），刷新会失败但保留本地已加载规则，不影响启动。
 - **构建仍打包、但运行时未调用的侧车**：`go-tun2socks.exe`（2.8 MB）、`EnableLoopback.exe`（75 KB）。TUN 实际走 mihomo 原生 `tun.enable`（wintun.dll），Rust 从不启动这两个 sidecar。**保留以防 TUN 回归，未删除**；后续确认无用时，可连同 `build-portable.ps1` 的拷贝行一起移除（精简候选）。
 - **启动器已废弃并删除**：`tools/ClashEdge.exe`（~8.7KB 编译产物，2026-08-19 已删除），`ClashEdge.Launcher.R8.2.cs` 源码留档参考。原生便携布局下 `ClashEdge.exe` 就是 Tauri 应用本体，不再需要启动器。
 - **开发卫生约定**：终止进程必须 PID + ExecutablePath 双重校验（且仅限测试目录）；任何文件不得残留订阅地址/密钥等非程序必需数据；不允许通过隐藏错误/吞异常/删功能让构建假成功。
