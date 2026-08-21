@@ -203,6 +203,10 @@ pub(crate) fn default_secret_placeholder() -> &'static str {
     "clash-edge-secret"
 }
 
+/// P0-3 脱敏占位符：`get_config` 返回给前端时用它替代真实 secret。
+/// `update_config`/`import_config` 见到此值或空串时保留现有真实密钥，不轮换。
+pub const SECRET_REDACTED: &str = "********";
+
 fn default_secret() -> String {
     default_secret_placeholder().to_string()
 }
@@ -359,6 +363,12 @@ pub struct DnsConfig {
     /// Nameserver（通过 DNS-over-HTTPS 等）
     #[serde(default = "default_dns_nameserver")]
     pub nameserver: Vec<String>,
+
+    /// proxy-server-nameserver：解析代理节点服务器域名时使用的 DNS。
+    /// 必须是明文 IP（非 DoH/DoT），mihomo 要求该字段仅接受明文 DNS。
+    /// 避免节点域名解析走 DoH 导致循环依赖（DoH 域名自身需要先解析）。
+    #[serde(default = "default_dns_proxy_server_nameserver")]
+    pub proxy_server_nameserver: Vec<String>,
 }
 
 /// 派生 Default 会让 dns 所有字段变成空值，写进 config.yaml 后 mihomo 报
@@ -374,6 +384,7 @@ impl Default for DnsConfig {
             fake_ip_filter: default_dns_fake_ip_filter(),
             default_nameserver: default_dns_default_nameserver(),
             nameserver: default_dns_nameserver(),
+            proxy_server_nameserver: default_dns_proxy_server_nameserver(),
         }
     }
 }
@@ -409,6 +420,11 @@ fn default_dns_nameserver() -> Vec<String> {
         "https://dns.alidns.com/dns-query".to_string(),
         "https://doh.pub/dns-query".to_string(),
     ]
+}
+/// proxy-server-nameserver：解析代理节点服务器域名时使用的明文 DNS。
+/// mihomo 要求该字段必须是明文 IP（非 DoH/DoT），否则会报错拒绝启动。
+fn default_dns_proxy_server_nameserver() -> Vec<String> {
+    vec!["223.5.5.5".to_string(), "119.29.29.29".to_string()]
 }
 
 /// --- AdvancedConfig ---
@@ -582,10 +598,16 @@ ad:
 }
 
 /// 内置代理组：对应 profile-preprocessor.cjs 的 proxy-groups 段。
-/// 叶子组（人工优选/自动优选）默认只有 DIRECT，订阅导入后替换为真实节点。
+/// 叶子组初始为空（无订阅时无可用节点），订阅导入后由
+/// `build_runtime_config` 注入真实节点名。
 /// GLOBAL 为全局模式专用组：`mode: global` 时所有流量走它，只含 DIRECT/REJECT
 /// 与两个叶子组；代理页面按模式联动（rule 隐藏 / global 独占显示 / direct 无组），
 /// 由前端 `ProxiesView` 实现，托盘保留以便切换。
+///
+/// 注意：`自动优选` 是 `url-test` 类型，mihomo 仅对真实代理节点做延迟测速，
+/// DIRECT 不是代理节点——注入 DIRECT 会让 url-test 把直连当作"零延迟最优节点"
+/// 永久霸占自动组，所有真实节点永远拿不到流量。故自动优选初始与运行时都
+/// 不含 DIRECT，无订阅节点时该组保持空列表（mihomo 接受空 proxies 的 url-test）。
 pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
     const YAML: &str = r#"
 - name: GLOBAL
@@ -602,15 +624,20 @@ pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
   proxies: [人工优选, 自动优选]
 - name: 人工优选
   type: select
-  proxies: [DIRECT]
+  proxies: []
 - name: 自动优选
   type: url-test
   url: https://cp.cloudflare.com/generate_204
   interval: 300
   # tolerance=100ms：只有新节点比当前快 100ms 以上才切换，
   # 避免延迟抖动导致的频繁跳变；间隔 300s 兼顾反应速率与稳定性。
+  # expected-status=204 + timeout=5000：与 cp.cloudflare.com 的
+  # generate_204 端点契约对齐（仅 204 视为健康），并限制单次测速 5s，
+  # 避免慢节点拖累整组切换决策（mihomo 当前版本支持这两个字段）。
   tolerance: 100
-  proxies: [DIRECT]
+  expected-status: 204
+  timeout: 5000
+  proxies: []
 "#;
     serde_yaml::from_str(YAML).unwrap_or_default()
 }

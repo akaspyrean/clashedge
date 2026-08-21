@@ -204,6 +204,7 @@ fn migrate_from_legacy_yaml(content: &str, config_path: &Path) -> Result<Migrati
                 "https://dns.alidns.com/dns-query".to_string(),
                 "https://doh.pub/dns-query".to_string(),
             ],
+            proxy_server_nameserver: vec!["223.5.5.5".to_string(), "119.29.29.29".to_string()],
         },
         advanced: AdvancedConfig {
             disable_commit_animation: false,

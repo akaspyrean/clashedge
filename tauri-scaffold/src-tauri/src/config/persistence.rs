@@ -101,9 +101,17 @@ impl ConfigManager {
 
     /// 从前端传入的 JSON 更新配置
     pub fn update_config(&mut self, value: serde_json::Value) -> Result<()> {
-        let config: Config = serde_json::from_value(value)?;
+        let mut config: Config = serde_json::from_value(value)?;
         // C7 控制器地址限回环（用户可控输入，落盘前校验）
         crate::config::model::validate_external_controller(&config.proxy.external_controller)?;
+        // P0-3：前端 get_config 返回脱敏 secret（SECRET_REDACTED），前端回传时
+        // 保持脱敏值——此时保留现有真实密钥，不轮换。
+        // 若前端传入空串也同理保留（前端不应直接操作 secret）。
+        if config.proxy.secret == crate::config::model::SECRET_REDACTED
+            || config.proxy.secret.is_empty()
+        {
+            config.proxy.secret = self.get_config().proxy.secret;
+        }
         self.set_config(config)
     }
 

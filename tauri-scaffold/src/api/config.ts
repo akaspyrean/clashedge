@@ -7,6 +7,9 @@
 // 因此 JSON 键是 `mode`（不是 0.8.5 旧版的 "proxy-mode"）；
 // `system_proxy` 是应用级字段（托盘系统代理开关的真实状态），键为 "system-proxy"，
 // 前端任何整包保存（update_config）都必须携带它，否则会被后端默认值覆盖。
+// P0-3：`secret` 字段由后端脱敏为 "********"（真实密钥仅存后端，Rust 调用
+// mihomo API 时直接读共享配置 Arc 做 Bearer 鉴权）。前端回传脱敏值时后端
+// 保留现有真实密钥不轮换。
 
 import { invoke } from "@tauri-apps/api/core";
 

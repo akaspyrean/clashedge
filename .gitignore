@@ -20,6 +20,11 @@ src-tauri/gen/
 release/
 portable-out/
 
+# ---- 构建诊断输出 ----
+cargo-check-out.txt
+cargo-check-tests.txt
+cargo-test-out.txt
+
 # ---- 编辑器 ----
 .vscode/*
 !.vscode/extensions.json

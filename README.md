@@ -7,7 +7,7 @@
 订阅提供节点，ClashEdge 负责分流与策略。内置规则开箱即用，也可自由配置。
 
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-4F6D7A?style=flat-square)
-![Version](https://img.shields.io/badge/version-0.8.5-66856A?style=flat-square)
+![Version](https://img.shields.io/github/v/release/akaspyrean/clashedge?style=flat-square&label=version&color=66856A)
 ![Portable](https://img.shields.io/badge/Portable-Ready-7D8B74?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-A98652?style=flat-square)
 

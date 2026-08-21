@@ -38,11 +38,5 @@
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
     }
-  },
-  "plugins": {
-    // 前端未使用 shell 插件；打开目录等需求由后端 Rust 实现（open_data_dir 等命令）。
-    "shell": {
-      "open": false
-    }
   }
 }

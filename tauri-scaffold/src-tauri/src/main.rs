@@ -75,7 +75,9 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_shell::init())
+        // P1-11：shell plugin 未使用（打开目录等走 Rust command），移除以减少攻击面。
+        // fs plugin 保留但收紧权限：capabilities.json 中移除过宽的 Desktop/Documents/Downloads
+        // 读取权限，仅允许应用自身数据目录（通过 Rust command 完成文件操作）。
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
