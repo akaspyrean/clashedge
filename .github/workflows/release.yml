@@ -80,6 +80,8 @@ jobs:
           $zip = ".\release\ClashEdge-portable-${{ steps.meta.outputs.version }}-win64.zip"
           $sha = "$zip.sha256"
           gh release upload ${{ github.ref_name }} $zip $sha
+          # 稳定名：latest release 可通过固定 URL 下载
+          gh release upload ${{ github.ref_name }} "$zip#ClashEdge-portable-win64.zip"
 
       - name: Publish release
         shell: pwsh

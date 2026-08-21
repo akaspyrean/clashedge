@@ -190,6 +190,18 @@ if ($rootExeLen -ge $MIN_RELEASE_EXE_BYTES) {
 }
 Write-Host "Post-assembly validation passed: $($assertions.Count) invariants OK."
 
+# 5b. Absolute-path leak scan (portable must be fully relocatable)
+Write-Host "==> Absolute-path leak scan ..." -ForegroundColor Cyan
+$ScanScript = Join-Path $repo "tools\scan_portable_paths.ps1"
+if (Test-Path $ScanScript) {
+    & $ScanScript -Root $out
+    if ($LASTEXITCODE -ne 0) {
+        throw "Absolute-path leak scan FAILED — portable must be fully relocatable."
+    }
+} else {
+    Write-Host "  [SKIP] scan script not found at $ScanScript" -ForegroundColor DarkYellow
+}
+
 # 6. Single-file distributable archive.
 # Top-level folder "ClashEdge/": extracting the zip yields a ClashEdge directory
 # (matching the user's expectation of a clean folder, not scattered root files).
