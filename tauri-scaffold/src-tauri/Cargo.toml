@@ -27,6 +27,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
 
 # devtools（open_devtools）不放到 target.cfg 依赖里：Cargo 不支持 cfg(debug_assertions)
 # 参与依赖/feature 选择。等价做法是 feature 常开，但所有调用点（托盘菜单项、事件分发）

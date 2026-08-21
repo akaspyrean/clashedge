@@ -80,8 +80,49 @@ jobs:
           $zip = ".\release\ClashEdge-portable-${{ steps.meta.outputs.version }}-win64.zip"
           $sha = "$zip.sha256"
           gh release upload ${{ github.ref_name }} $zip $sha
-          # 稳定名：latest release 可通过固定 URL 下载
           gh release upload ${{ github.ref_name }} "$zip#ClashEdge-portable-win64.zip"
+
+      - name: Check updater signing key
+        id: check-key
+        shell: pwsh
+        run: |
+          $hasKey = "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" -ne ''
+          Add-Content $env:GITHUB_OUTPUT "has_key=$hasKey"
+
+      - name: Sign zip for auto-update (minisign)
+        if: steps.check-key.outputs.has_key == 'true'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          choco install minisign -y --no-progress 2>$null
+          $zip = ".\release\ClashEdge-portable-${{ steps.meta.outputs.version }}-win64.zip"
+          $keyFile = "$env:RUNNER_TEMP\sign.key"
+          $env:TAURI_SIGNING_PRIVATE_KEY -replace "`n","`n" | Set-Content -Path $keyFile -NoNewline
+          minisign -M -s "$keyFile" -x "$zip.sig" -m "$zip" -W
+
+      - name: Generate update manifest (latest.json)
+        if: steps.check-key.outputs.has_key == 'true'
+        shell: pwsh
+        run: |
+          python3 tools/make_update_manifest.py `
+            --version "${{ steps.meta.outputs.version }}" `
+            --tag "${{ github.ref_name }}" `
+            --repo "akaspyrean/clashedge" `
+            --dist ".\release" `
+            --out ".\release\latest.json" `
+            --notes "ClashEdge ${{ steps.meta.outputs.version }}"
+
+      - name: Upload update artifacts
+        if: steps.check-key.outputs.has_key == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} ".\release\latest.json"
+          $sig = ".\release\ClashEdge-portable-${{ steps.meta.outputs.version }}-win64.zip.sig"
+          if (Test-Path $sig) { gh release upload ${{ github.ref_name }} $sig }
 
       - name: Publish release
         shell: pwsh
