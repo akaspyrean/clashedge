@@ -5,7 +5,7 @@
   // 故 CSP 的 connect-src 仅保留 'self'（同源 invoke / 事件），并显式关闭
   // object / frame 注入面。style-src 保留 'unsafe-inline' 因 Element Plus 需要。
   "productName": "ClashEdge",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "identifier": "com.clashedge.portable",
   "build": {
     "beforeDevCommand": "npm run dev",

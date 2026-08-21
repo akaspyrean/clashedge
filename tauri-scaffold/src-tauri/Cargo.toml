@@ -1,6 +1,6 @@
 [package]
 name = "clash-edge"
-version = "0.8.6"
+version = "0.8.7"
 description = "ClashEdge - Lightweight Clash Client for Windows"
 authors = ["akaspyrean"]
 edition = "2021"
