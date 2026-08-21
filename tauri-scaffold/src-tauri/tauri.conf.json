@@ -38,5 +38,14 @@
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
     }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/akaspyrean/clashedge/releases/latest/download/latest.json"],
+      "pubkey": "",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
