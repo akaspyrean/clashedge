@@ -20,7 +20,6 @@ tauri-build = { version = "2", features = ["config-json5"] }
 [dependencies]
 # config-json5 与 tauri-build 对应启用，保证 cargo build 阶段与运行时都能解析带注释的配置。
 tauri = { version = "2", features = ["common-controls-v6", "tray-icon", "config-json5", "devtools"] }
-tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = { version = "2", features = ["tracing"] }
@@ -33,6 +32,9 @@ tauri-plugin-single-instance = "2"
 # 参与依赖/feature 选择。等价做法是 feature 常开，但所有调用点（托盘菜单项、事件分发）
 # 均用 #[cfg(debug_assertions)] 门控，release 构建不编译任何 devtools 调用面。
 
+# P1-11：shell plugin 未使用（打开目录走 Rust command），移除以减少攻击面。
+# fs plugin 保留但收紧权限：capabilities.json 中移除过宽的 Desktop/Documents/Downloads
+# 读取权限，仅允许应用自身数据目录（通过 Rust command 完成文件操作）。
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"

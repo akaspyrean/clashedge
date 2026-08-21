@@ -10,7 +10,23 @@ use tauri::{command, AppHandle, State};
 #[command]
 pub async fn get_config(state: State<'_, crate::AppState>) -> Result<serde_json::Value> {
     let config_guard = state.config_manager.lock().unwrap();
-    Ok(serde_json::to_value(config_guard.get_config())?)
+    let mut value = serde_json::to_value(config_guard.get_config())?;
+    // P0-3：控制器密钥不得返回 WebView。
+    // 内部配置继续保存真实 secret，Rust 调用 Mihomo API 的 Bearer 鉴权
+    // 直接读共享配置 Arc（api_headers），不受此处脱敏影响。
+    // 前端拿到的 secret 替换为脱敏占位符；update_config 见到脱敏值时保留
+    // 现有真实密钥，不轮换（避免每次保存都换密钥导致运行中 mihomo 鉴权失效）。
+    if let Some(obj) = value.as_object_mut() {
+        if obj.contains_key("secret") {
+            obj.insert(
+                "secret".to_string(),
+                serde_json::Value::String(
+                    crate::config::model::SECRET_REDACTED.to_string(),
+                ),
+            );
+        }
+    }
+    Ok(value)
 }
 
 #[command]

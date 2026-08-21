@@ -115,6 +115,9 @@ New-Item -ItemType Directory -Force (Join-Path $out "App\DefaultData") | Out-Nul
 Copy-Item $releaseExe (Join-Path $appClashEdgeDir "ClashEdge.exe")
 
 # 2. Sidecars (mihomo core renamed to mihomo-win64.exe to match the reference package)
+#    P1-12: 自动 SHA256 校验——每个 sidecar 源文件旁应有 {filename}.sha256。
+#    存在则比对，缺失则自动生成并写入（需 git add 新 .sha256 文件）。
+#    不匹配立即失败，防止二进制被替换/损坏。
 $sidecars = @(
     @{ src = Join-Path $srcSide "x64\clash-edge-core.exe";   dst = "mihomo-win64.exe" },
     @{ src = Join-Path $srcSide "x64\go-tun2socks.exe";      dst = "go-tun2socks.exe" },
@@ -127,7 +130,24 @@ foreach ($sc in $sidecars) {
                "Portable sidecars live under portable-template/App/ClashEdge/resources/static/files/win/") -f `
             $sc.src, $sc.dst
     }
-    Copy-Item $sc.src (Join-Path $sidecarDir $sc.dst)
+    $shaFile = $sc.src + ".sha256"
+    $actual = (Get-FileHash $sc.src -Algorithm SHA256).Hash
+    if (Test-Path $shaFile) {
+        $expected = (Get-Content $shaFile -Raw).Trim()
+        if ($actual -ne $expected) {
+            throw ("SHA256 mismatch for {0}:`n  expected ({1}): {2}`n  actual:            {3}`n" +
+                   "The sidecar binary has changed. Update the .sha256 file:") -f `
+                $sc.dst, (Split-Path -Leaf $shaFile), $expected, $actual
+        }
+        Write-Host "  SHA256 OK: $($sc.dst)"
+    } else {
+        # 自动生成 .sha256 文件（仅含哈希值，无格式）
+        Set-Content -Path $shaFile -Value $actual -Encoding ascii -NoNewline
+        Write-Host ("  [AUTO] SHA256 file created: {0} (git add this file to lock the hash)") -f `
+            (Split-Path -Leaf $shaFile)
+    }
+    $dstPath = Join-Path $sidecarDir $sc.dst
+    Copy-Item $sc.src $dstPath
 }
 
 # 3. Default data + pre-seeded user Data/

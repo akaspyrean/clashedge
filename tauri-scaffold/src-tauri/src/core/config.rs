@@ -32,10 +32,34 @@ const APP_CONTROLLED_KEYS: &[&str] = &[
     "ipv6",
     "find-process-mode",
     "external-controller",
+    "external-ui",
     "secret",
     "tun",
     "dns",
+    "listeners",
+    "hosts",
+    "sniffer",
+    "script",
 ];
+
+/// 订阅内容允许透传到运行时配置的顶层键白名单。
+///
+/// 设计原则：订阅默认仅提供代理节点。应用采用内置代理组骨架（GLOBAL + 5 组）
+/// 与内置规则链，订阅自带的 proxy-groups/rules/rule-providers/proxy-providers/
+/// script/hosts/sniffer/listeners/external-controller/external-ui/dns/tun 等一律
+/// 不透传——防止订阅任意改写控制器/绕过应用分流结构/注入恶意 hosts 或 sniffer。
+///
+/// 仅 `proxies`（真实代理节点列表）允许从订阅进入运行时配置，由 step 5 注入
+/// 内置叶子组。
+const PROFILE_ALLOWED_KEYS: &[&str] = &["proxies"];
+
+/// AppConfig.extra 允许透传到运行时配置的顶层键白名单。
+///
+/// `extra` 兜底键来自用户导入的完整 mihomo 配置（import_config）。与订阅不同，
+/// 导入是用户显式行为，但仍有未知顶层字段不得无差别透传的要求。`proxies` 由
+/// step 5 统一处理；其余键（proxy-providers/hosts/sniffer/script/listeners 等）
+/// 不透传，防止导入配置携带的恶意 hosts/sniffer/script 进入运行时。
+const EXTRA_ALLOWED_KEYS: &[&str] = &[];
 
 /// 应用级 geodata-mode 值（描述 GeoData 更新来源，与 mihomo 的 geodata-mode
 /// 语义不同，这些值不会写给 mihomo）。
@@ -238,18 +262,13 @@ pub fn build_runtime_config(
         put!("geodata-mode", app.general.geodata_mode.clone());
     }
 
-    // 2) AppConfig.extra 兜底键作为基线透传（排除受控键与步骤 5 统一决定的键）
+    // 2) AppConfig.extra 兜底键：仅白名单内键透传（防止导入配置携带的
+    //    hosts/sniffer/script/proxy-providers 等未知顶层字段进入运行时配置）。
+    //    `proxies` 由 step 5 统一处理，不在此重复透传。
     for (k, v) in &app.extra {
         let Some(s) = k.as_str() else { continue };
-        if !APP_CONTROLLED_KEYS.contains(&s)
-            && !["proxies", "proxy-groups", "rules", "rule-providers"].contains(&s)
-        {
-            if s == "proxy-providers" {
-                // C3：import 的 proxy-providers 同样限定 path 到 providers/ 下
-                map.insert(k.clone(), sanitize_providers_value(v));
-            } else {
-                map.insert(k.clone(), v.clone());
-            }
+        if EXTRA_ALLOWED_KEYS.contains(&s) {
+            map.insert(k.clone(), v.clone());
         }
     }
 
@@ -267,36 +286,20 @@ pub fn build_runtime_config(
         .and_then(|v| v.as_sequence())
         .cloned();
 
-    // 4) 透传订阅非受控键；rule-providers 合并（AppConfig 为底、订阅同名覆盖）
+    // 4) 订阅仅提供代理节点：profile 顶层键只透传白名单（`proxies`），
+    //    其余一律忽略（rules/proxy-groups/rule-providers/proxy-providers/
+    //    script/hosts/sniffer/listeners/external-controller/external-ui/dns/tun
+    //    等均不透传——应用采用内置分流结构，订阅不得改写控制器或注入 hosts）。
     for (k, v) in &profile_map {
         let Some(key) = k.as_str() else { continue };
-        if APP_CONTROLLED_KEYS.contains(&key) {
-            continue; // 应用设置优先，订阅不得覆盖端口/模式/TUN/DNS
-        }
-        if key == "rule-providers" {
-            let mut providers = app.rule_providers.clone();
-            if let Some(pmap) = v.as_mapping() {
-                for (pk, pv) in pmap {
-                    providers.insert(
-                        pk.as_str().map(str::to_string).unwrap_or_default(),
-                        pv.clone(),
-                    );
-                }
-            }
-            // C3：合并后的 rule-providers 逐条限定 path（内置组已是合法相对路径
-            // 则保持原样，订阅携带的绝对路径 / `..` / 盘符路径被强制改写）。
-            put!("rule-providers", sanitize_providers_value(&serde_yaml::to_value(providers)?));
+        if !PROFILE_ALLOWED_KEYS.contains(&key) {
             continue;
         }
-        if key == "proxy-providers" {
-            // C3：订阅 proxy-providers 强制限定 path 到 providers/ 下
-            put!("proxy-providers", sanitize_providers_value(v));
+        // `proxies` 保留到 step 5 注入内置叶子组
+        if key == "proxies" {
             continue;
         }
-        if ["proxies", "proxy-groups", "rules"].contains(&key) {
-            continue; // 步骤 5 统一决定
-        }
-        map.insert(k.clone(), v.clone()); // hosts / sniffer / script 等
+        map.insert(k.clone(), v.clone());
     }
 
     // 5) proxies / proxy-groups / rules：
@@ -304,7 +307,8 @@ pub fn build_runtime_config(
     //    （规则模式固定 5 组）。订阅自带的 proxy-groups/rules 不采用（其规则引用的组
     //    在应用中不存在，整组采用会导致叶子组拿不到节点）。订阅只提供节点：
     //    节点名强制注入叶子组——人工优选（手动选择）只含真实节点不含 DIRECT，
-    //    自动优选（url-test）保留 DIRECT 作兜底（全部节点失败时直连）。
+    //    自动优选（url-test）只注入真实代理节点——DIRECT 不是代理节点，注入它会让
+    //    url-test 把直连当作零延迟最优节点永久霸占自动组，所有真实节点拿不到流量。
     let mut groups = app.proxy_groups.clone();
     if let Some(proxies) = &profile_proxies {
         let node_names: Vec<String> = proxies
@@ -320,16 +324,14 @@ pub fn build_runtime_config(
                     continue;
                 };
                 let is_leaf = gname == "人工优选" || gname == "自动优选";
-                let is_auto = gname == "自动优选";
                 if !is_leaf {
                     continue;
                 }
                 if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
                     plist.clear();
-                    if is_auto {
-                        // 自动优选：DIRECT 兜底
-                        plist.push(serde_yaml::Value::from("DIRECT"));
-                    }
+                    // 人工优选与自动优选都只注入真实代理节点。
+                    // 自动优选（url-test）不得含 DIRECT：url-test 会把直连当
+                    // 作零延迟节点永远选中，真实节点永远拿不到流量。
                     for n in &node_names {
                         plist.push(serde_yaml::Value::from(n.clone()));
                     }
@@ -421,7 +423,8 @@ proxies:
         assert!(map.get("proxy-groups").is_some());
         assert!(map.get("rules").is_some());
         // 订阅节点注入叶子组：人工优选只含真实节点（无 DIRECT），
-        // 自动优选保留 DIRECT 作 url-test 兜底
+        // 自动优选（url-test）也只含真实节点——DIRECT 不是代理节点，
+        // 注入它会让 url-test 把直连当作零延迟最优节点永久霸占自动组。
         let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
         let manual = groups
             .iter()
@@ -448,7 +451,7 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(auto_names, vec!["DIRECT", "Node1", "Node2"]);
+        assert_eq!(auto_names, vec!["Node1", "Node2"]);
     }
 
     #[test]
@@ -487,7 +490,7 @@ rules:
             vec!["GLOBAL", "扶梯出行", "人工智能", "影音视听", "人工优选", "自动优选"]
         );
         // 订阅节点强制注入叶子组（即使订阅自带 proxy-groups/rules）：
-        // 人工优选只含真实节点，自动优选保留 DIRECT 兜底
+        // 人工优选与自动优选都只含真实节点——url-test 不得含 DIRECT
         let manual = groups
             .iter()
             .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("人工优选"))
@@ -513,7 +516,7 @@ rules:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(auto_names, vec!["DIRECT", "Fast"]);
+        assert_eq!(auto_names, vec!["Fast"]);
         // 内置规则保留（引用内置组），订阅自带规则不采用
         assert_eq!(
             map.get("rules").unwrap().as_sequence().map(|s| s.len()),
@@ -528,7 +531,29 @@ rules:
 mixed-port: 9999
 mode: global
 external-controller: 0.0.0.0:9999
-secret: hacked
+external-ui: ./evil
+dns:
+  enable: false
+tun:
+  enable: true
+listeners:
+  - name: evil
+hosts:
+  example.com: 1.2.3.4
+sniffer:
+  enable: true
+script:
+  code: evil
+proxy-providers:
+  p:
+    type: http
+    url: https://evil.com/x.yaml
+    path: "C:\\evil.yaml"
+rule-providers:
+  r:
+    type: http
+    url: https://evil.com/r.yaml
+    path: "C:\\evil.yaml"
 proxies:
   - name: Fast
     type: ss
@@ -552,6 +577,32 @@ proxies:
             map.get("secret").unwrap().as_str(),
             Some("clash-edge-secret")
         );
+        // P0-2：未知顶层字段不透传——订阅携带的 hosts/sniffer/script/listeners/
+        // external-ui/dns/tun/proxy-providers/rule-providers 均不得进入运行时
+        assert!(map.get("hosts").is_none(), "hosts must not pass through");
+        assert!(map.get("sniffer").is_none(), "sniffer must not pass through");
+        assert!(map.get("script").is_none(), "script must not pass through");
+        assert!(map.get("listeners").is_none(), "listeners must not pass through");
+        assert!(map.get("external-ui").is_none(), "external-ui must not pass through");
+        assert!(map.get("proxy-providers").is_none(), "proxy-providers must not pass through");
+        // dns/tun 保持应用值（受控键），不被订阅覆盖
+        assert_eq!(
+            map.get("dns").unwrap().get("enable").and_then(|v| v.as_bool()),
+            Some(true),
+            "dns stays at app default"
+        );
+        assert_eq!(
+            map.get("tun").unwrap().get("enable").and_then(|v| v.as_bool()),
+            Some(false),
+            "tun stays at app default"
+        );
+        // rule-providers 仅应用内置 5 组，订阅 rule-providers 被忽略
+        let rp = map.get("rule-providers").unwrap().as_mapping().unwrap();
+        assert!(rp.get("r").is_none(), "subscription rule-providers must be ignored");
+        assert!(
+            rp.get("direct").is_some(),
+            "builtin rule-providers preserved"
+        );
         // 订阅节点仍生效
         assert_eq!(
             map.get("proxies").unwrap().as_sequence().map(|s| s.len()),
@@ -571,11 +622,11 @@ proxies:
         assert_eq!(merged.general.find_process_mode, "always");
     }
 
-    /// C3：订阅携带的 `proxy-providers` / `rule-providers` 若 path 为
-    /// `C:\evil.yaml` / `../../evil.yaml`，构建后必须被限定在 `providers/` 下；
-    /// path 缺失自动补全；内置组（未被订阅覆盖）的合法相对路径保持原样。
+    /// P0-2：订阅携带的 `proxy-providers` / `rule-providers` 不再透传到运行时配置
+    /// （白名单仅允许 `proxies`）。运行时仅保留应用内置 5 组 rule-providers，
+    /// 其合法相对路径保持原样。
     #[test]
-    fn build_runtime_config_sanitizes_provider_paths() {
+    fn build_runtime_config_drops_subscription_providers() {
         let app = Config::default();
         let profile = r#"
 proxy-providers:
@@ -583,48 +634,30 @@ proxy-providers:
     type: http
     url: https://example.com/x.yaml
     path: "C:\\evil.yaml"
-  p2:
-    type: http
-    url: https://example.com/y.yaml
-    path: ../../evil.yaml
 rule-providers:
   r1:
     type: http
     behavior: classical
     url: https://example.com/r.yaml
     path: "C:\\evil.yaml"
-  r2:
-    type: http
-    behavior: classical
-    url: https://example.com/r2.yaml
 "#;
 
         let runtime = build_runtime_config(&app, Some(profile)).unwrap();
         let map = runtime.as_mapping().unwrap();
 
-        // proxy-providers：绝对 Windows 路径 / `..` 穿越 → providers/ 下
-        let pp = map.get("proxy-providers").unwrap().as_mapping().unwrap();
-        assert_eq!(
-            pp["p1"]["path"].as_str(),
-            Some("providers/p1.yaml"),
-            "Windows absolute path must be rewritten"
-        );
-        assert_eq!(
-            pp["p2"]["path"].as_str(),
-            Some("providers/p2.yaml"),
-            "parent traversal must be rewritten"
+        // proxy-providers 不透传
+        assert!(
+            map.get("proxy-providers").is_none(),
+            "subscription proxy-providers must not pass through"
         );
 
-        // rule-providers：恶意 path 改写 + 缺失 path 自动补全
+        // rule-providers：仅应用内置 5 组，订阅 r1 被丢弃
         let rp = map.get("rule-providers").unwrap().as_mapping().unwrap();
-        assert_eq!(rp["r1"]["path"].as_str(), Some("providers/r1.yaml"));
-        assert_eq!(
-            rp["r2"]["path"].as_str(),
-            Some("providers/r2.yaml"),
-            "missing path should be auto-added under providers/"
+        assert!(
+            rp.get("r1").is_none(),
+            "subscription rule-providers must be dropped"
         );
-
-        // 内置 rule-providers 兜底不破坏：未被订阅覆盖的内置组 path 保持合法相对路径
+        // 内置 rule-providers 兜底不破坏：合法相对路径保持原样
         assert_eq!(
             rp["direct"]["path"].as_str(),
             Some("./rules/direct.yaml"),

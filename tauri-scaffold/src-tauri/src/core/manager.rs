@@ -36,6 +36,10 @@ use crate::util::paths::sanitize_profile_name;
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// 就绪轮询间隔
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
+/// 异常崩溃后自动重启的最大次数（超过即停止，防止无限重启）
+const MAX_AUTO_RESTARTS: u32 = 3;
+/// 自动重启的初始退避间隔（每次翻倍：2s, 4s, 8s）
+const AUTO_RESTART_BACKOFF: Duration = Duration::from_secs(2);
 
 /// Core 状态枚举
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -88,6 +92,12 @@ pub struct CoreManager {
     api_client: reqwest::Client,
     /// AppHandle（用于状态变更事件推送）
     app_handle: AppHandle,
+    /// P1-7：用户主动停止标志（stop() 设为 true，start() 清除）。
+    /// watcher 检测到崩溃时检查此标志：用户主动停止时不自动重启。
+    user_stopped: Arc<std::sync::atomic::AtomicBool>,
+    /// P1-7：自动重启计数（崩溃后递增，成功运行后重置）。
+    /// 超过 MAX_AUTO_RESTARTS 后不再重启。
+    auto_restart_count: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl CoreManager {
@@ -131,6 +141,8 @@ impl CoreManager {
                 .timeout(Duration::from_secs(10))
                 .build()?,
             app_handle,
+            user_stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            auto_restart_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         })
     }
 
@@ -203,6 +215,10 @@ impl CoreManager {
         if self.is_running() {
             self.stop().await?;
         }
+
+        // P1-7：用户主动启动 → 清除停止标志，重置自动重启计数
+        self.user_stopped
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         *self.status.lock().unwrap() = CoreStatus::Starting;
 
@@ -386,10 +402,19 @@ impl CoreManager {
     /// 退出时若系统代理仍指向本应用端口，立即关闭它——否则系统代理会继续
     /// 指向已死的 127.0.0.1:7890，所有网络请求 ERR_CONNECTION_REFUSED，
     /// 用户看起来像「断网」（BUG1 根因之三：内核崩溃后代理未自愈）。
+    ///
+    /// P1-7：异常退出后做有限次数、带退避的自动重启（用户主动停止时不拉起）。
+    /// 重启后 /version + 代理端口确认健康后才恢复系统代理。禁止无限重启。
     fn spawn_watcher(&self) {
         let status_arc = self.status.clone();
         let child_handle = self.child.clone();
         let app_handle = self.app_handle.clone();
+        let user_stopped = self.user_stopped.clone();
+        let auto_restart_count = self.auto_restart_count.clone();
+        let mihomo_path = self.mihomo_path.clone();
+        let data_dir = self.data_dir.clone();
+        let config = self.config.clone();
+        let api_client = self.api_client.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -405,40 +430,197 @@ impl CoreManager {
                 if gone {
                     // 置 child 为 None，is_running() 随之返回 false
                     child_handle.lock().unwrap().take();
-                    let mut st = status_arc.lock().unwrap();
-                    if *st != CoreStatus::Stopped && *st != CoreStatus::Stopping {
-                        *st = CoreStatus::Error("mihomo exited unexpectedly".to_string());
-                        error!("mihomo exited unexpectedly");
-                        let _ = app_handle.emit(
-                            "core-status-changed",
-                            serde_json::json!({ "status": st.to_string() }),
-                        );
-                        // 系统代理自愈：内核已死，代理指向的端口也随之失效。
-                        // 不关掉会让用户全网 ERR_CONNECTION_REFUSED。仅在配置
-                        // 意图为「开」时关闭（用户主动关的无需再动），且只清
-                        // ProxyEnable=0，不动 ProxyServer（退出还原由 main.rs 快照）。
-                        let should_clear = {
-                            let state = app_handle.state::<crate::AppState>();
-                            let cfg_mgr = state.config_manager.lock().unwrap();
-                            cfg_mgr.get_config().general.system_proxy
-                        };
-                        if should_clear {
-                            warn!("Disabling system proxy: core crashed (was pointing at dead port)");
-                            if let Err(e) = crate::proxy::system_proxy::set_system_proxy(
-                                false, "", &[],
-                            ) {
-                                error!("Failed to disable system proxy after core crash: {}", e);
+                    // 用块作用域确保 MutexGuard 在 await 之前释放（Send 约束）
+                    let (should_clear, stopped_by_user, count, backoff) = {
+                        let mut st = status_arc.lock().unwrap();
+                        if *st == CoreStatus::Stopped || *st == CoreStatus::Stopping {
+                            // 用户主动停止，不自动重启
+                            (false, true, 0, Duration::from_secs(0))
+                        } else {
+                            *st = CoreStatus::Error("mihomo exited unexpectedly".to_string());
+                            error!("mihomo exited unexpectedly");
+                            let _ = app_handle.emit(
+                                "core-status-changed",
+                                serde_json::json!({ "status": st.to_string() }),
+                            );
+                            // 系统代理自愈：内核已死，代理指向的端口也随之失效。
+                            let should_clear_val = {
+                                let state = app_handle.state::<crate::AppState>();
+                                let cfg_mgr = state.config_manager.lock().unwrap();
+                                cfg_mgr.get_config().general.system_proxy
+                            };
+                            if should_clear_val {
+                                warn!("Disabling system proxy: core crashed (was pointing at dead port)");
+                                let _ = crate::proxy::system_proxy::set_system_proxy(
+                                    false, "", &[],
+                                );
+                            }
+                            // 用户主动停止？
+                            let stopped =
+                                user_stopped.load(std::sync::atomic::Ordering::SeqCst);
+                            if stopped {
+                                info!("User stopped core; not auto-restarting");
+                                (false, true, 0, Duration::from_secs(0))
+                            } else {
+                                let cnt = auto_restart_count
+                                    .load(std::sync::atomic::Ordering::SeqCst);
+                                if cnt >= MAX_AUTO_RESTARTS {
+                                    error!(
+                                        "mihomo auto-restart limit ({}) reached; giving up",
+                                        MAX_AUTO_RESTARTS
+                                    );
+                                    (false, true, cnt, Duration::from_secs(0))
+                                } else {
+                                    auto_restart_count
+                                        .store(cnt + 1, std::sync::atomic::Ordering::SeqCst);
+                                    let b = AUTO_RESTART_BACKOFF * (1u32 << cnt);
+                                    warn!(
+                                        "Auto-restarting mihomo (attempt {}/{}) after {:?}",
+                                        cnt + 1,
+                                        MAX_AUTO_RESTARTS,
+                                        b
+                                    );
+                                    (should_clear_val, false, cnt + 1, b)
+                                }
                             }
                         }
+                    };
+                    // st 已释放
+                    if stopped_by_user {
+                        break;
                     }
-                    break;
+                    tokio::time::sleep(backoff).await;
+
+                    // 尝试重启
+                    *status_arc.lock().unwrap() = CoreStatus::Starting;
+                    let _ = app_handle.emit(
+                        "core-status-changed",
+                        serde_json::json!({ "status": "starting" }),
+                    );
+                    if !mihomo_path.exists() {
+                        error!("mihomo binary gone; cannot auto-restart");
+                        *status_arc.lock().unwrap() = CoreStatus::Error(
+                            "mihomo binary missing; cannot restart".to_string(),
+                        );
+                        break;
+                    }
+                    // 用当前配置生成运行时配置
+                    let cfg = config.read().clone();
+                    let runtime_config = data_dir.join("runtime-config.yaml");
+                    let profile = {
+                        let name = cfg.general.profile.trim();
+                        if name.is_empty() {
+                            None
+                        } else {
+                            let safe = crate::util::paths::sanitize_profile_name(name).ok();
+                            safe.and_then(|s| {
+                                let p = data_dir.join("profiles").join(format!("{}.yaml", s));
+                                std::fs::read_to_string(&p).ok()
+                            })
+                        }
+                    };
+                    match crate::core::config::build_runtime_config(&cfg, profile.as_deref()) {
+                        Ok(runtime) => {
+                            let yaml = match serde_yaml::to_string(&runtime) {
+                                Ok(y) => y,
+                                Err(e) => {
+                                    error!("Failed to serialize runtime config for restart: {}", e);
+                                    break;
+                                }
+                            };
+                            if let Err(e) = crate::util::atomic::atomic_write(&runtime_config, yaml.as_bytes()) {
+                                error!("Failed to write runtime config for restart: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to build runtime config for restart: {}", e);
+                            break;
+                        }
+                    }
+                    let mut cmd = tokio::process::Command::new(&mihomo_path);
+                    cmd.arg("-d").arg(&data_dir).arg("-f").arg(&runtime_config);
+                    cmd.current_dir(&data_dir);
+                    let logs_dir = data_dir.join("logs");
+                    let _ = std::fs::create_dir_all(&logs_dir);
+                    let stdout_file = match std::fs::File::create(logs_dir.join("mihomo-stdout.log")) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            error!("Failed to create stdout log: {}", e);
+                            break;
+                        }
+                    };
+                    let stderr_file = match std::fs::File::create(logs_dir.join("mihomo-stderr.log")) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            error!("Failed to create stderr log: {}", e);
+                            break;
+                        }
+                    };
+                    cmd.stdout(std::process::Stdio::from(stdout_file))
+                        .stderr(std::process::Stdio::from(stderr_file));
+                    #[cfg(target_os = "windows")]
+                    {
+                        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                    }
+                    match cmd.spawn() {
+                        Ok(child) => {
+                            *child_handle.lock().unwrap() = Some(child);
+                            // 就绪探测：/version 可达 + 代理端口健康后才恢复系统代理
+                            let core_manager_for_check = AutoRestartChecker {
+                                child: child_handle.clone(),
+                                api_client: api_client.clone(),
+                                config: config.clone(),
+                            };
+                            match core_manager_for_check.wait_ready_and_check_port().await {
+                                Ok(()) => {
+                                    *status_arc.lock().unwrap() = CoreStatus::Running;
+                                    auto_restart_count
+                                        .store(0, std::sync::atomic::Ordering::SeqCst);
+                                    let _ = app_handle.emit(
+                                        "core-status-changed",
+                                        serde_json::json!({ "status": "running" }),
+                                    );
+                                    info!("mihomo auto-restarted successfully");
+                                    // 继续监视新进程
+                                    continue;
+                                }
+                                Err(e) => {
+                                    error!("mihomo auto-restart failed readiness check: {}", e);
+                                    *status_arc.lock().unwrap() =
+                                        CoreStatus::Error(e.to_string());
+                                    let _ = app_handle.emit(
+                                        "core-status-changed",
+                                        serde_json::json!({ "status": format!("error: {}", e) }),
+                                    );
+                                    // 清掉起不来的僵尸进程（先取 child 再 await）
+                                    let zombie = child_handle.lock().unwrap().take();
+                                    if let Some(mut c) = zombie {
+                                        let _ = c.kill().await;
+                                    }
+                                    // 继续循环，让 watcher 再次检测 gone → 重试
+                                    continue;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to spawn mihomo on auto-restart: {}", e);
+                            *status_arc.lock().unwrap() =
+                                CoreStatus::Error(e.to_string());
+                            break;
+                        }
+                    }
                 }
+                break;
             }
         });
     }
 
     /// 停止 mihomo 进程
     pub async fn stop(&self) -> Result<()> {
+        // P1-7：标记用户主动停止，watcher 检测到崩溃时不自动重启
+        self.user_stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let child = self.child.lock().unwrap().take();
         if let Some(mut child) = child {
             info!("Stopping mihomo (PID {})", child.id().unwrap_or(0));
@@ -916,6 +1098,77 @@ fn value_as_u64(v: Option<&serde_json::Value>) -> u64 {
     v.and_then(|v| v.as_u64())
         .or_else(|| v.and_then(|v| v.as_f64()).map(|f| f as u64))
         .unwrap_or(0)
+}
+
+/// P1-7：自动重启后的就绪探测辅助（复用 CoreManager 的 /version + 端口健康检查）。
+/// 不直接用 CoreManager 方法（避免借走 self 跨 await 与 watcher 任务所有权冲突），
+/// 只取必要的 Arc 字段。
+struct AutoRestartChecker {
+    child: Arc<Mutex<Option<Child>>>,
+    api_client: reqwest::Client,
+    config: Arc<RwLock<Config>>,
+}
+
+impl AutoRestartChecker {
+    /// 轮询 /version 就绪 + 代理端口健康检查，全部通过才返回 Ok。
+    async fn wait_ready_and_check_port(&self) -> Result<()> {
+        let addr = self.config.read().proxy.external_controller.clone();
+        let base = if addr.starts_with("http://") || addr.starts_with("https://") {
+            addr
+        } else {
+            format!("http://{}", addr)
+        };
+        let url = api_url(&base, &["version"], None)?;
+        let secret = self.config.read().proxy.secret.clone();
+        let mut headers = HeaderMap::new();
+        if !secret.is_empty() {
+            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", secret)) {
+                headers.insert(AUTHORIZATION, v);
+            }
+        }
+        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+        loop {
+            let exited = self
+                .child
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|c| c.try_wait().ok().flatten());
+            if let Some(st) = exited {
+                return Err(Error::Other(format!(
+                    "mihomo exited during auto-restart startup (code {:?})",
+                    st.code()
+                )));
+            }
+            match self
+                .api_client
+                .get(url.clone())
+                .headers(headers.clone())
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => break,
+                Ok(_) | Err(_) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(Error::Other(
+                            "mihomo did not become ready after auto-restart".to_string(),
+                        ));
+                    }
+                    tokio::time::sleep(READY_POLL_INTERVAL).await;
+                }
+            }
+        }
+        // 端口健康检查：代理端口可达才恢复系统代理
+        let mixed_port = self.config.read().general.mixed_port;
+        let proxy_addr = format!("127.0.0.1:{}", mixed_port);
+        match tokio::net::TcpStream::connect(&proxy_addr).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Error::Other(format!(
+                "mihomo ready but mixed-port {} not listening: {}",
+                mixed_port, e
+            ))),
+        }
+    }
 }
 
 /// 从 mihomo 启动日志文本中提取第一个端口绑定失败（bind）行，返回可读描述。

@@ -37,6 +37,9 @@ pub enum Error {
     #[error("Config parse error: {0}")]
     ConfigParse(String),
 
+    #[error("Subscription validation error: {0}")]
+    Subscription(String),
+
     #[error("{0}")]
     Other(String),
 }
