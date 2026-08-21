@@ -1,9 +1,9 @@
-name: release
+name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -35,6 +35,17 @@ jobs:
           $m = [regex]::Match($raw, '"version"\s*:\s*"([^"]+)"')
           if (-not $m.Success) { throw "Cannot extract version from tauri.conf.json" }
           Add-Content $env:GITHUB_OUTPUT "version=$($m.Groups[1].Value)"
+
+      - name: Validate tag matches version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = "${{ steps.meta.outputs.version }}"
+          if ($tag -ne "v$ver") {
+            throw "tag '$tag' != 'v$ver' from tauri.conf.json — bump the config before tagging"
+          }
+          Write-Host "tag $tag matches config version $ver OK"
 
       - name: Create draft release
         shell: pwsh
