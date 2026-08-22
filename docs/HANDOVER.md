@@ -1,6 +1,6 @@
 # ClashEdge 工作交接日志（HANDOVER）
 
-> 最近更新：2026-08-19　版本：0.8.5　架构：Tauri 2（Rust 后端 + Vue 3 前端）+ Mihomo v1.19.20
+> 最近更新：2026-08-23　版本：1.0.0　架构：Tauri 2（Rust 后端 + Vue 3 前端）+ Mihomo v1.19.20
 
 ## 1. 项目概览
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | 产品名 | ClashEdge（原 Clash.F.Win 统一更名） |
 | 应用标识 | `com.clashedge.portable` |
-| 版本 | 0.8.5 |
+| 版本 | 1.0.0 |
 | 内核 | clash-edge-core.exe v1.19.20（sidecar） |
 | 前端 | Vue 3.5 + Pinia + Vue Router 4 + Vite 6 + Element Plus + vue-i18n |
 | 后端 | Rust（`tauri::command` + sidecar 进程管理；winreg 直写系统代理） |
@@ -28,7 +28,7 @@
 ├── tools/                 # 构建/打包脚本与图标
 │   ├── build-portable.ps1 #   打包入口（组装便携目录 + zip + SHA256；含前置/后置校验）
 │   ├── ClashEdge.ico      #   启动器图标
-│   └── ClashEdge.Launcher.R8.2.cs  # 历史启动器源码（仅存档参考，不再使用）
+│   └── ClashEdge.Launcher.R8.2.cs  # C# 根启动器源码（build-portable.ps1 每次打包时用 csc.exe 编译为便携包根目录的 ClashEdge.exe）
 ├── docs/                  # 文档
 │   ├── HANDOVER.md        #   （本文档）
 │   ├── RELEASE_REPORT.md  #   0.8.5 稳定版发布报告
@@ -62,7 +62,25 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
 
 > 脚本注意事项：release 目录变量名为 **`$releaseDir`**。不要改名为 `$rel`——脚本文件清单循环（`Get-ChildItem ... | ForEach-Object`）已占用 `$rel` 作相对路径循环变量，同名会导致 zip 目标路径错乱（曾因此打包失败，已修复）。
 
-## 4. 本次修订记录（0.8.5）
+## 4. 修订记录
+
+### 1.0.0（当前版本，2026-08-23）
+
+- **核心启动修复（零节点路径）**：mihomo v1.19.20 拒绝 proxies 为空的代理组；零订阅时自动优选组整体不生成（保持"url-test 只含真实节点"约束），其余组引用同步剔除，人工优选补 DIRECT 兜底——无订阅也能启动核心并全量直连。测试 `build_runtime_config_zero_nodes_drops_auto_group_keeps_manual_direct` / `..._subscription_restores_full_group_structure` 覆盖。
+- **设计系统 v1.0 固化**：新增 `docs/DESIGN_SYSTEM.md`（Quiet Power 品牌性格、Flyme 3 + Apple 融合原则、WCAG AA 对比度实测表）；`styles.css` token 化补齐间距/动效 token，深色色板按 Apple HIG 海拔分层重调（accent `#77A7FF`→`#4E8FFF`）。
+- **UI 全局统一**：页面标题与导航名一致（代理/配置/连接，i18n zh+en）；工具栏统一左对齐序列；状态指示统一「小圆点+文字」语言（概览/日志页）；danger 按钮全应用 plain 化；配置卡按钮语义收敛（激活=primary plain，更新/重命名=默认，删除=danger plain）。
+- **修复卡片头贴边 bug**：DashboardView 双值 `--el-card-padding: 20px 24px` 导致 EP 的 `calc()` 失效、头部内边距归零；改单值 token 并在全局显式定死头部内边距兜底。
+- **默认窗口 832×554**（初版 850×603 → 1080×720 → 756×504 → ×1.1），窄窗断点同步收紧至 749px——首启即展示带文字侧栏；最小尺寸 560×400。
+- **P1-m 确认已修**：设置页导入走后端 `read_import_file` 命令，前端零 fs 依赖（RELEASE-GATE 阻断项解除）。
+- 版本号三处一致：tauri.conf.json / package.json / Cargo.toml = 1.0.0。
+
+### 0.8.7（历史）
+
+- **从 Delta 项目移植工程化基建**：CI best practices（ci.yml、workflow_dispatch、版本号校验）、release workflow（幂等 draft、`--clobber` 覆盖、并发锁、过期 draft 清理）、路径泄露扫描与稳定文件名下载。
+- **自动更新基础设施移植（半成品）**：注册 `tauri-plugin-updater` 并在 `tauri.conf.json` 配置 endpoints，但 pubkey 为空、无任何检查更新的前后端逻辑——**不可用**，Phase 3 将重做 Portable Updater 并移除该半成品（见 `docs/AUDIT-0.8.7.md`）。
+- Phase 0 基线审计完成，产出 `docs/AUDIT-0.8.7.md` 与 `docs/RELEASE-GATE.md`。
+
+### 0.8.5（历史）
 
 1. **代理组结构按规范重排（6 组，含 GLOBAL）**：主组「扶梯出行」，下辖「人工智能」「影音视听」两个场景组，每组可选「人工优选 / 自动优选」；
    - 顶部另设 GLOBAL：`type: select`，成员 `[DIRECT, REJECT, 人工优选, 自动优选]`——全局模式专用组（`mode: global` 时所有流量走它），仅存在于配置；代理页面按模式联动显示（rule 隐藏 GLOBAL / global 独占显示 / direct 显示直连提示，前端 `ProxiesView` 实现），托盘保留以便 global 模式切换目标。
@@ -149,10 +167,26 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
 - **旧版 Clash.F.Win 端口冲突（重点）**：若旧版 Clash.F.Win（Electron）仍在运行，会占用 `127.0.0.1:7890` 与 DNS `9053`，新内核绑定失败。新版本会如实报错（顶部红条），**不会**再假装运行中。用户需先关闭旧版。
 - **规则集网络刷新**：`direct/proxy/media/ai/ad` 为 HTTP 型 rule-provider，首次用内置本地文件；若机器无法直连 `raw.githubusercontent.com`（无可用代理），刷新会失败但保留本地已加载规则，不影响启动。
 - **构建仍打包、但运行时未调用的侧车**：`go-tun2socks.exe`（2.8 MB）、`EnableLoopback.exe`（75 KB）。TUN 实际走 mihomo 原生 `tun.enable`（wintun.dll），Rust 从不启动这两个 sidecar。**保留以防 TUN 回归，未删除**；后续确认无用时，可连同 `build-portable.ps1` 的拷贝行一起移除（精简候选）。
-- **启动器已废弃并删除**：`tools/ClashEdge.exe`（~8.7KB 编译产物，2026-08-19 已删除），`ClashEdge.Launcher.R8.2.cs` 源码留档参考。原生便携布局下 `ClashEdge.exe` 就是 Tauri 应用本体，不再需要启动器。
+- **启动器说明（重要，勿再误记为"已废弃"）**：便携包**根目录的 `ClashEdge.exe` 就是 C# 启动器**——`tools/build-portable.ps1` 每次打包都会用 .NET Framework 的 `csc.exe` 把 `tools/ClashEdge.Launcher.R8.2.cs` 编译为 `portable-out/ClashEdge.exe`（带 cat.ico 图标），由它拉起 `App/ClashEdge/ClashEdge.exe`（Tauri 应用本体）。2026-08-19 删除的是仓库里残留的历史编译产物 `tools/ClashEdge.exe`（~8.7KB），`.cs` 源码与编译流程至今仍在使用。
 - **开发卫生约定**：终止进程必须 PID + ExecutablePath 双重校验（且仅限测试目录）；任何文件不得残留订阅地址/密钥等非程序必需数据；不允许通过隐藏错误/吞异常/删功能让构建假成功。
 
-## 7. 协作文档
+## 7. Phase 0 基线（0.8.7 审计与发布门禁）
+
+2026-08-22 基于 commit `9c6b203`（v0.8.7）完成发布级审查，产出两份基线文档，是后续所有开发的必读材料：
+
+- **`docs/AUDIT-0.8.7.md`** —— 审查报告：总体结论表、P0 问题清单（配置迁移静默丢数据、先改内存后落盘、Settings 假保存、reload 吞错、崩溃自愈不恢复系统代理、多 watcher 竞态、崩溃循环计数清零）、P1 清单、工程目标六条硬原则、分阶段路线图（Phase 1 = 0.8.8 状态一致性，6 个 PR）。
+- **`docs/RELEASE-GATE.md`** —— 发布前逐项实测清单：构建校验 / 生命周期与状态一致性 / 网络安全 / Windows 环境恢复 / 便携包 / 更新链路 / UI 与国际化，含 1.0 测试矩阵全量场景与当前已知阻断项（Settings 文件导入的 fs 权限问题）。
+
+约定：任何新会话接手开发前，先读这两份文档；修复 P0 时以 AUDIT 的验收标准为准；发版前必须过 RELEASE-GATE。
+
+## 8. 当前架构要点
+
+- **AppConfig 与运行时配置分离**：`Data/config.yaml` 是应用配置（AppConfig，含 profile 激活名 / locale / geodata-mode 等），mihomo 实际加载的是由 `core::config::build_runtime_config`（AppConfig + 激活 Profile 合并）生成并原子写入的 `Data/runtime-config.yaml`。应用配置不再直接喂给内核。
+- **单一数据源共享 Arc**：`ConfigManager` 持有 `Arc<parking_lot::RwLock<Config>>`，`CoreManager` 共享同一个 Arc——所有读取/修改走同一把锁，托盘、命令层、watcher 读到的都是同一份状态。已知缺陷见 AUDIT P0-2（set_config 先改内存后落盘）。
+- **runtime.rs 统一编排层**：`core/runtime.rs` 提供 `apply_proxy_mode` / `apply_tun` / `apply_system_proxy` / `refresh_tray` 等入口，前端命令与托盘事件都走这里，统一遵循「校验 → 持久化 → 重生成 runtime-config → 实时下发 → 失败回滚 → 推送事件刷新托盘」链路。
+- **便携布局**：便携包根目录为 `ClashEdge.exe`（C# 启动器，csc 编译）+ `App/`（Tauri 应用本体 clash-edge-core.exe sidecar + DefaultData + portable.dat 标记）+ `Data/`（用户数据：config.yaml / runtime-config.yaml / profiles / logs / 规则集）+ `Other/`（附属资源）。portable.dat 或 App 内核存在即判定便携模式，mihomo 固定解析 `<exe_dir>/App/clash-edge-core.exe`，无 %APPDATA% 回退。
+
+## 9. 协作文档
 
 - 多智能体协作规则见 `.claude/CLAUDE.md`（默认并行优先，探索/测试/Review 优先并行，核心修改由单一 Agent 实施）。
 - 本文件为当前事实来源；`docs/archive/` 内文档不代表当前实现，仅追溯参考。
