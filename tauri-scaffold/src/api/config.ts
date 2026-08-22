@@ -56,6 +56,10 @@ export interface ProfilesConfig {
 export interface ClashConfig {
   "mixed-port": number;
   "allow-lan": boolean;
+  /** allow-lan 的绑定地址："*" 或具体 IP；后端仅在 allow-lan 时写入 mihomo。 */
+  "bind-address"?: string | null;
+  /** 局域网访问 CIDR 白名单；非法值由后端兜底丢弃。 */
+  "lan-allowed-ips"?: string[];
   "log-level": string;
   ipv6: boolean;
   "geodata-mode": string;
@@ -81,4 +85,6 @@ export const configApi = {
   reset: () => invoke<void>("reset_config"),
   export: () => invoke<string>("export_config"),
   import: (yaml: string) => invoke<void>("import_config", { yaml }),
+  /** 读取待导入的 YAML 文件（后端校验扩展名与 10MB 上限）。 */
+  readImportFile: (path: string) => invoke<string>("read_import_file", { path }),
 };

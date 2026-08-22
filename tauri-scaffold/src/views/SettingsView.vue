@@ -7,9 +7,9 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile } from "@tauri-apps/plugin-fs";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { configApi, type ClashConfig } from "@/api/config";
+import { updateApi } from "@/api/update";
 import type { GeoDataStatus } from "@/api/geodata";
 import { geodataApi } from "@/api/geodata";
 import { proxyApi } from "@/api/proxy";
@@ -27,8 +27,13 @@ const coreStore = useCoreStore();
 
 const cfg = computed(() => configStore.config ?? ({} as ClashConfig));
 
-const theme = ref<"dark" | "light">(getTheme());
+const theme = ref<"system" | "dark" | "light">(getTheme());
 watch(theme, (v) => setTheme(v), { immediate: true });
+
+// 响应式 tabs：设置页容器宽 < 700px 时切为顶部布局，避免左置标签挤压内容。
+const pageEl = ref<HTMLElement | null>(null);
+const compactTabs = ref(false);
+let resizeObserver: ResizeObserver | undefined;
 
 const tunInterface = computed({
   get: () => cfg.value.tun["interface-name"] ?? "",
@@ -53,6 +58,70 @@ const geoUpdating = ref(false);
 const autostart = ref(false);
 const autostartLoading = ref(false);
 
+const tunLoading = ref(false);
+
+// 0.8.10 Portable Updater
+const updateLoading = ref(false);
+const updateMsg = ref("");
+const stagedVersion = ref("");
+
+async function refreshStaged() {
+  try {
+    const pending = await updateApi.staged();
+    stagedVersion.value = pending?.version ?? "";
+  } catch {
+    stagedVersion.value = "";
+  }
+}
+
+async function onCheckUpdate() {
+  updateLoading.value = true;
+  updateMsg.value = "";
+  try {
+    const status = await updateApi.check();
+    if (status.status === "available") {
+      updateMsg.value = t("about.update_available", { version: status.version });
+      await updateApi.download(status);
+      stagedVersion.value = status.version;
+      ElMessage.success(t("about.update_staged", { version: status.version }));
+    } else {
+      updateMsg.value = t("about.up_to_date");
+    }
+  } catch (e) {
+    updateMsg.value = t("about.update_failed", { error: String(e) });
+  } finally {
+    updateLoading.value = false;
+  }
+}
+
+const allowLanAdvancedOpen = ref<string[]>([]);
+
+/** 局域网 CIDR 白名单：输入框逗号/换行分隔文本 <-> string[]。 */
+const lanAllowedIpsText = computed({
+  get: () => cfg.value["lan-allowed-ips"]?.join(", ") ?? "",
+  set: (v: string) => {
+    const list = v
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    cfg.value["lan-allowed-ips"] = list.length ? list : undefined;
+  },
+});
+
+/** 轻量 CIDR 形态校验：IPv4 x.x.x.x/n（0-32）或含 ":" 的 IPv6 前缀。 */
+function isValidCidr(entry: string): boolean {
+  if (entry.includes(":")) return true; // IPv6 前缀，仅做形态放行
+  const m = entry.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/);
+  if (!m) return false;
+  if (Number(m[2]) > 32) return false;
+  return m[1].split(".").every((oct) => Number(oct) <= 255);
+}
+
+const lanAllowedIpsWarning = computed(() => {
+  const bad = (cfg.value["lan-allowed-ips"] ?? []).filter((e) => !isValidCidr(e));
+  return bad.length ? `${t("general.lan_ips_invalid")}: ${bad.join(", ")}` : "";
+});
+
 // 托盘触发 geo 更新/回滚、开机自启切换时，本页对应状态要跟随刷新
 // （后端 updater/tray 会 emit 事件；前端在此监听，保证跨入口一致）。
 let unlisteners: UnlistenFn[] = [];
@@ -64,6 +133,7 @@ onMounted(async () => {
   } catch {
     geo.value = null;
   }
+  refreshStaged();
   try {
     autostart.value = await utilApi.getAutostart();
   } catch {
@@ -81,11 +151,19 @@ onMounted(async () => {
     await listen("geodata-rolled-back", onGeoChanged),
     await listen("autostart-changed", onAutostartChanged),
   ];
+
+  // 容器宽度驱动 tabs 布局（ResizeObserver，无需第三方库）。
+  resizeObserver = new ResizeObserver((entries) => {
+    compactTabs.value = entries[0].contentRect.width < 700;
+  });
+  if (pageEl.value) resizeObserver.observe(pageEl.value);
 });
 
 onUnmounted(() => {
   unlisteners.forEach((fn) => fn());
   unlisteners = [];
+  resizeObserver?.disconnect();
+  resizeObserver = undefined;
 });
 
 function fmtSize(bytes: number): string {
@@ -185,7 +263,43 @@ async function onReset() {
   }
 }
 
-/** 导入配置：文件对话框选取 .yaml/.yml → 自动读取内容 → 后端解析导入并生效。 */
+/** TUN 开关（代理 Tab 与 TUN Tab 共用）：走编排层 set_tun_mode
+ *  （持久化 → 重写 runtime → PATCH 运行中核心 → 失败重启回退），
+ *  成功后同步本地 store；不再直接改配置走整包保存。 */
+async function onTunEnableChange(val: boolean) {
+  tunLoading.value = true;
+  try {
+    await proxyApi.setTunMode(val);
+    if (configStore.config) configStore.config.tun.enable = val;
+    ElMessage.success(t("common.success"));
+  } catch (e) {
+    ElMessage.error(String(e));
+    // 编排命令失败时后端会回退，本地从后端恢复真实状态。
+    await configStore.load().catch(() => {});
+  } finally {
+    tunLoading.value = false;
+  }
+}
+
+/** 允许局域网开关：从关到开时先确认安全风险，取消则保持关闭。 */
+async function onAllowLanChange(val: boolean | string | number) {
+  const enable = Boolean(val);
+  if (!enable) {
+    cfg.value["allow-lan"] = false;
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(t("general.allow_lan_confirm"), t("common.confirm"), {
+      type: "warning",
+    });
+  } catch {
+    return; // 取消：UI 保持关闭
+  }
+  cfg.value["allow-lan"] = true;
+}
+
+/** 导入配置：文件对话框选取 .yaml/.yml → 后端读取内容
+ *  （read_import_file：校验扩展名与大小上限）→ 解析导入并生效。 */
 async function onImportConfig() {
   try {
     const file = await open({
@@ -193,7 +307,7 @@ async function onImportConfig() {
       filters: [{ name: "YAML", extensions: ["yaml", "yml"] }],
     });
     if (typeof file !== "string") return; // 用户取消
-    const content = await readTextFile(file);
+    const content = await configApi.readImportFile(file);
     await configApi.import(content);
     await configStore.load();
     ElMessage.success(t("advanced.import_config_done"));
@@ -227,10 +341,10 @@ async function onUpdateGeo() {
 </script>
 
 <template>
-  <div v-if="configStore.config" class="page">
+  <div v-if="configStore.config" ref="pageEl" class="page">
     <h2 class="page-title">{{ $t("settings.title") }}</h2>
 
-    <el-tabs tab-position="left" class="settings-tabs">
+    <el-tabs :tab-position="compactTabs ? 'top' : 'left'" class="settings-tabs">
       <!-- 常规 -->
       <el-tab-pane :label="$t('settings.tabs.general')">
         <el-form label-width="150px" class="settings-form">
@@ -250,8 +364,9 @@ async function onUpdateGeo() {
           </el-form-item>
           <el-form-item :label="$t('settings.theme')">
             <el-radio-group v-model="theme">
-              <el-radio-button value="dark">{{ $t("settings.theme_dark") }}</el-radio-button>
+              <el-radio-button value="system">{{ $t("settings.theme_system") }}</el-radio-button>
               <el-radio-button value="light">{{ $t("settings.theme_light") }}</el-radio-button>
+              <el-radio-button value="dark">{{ $t("settings.theme_dark") }}</el-radio-button>
             </el-radio-group>
           </el-form-item>
           <el-form-item :label="$t('settings.autostart')">
@@ -262,7 +377,37 @@ async function onUpdateGeo() {
             <el-input-number v-model="cfg['mixed-port']" :min="1" :max="65535" />
           </el-form-item>
           <el-form-item :label="$t('general.allow_lan')">
-            <el-switch v-model="cfg['allow-lan']" />
+            <div class="allow-lan-block">
+              <el-switch
+                :model-value="cfg['allow-lan']"
+                @change="onAllowLanChange"
+              />
+              <el-collapse v-model="allowLanAdvancedOpen" class="lan-advanced">
+                <el-collapse-item :title="$t('general.lan_advanced')" name="lan">
+                  <el-form-item :label="$t('general.bind_address')" label-width="120px">
+                    <el-input
+                      v-model="cfg['bind-address']"
+                      style="width: 300px"
+                      :placeholder="$t('general.bind_address_placeholder')"
+                      clearable
+                    />
+                  </el-form-item>
+                  <el-form-item :label="$t('general.lan_allowed_ips')" label-width="120px">
+                    <div class="lan-ips">
+                      <el-input
+                        v-model="lanAllowedIpsText"
+                        type="textarea"
+                        :rows="2"
+                        :placeholder="$t('general.lan_allowed_ips_placeholder')"
+                      />
+                      <span v-if="lanAllowedIpsWarning" class="lan-ips-warning">
+                        {{ lanAllowedIpsWarning }}
+                      </span>
+                    </div>
+                  </el-form-item>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
           </el-form-item>
           <el-form-item :label="$t('general.ipv6')">
             <el-switch v-model="cfg.ipv6" />
@@ -326,7 +471,11 @@ async function onUpdateGeo() {
             <el-switch v-model="cfg['mixin-enabled']" />
           </el-form-item>
           <el-form-item :label="$t('proxy.tun_mode')">
-            <el-switch v-model="cfg.tun.enable" />
+            <el-switch
+              :model-value="cfg.tun.enable"
+              :loading="tunLoading"
+              @change="onTunEnableChange"
+            />
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
@@ -338,7 +487,11 @@ async function onUpdateGeo() {
       <el-tab-pane :label="$t('settings.tabs.tun')">
         <el-form label-width="150px" class="settings-form">
           <el-form-item :label="$t('tun.enable')">
-            <el-switch v-model="cfg.tun.enable" />
+            <el-switch
+              :model-value="cfg.tun.enable"
+              :loading="tunLoading"
+              @change="onTunEnableChange"
+            />
           </el-form-item>
           <el-form-item :label="$t('tun.stack')">
             <el-select v-model="cfg.tun.stack" style="width: 300px">
@@ -411,6 +564,17 @@ async function onUpdateGeo() {
             {{ coreStore.status.version ?? "—" }}
           </el-descriptions-item>
         </el-descriptions>
+
+        <!-- 0.8.10 Portable Updater -->
+        <div style="margin-top: 16px">
+          <el-button :loading="updateLoading" @click="onCheckUpdate">
+            {{ $t("about.check_update") }}
+          </el-button>
+          <span v-if="updateMsg" class="update-msg">{{ updateMsg }}</span>
+        </div>
+        <div v-if="stagedVersion" class="update-msg" style="margin-top: 8px">
+          {{ $t("about.update_staged", { version: stagedVersion }) }}
+        </div>
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -446,5 +610,26 @@ async function onUpdateGeo() {
   margin-left: 10px;
   font-size: 12px;
   color: var(--text-tertiary);
+}
+
+.allow-lan-block {
+  width: 100%;
+}
+
+.lan-advanced {
+  margin-top: 4px;
+  border-top: none;
+  border-bottom: none;
+}
+
+.lan-ips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lan-ips-warning {
+  font-size: 12px;
+  color: var(--el-color-warning);
 }
 </style>

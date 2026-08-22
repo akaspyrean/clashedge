@@ -1,11 +1,24 @@
 // src-tauri/src/commands/config.rs
 //! 配置命令：获取/更新/重置/导入/导出配置
 //!
+//! P0-3/P0-4 事务化（AUDIT-0.8.7）：
+//! update / reset / import 统一走 `commit_config_transaction`：
+//!
+//! ```text
+//! 快照旧配置 → 校验新配置 → 持久化(disk-first) → 重写 runtime-config
+//!   → 热重载/重启运行中的核心 → 失败则回滚持久化并恢复运行时 → 返回 Err
+//! ```
+//!
+//! 任何一步失败都会把磁盘、内存、Mihomo 运行时恢复到操作前状态；
+//! UI 的"保存成功"因此等价于「磁盘 + Mihomo 实际状态」一致。
+//!
 //! 更新/重置/导入都会改变托盘菜单展示的配置项（模式/系统代理/TUN/混合/
 //! 激活 Profile/语言），因此命令完成后再刷新托盘菜单勾选态与文案。
 
-use crate::util::error::Result;
+use crate::config::model::Config;
+use crate::util::error::{Error, Result};
 use tauri::{command, AppHandle, State};
+use tracing::{error, warn};
 
 #[command]
 pub async fn get_config(state: State<'_, crate::AppState>) -> Result<serde_json::Value> {
@@ -20,9 +33,7 @@ pub async fn get_config(state: State<'_, crate::AppState>) -> Result<serde_json:
         if obj.contains_key("secret") {
             obj.insert(
                 "secret".to_string(),
-                serde_json::Value::String(
-                    crate::config::model::SECRET_REDACTED.to_string(),
-                ),
+                serde_json::Value::String(crate::config::model::SECRET_REDACTED.to_string()),
             );
         }
     }
@@ -35,22 +46,88 @@ pub async fn update_config(
     state: State<'_, crate::AppState>,
     config: serde_json::Value,
 ) -> Result<()> {
-    {
-        let mut config_guard = state.config_manager.lock().unwrap();
-        config_guard.update_config(config)?;
-    }
+    let new_config = {
+        let config_guard = state.config_manager.lock().unwrap();
+        config_guard.prepare_update(config)?
+    };
+    commit_config_transaction(&state, new_config).await?;
     crate::core::runtime::refresh_tray(&app).await
 }
 
 #[command]
 pub async fn reset_config(app: AppHandle, state: State<'_, crate::AppState>) -> Result<()> {
-    {
-        let mut config_guard = state.config_manager.lock().unwrap();
-        config_guard.reset_config()?;
-    }
-    // 重置后按新配置重载核心（否则界面变了、运行中仍是旧配置）。
-    reload_running_core(&state).await;
+    // set_config 内部会把默认占位密钥轮换为随机值（H1）
+    commit_config_transaction(&state, Config::default()).await?;
     crate::core::runtime::refresh_tray(&app).await
+}
+
+/// P1-13：设置页「从文件导入 YAML」的文件读取收口到 Rust 侧。
+/// 前端只传用户在系统对话框中选择的路径，这里校验扩展名（.yaml/.yml）
+/// 与大小上限（10 MB）后读取内容返回——不给 WebView 开放通用 fs 读权限，
+/// capability 保持只有 dialog 权限。
+#[command]
+pub async fn read_import_file(path: String) -> Result<String> {
+    let p = std::path::Path::new(&path);
+    let ext_ok = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "yaml" | "yml"))
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err(Error::InvalidArgument(
+            "仅支持导入 .yaml / .yml 配置文件".to_string(),
+        ));
+    }
+    if !p.is_file() {
+        return Err(Error::NotFound(format!("文件不存在：{}", path)));
+    }
+    const MAX_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
+    let meta = std::fs::metadata(p)?;
+    if meta.len() > MAX_IMPORT_BYTES {
+        return Err(Error::InvalidArgument(
+            "配置文件超过 10 MB 大小限制".to_string(),
+        ));
+    }
+    std::fs::read_to_string(p).map_err(|e| Error::InvalidArgument(format!("读取文件失败：{}", e)))
+}
+
+/// 事务式提交配置变更：校验已完成，这里执行「持久化 → 应用运行时 → 失败回滚」。
+async fn commit_config_transaction(
+    state: &State<'_, crate::AppState>,
+    new_config: Config,
+) -> Result<()> {
+    // 1. 快照旧配置（回滚基准）
+    let old = { state.config_manager.lock().unwrap().get_config() };
+
+    // 2. 持久化新配置（disk-first：落盘成功才提交内存）
+    {
+        let mut guard = state.config_manager.lock().unwrap();
+        guard.set_config(new_config)?;
+    }
+
+    // 3. 应用到运行时：重写 runtime-config.yaml + 热重载/重启运行中的核心。
+    //    核心未运行时 reload_running_core 只重写文件，不会失败于此路径之外。
+    if let Err(e) = reload_running_core(state).await {
+        error!("Config change failed to apply ({}); rolling back", e);
+
+        // 4a. 回滚持久化（内存 + 磁盘恢复旧值）
+        {
+            let mut guard = state.config_manager.lock().unwrap();
+            guard.set_config(old).map_err(|rb| {
+                error!("Rollback persist failed: {}", rb);
+                rb
+            })?;
+        }
+
+        // 4b. 尽力把运行时也拉回旧配置（失败不掩盖原始错误）
+        if let Err(rb) = reload_running_core(state).await {
+            warn!("Rollback runtime restore failed: {}", rb);
+        }
+
+        return Err(Error::Other(format!("配置已保存但应用失败，已回滚：{}", e)));
+    }
+
+    Ok(())
 }
 
 /// 导出当前完整配置为一份可直接使用的 mihomo 配置文件。
@@ -80,7 +157,8 @@ pub async fn export_config(app: AppHandle, state: State<'_, crate::AppState>) ->
     };
 
     // 生成运行时配置并落盘
-    let mut runtime = crate::core::config::build_runtime_config(&config, profile_content.as_deref())?;
+    let mut runtime =
+        crate::core::config::build_runtime_config(&config, profile_content.as_deref())?;
     // 导出脱敏：控制器密钥替换为占位符，避免导出文件泄露真实 secret。
     // 注意：节点密码（proxies 内 password/uuid 等）仍是敏感信息，导出后需妥善保管。
     if let Some(map) = runtime.as_mapping_mut() {
@@ -96,30 +174,31 @@ pub async fn export_config(app: AppHandle, state: State<'_, crate::AppState>) ->
     Ok(export_path.to_string_lossy().to_string())
 }
 
-/// 从 YAML 导入配置并使其生效：解析 → 校验 → 落盘 → 重建运行时 → 重载核心。
+/// 从 YAML 导入配置并使其生效：解析 → 校验 → 落盘 → 重建运行时 → 重载核心
+/// （P0-4：全程事务，任一步失败回滚到操作前状态并返回 Err）。
 #[command]
 pub async fn import_config(
     app: AppHandle,
     state: State<'_, crate::AppState>,
     yaml: String,
 ) -> Result<()> {
-    {
-        let mut config_guard = state.config_manager.lock().unwrap();
-        config_guard.import_config(yaml)?;
-    }
-    // 导入的参数立即生效（重建 runtime-config + 重载运行中的核心）
-    reload_running_core(&state).await;
+    let new_config = {
+        let config_guard = state.config_manager.lock().unwrap();
+        config_guard.prepare_import(yaml)?
+    };
+    commit_config_transaction(&state, new_config).await?;
     crate::core::runtime::refresh_tray(&app).await
 }
 
-/// 重建运行时配置并热重载运行中的核心；核心未运行时仅重写文件
-/// （下次启动自然加载新配置）。reload_config 内部会先重写 runtime-config.yaml。
-async fn reload_running_core(state: &State<'_, crate::AppState>) {
+/// 重建运行时配置并对运行中的核心生效（热重载，失败回退整进程重启）。
+///
+/// P0-4：错误必须向上传播——旧实现把 reload 失败吞成 warn 日志后返回成功，
+/// 导致「新配置已写盘但 Mihomo 仍用旧值」的假成功。核心未运行时不报错：
+/// 文件已重写，下次启动自然加载新配置。
+async fn reload_running_core(state: &State<'_, crate::AppState>) -> Result<()> {
     let core_guard = state.core_manager.lock().await;
     if let Some(core) = core_guard.as_ref() {
-        if let Err(e) = core.reload_config().await {
-            tracing::warn!("Failed to reload core after config change: {}", e);
-        }
+        core.reload_config().await?;
     }
-    // guard 在函数返回时释放
+    Ok(())
 }

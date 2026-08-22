@@ -38,7 +38,10 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REDIRECTS: usize = 3;
 
 /// 拉取请求 User-Agent（部分订阅/下载服务器要求非空 UA）
-const USER_AGENT_VALUE: &str = "ClashEdge/0.8.5";
+/// 版本号取自 Cargo 包版本，避免发版后 UA 漂移
+fn user_agent() -> String {
+    format!("ClashEdge/{}", env!("CARGO_PKG_VERSION"))
+}
 
 /// SSRF 防护：校验目标 URL 是否允许被拉取（异步，含非 IP 主机名 DNS 检查）。
 ///
@@ -53,12 +56,14 @@ const USER_AGENT_VALUE: &str = "ClashEdge/0.8.5";
 /// 返回已校验的解析地址列表（供调用方钉定连接，关闭 TOCTOU）。
 pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
     validate_url_sync(url)?;
-    let parsed = Url::parse(url)
-        .map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
+    let parsed =
+        Url::parse(url).map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
     let Some(host) = parsed.host_str() else {
         return Err(Error::InvalidArgument("URL has no host".to_string()));
     };
-    let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+    let port = parsed
+        .port()
+        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
 
     // 字面 IP 已在 sync 阶段校验；这里返回单元素列表供钉定
     if let Some(ip) = parse_host_ip(host) {
@@ -66,15 +71,13 @@ pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
     }
 
     // 非 IP 主机名：DNS 解析后逐个校验
-    let addrs = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| {
-            // DNS 解析失败不得默认放行——防止 DNS 故障/劫持时放行内网地址
-            Error::InvalidArgument(format!(
-                "URL host '{}' DNS lookup failed ({}); rejected (fail-closed)",
-                host, e
-            ))
-        })?;
+    let addrs = tokio::net::lookup_host((host, port)).await.map_err(|e| {
+        // DNS 解析失败不得默认放行——防止 DNS 故障/劫持时放行内网地址
+        Error::InvalidArgument(format!(
+            "URL host '{}' DNS lookup failed ({}); rejected (fail-closed)",
+            host, e
+        ))
+    })?;
     let addrs: Vec<SocketAddr> = addrs.collect();
     if addrs.is_empty() {
         return Err(Error::InvalidArgument(format!(
@@ -99,8 +102,8 @@ pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
 /// 供重定向目标预检与 `validate_url` 的字面量阶段调用（策略回调是同步的，
 /// 无法 await DNS，因此只做字面量校验）。
 fn validate_url_sync(url: &str) -> Result<()> {
-    let parsed = Url::parse(url)
-        .map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
+    let parsed =
+        Url::parse(url).map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(Error::InvalidArgument(format!(
@@ -189,15 +192,56 @@ fn no_redirect_policy() -> Policy {
 /// 解析失败即拒绝）；校验返回的已验地址用 `resolve()` 钉定到客户端，
 /// 避免连接时重新解析。重定向到新主机名时逐跳做完整异步校验再钉定。
 pub async fn get_direct_first(app: &AppHandle, url: &str) -> Result<reqwest::Response> {
+    get_direct_first_with_timeout(app, url, Some(TIMEOUT)).await
+}
+
+/// 大文件下载变体：`total_timeout=None` 时不设总超时（reqwest 的 `timeout()`
+/// 覆盖整个请求周期含 body 读取，30s 会掐死几十 MB 的 geoip.dat 下载）。
+/// 仅保留连接超时；调用方必须自行以「大小上限 + 整体 deadline」兜底，
+/// 防止慢速/恶意源把下载任务无限挂起。
+pub async fn get_direct_first_streaming(app: &AppHandle, url: &str) -> Result<reqwest::Response> {
+    get_direct_first_with_timeout(app, url, None).await
+}
+
+/// P1-4：整条请求链（含全部重定向跳）保持同一路由语义。
+/// 直连尝试的整个重定向链强制直连；代理兜底的整条链固定走本地代理。
+/// 旧实现重定向跳重建 client 时未继承 no_proxy/proxy，会回落到
+/// 系统代理/环境变量，导致同一链路前后两跳走不同网络路径。
+#[derive(Clone, Copy)]
+enum FetchRoute {
+    Direct,
+    LocalProxy,
+}
+
+/// 把路由语义应用到 client builder（首跳与每个重定向跳统一走这里）
+fn apply_route(
+    builder: reqwest::ClientBuilder,
+    route: FetchRoute,
+    proxy_url: &str,
+) -> Result<reqwest::ClientBuilder> {
+    Ok(match route {
+        FetchRoute::Direct => builder.no_proxy(),
+        FetchRoute::LocalProxy => builder.proxy(Proxy::all(proxy_url)?),
+    })
+}
+
+async fn get_direct_first_with_timeout(
+    app: &AppHandle,
+    url: &str,
+    total_timeout: Option<Duration>,
+) -> Result<reqwest::Response> {
     // SSRF 防护：目标 URL 必须通过校验（含 DNS 禁段检查，返回已验地址）
     let resolved = validate_url(url).await?;
 
     // 1. 直连尝试（no_proxy：忽略系统代理/环境代理，强制直连）
-    let direct = build_client_with_resolved(url, &resolved)?
-        .no_proxy()
-        .redirect(no_redirect_policy())
-        .build()?;
-    match send_and_follow(&direct, url, USER_AGENT_VALUE).await {
+    let direct = apply_route(
+        build_client_with_resolved(url, &resolved, total_timeout)?,
+        FetchRoute::Direct,
+        "",
+    )?
+    .redirect(no_redirect_policy())
+    .build()?;
+    match send_and_follow(&direct, url, FetchRoute::Direct, "").await {
         Ok(resp) if resp.status().is_success() => return Ok(resp),
         Ok(resp) => {
             warn!(
@@ -207,31 +251,36 @@ pub async fn get_direct_first(app: &AppHandle, url: &str) -> Result<reqwest::Res
             );
         }
         Err(e) => {
-            warn!(
-                "Direct fetch failed for {}: {}; retrying via proxy",
-                url, e
-            );
+            warn!("Direct fetch failed for {}: {}; retrying via proxy", url, e);
         }
     }
 
     // 2. 代理兜底：应用自身 mihomo 混合端口
     let proxy_url = local_proxy_url(app);
     info!("Fetching {} via local proxy {}", url, proxy_url);
-    let proxied = build_client_with_resolved(url, &resolved)?
-        .proxy(Proxy::all(&proxy_url)?)
-        .redirect(no_redirect_policy())
-        .build()?;
-    send_and_follow(&proxied, url, USER_AGENT_VALUE)
-        .await
-        .map_err(Error::from)
+    let proxied = apply_route(
+        build_client_with_resolved(url, &resolved, total_timeout)?,
+        FetchRoute::LocalProxy,
+        &proxy_url,
+    )?
+    .redirect(no_redirect_policy())
+    .build()?;
+    send_and_follow(&proxied, url, FetchRoute::LocalProxy, &proxy_url).await
 }
 
 /// 从 URL 提取主机名与已校验地址，构建带 `resolve()` 钉定的 ClientBuilder。
 /// 钉定后 reqwest 连接时直接用已校验的 IP，不再重新解析 DNS（关闭 TOCTOU）。
-fn build_client_with_resolved(url: &str, resolved: &[SocketAddr]) -> Result<reqwest::ClientBuilder> {
-    let parsed = Url::parse(url)
-        .map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
-    let mut builder = reqwest::Client::builder().timeout(TIMEOUT);
+fn build_client_with_resolved(
+    url: &str,
+    resolved: &[SocketAddr],
+    total_timeout: Option<Duration>,
+) -> Result<reqwest::ClientBuilder> {
+    let parsed =
+        Url::parse(url).map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
+    let mut builder = reqwest::Client::builder();
+    if let Some(t) = total_timeout {
+        builder = builder.timeout(t);
+    }
     if let Some(host) = parsed.host_str() {
         if let Some(first) = resolved.first() {
             let host_no_brackets = host
@@ -246,10 +295,13 @@ fn build_client_with_resolved(url: &str, resolved: &[SocketAddr]) -> Result<reqw
 
 /// 发送请求并手动处理重定向：每跳做完整异步 SSRF 校验（含 DNS）后
 /// 用钉定连接跟随，避免自动重定向的同步回调无法做 DNS 校验。
+/// P1-4：重定向跳重建 client 时通过 `apply_route` 保持与首跳相同的
+/// 直连/代理路由语义，整条链路网络路径一致。
 async fn send_and_follow(
     client: &reqwest::Client,
     start_url: &str,
-    ua: &str,
+    route: FetchRoute,
+    proxy_url: &str,
 ) -> Result<reqwest::Response> {
     let mut current_url = start_url.to_string();
     for _hop in 0..=MAX_REDIRECTS {
@@ -271,14 +323,18 @@ async fn send_and_follow(
         } else if resolved.is_empty() {
             client.clone()
         } else {
-            build_client_with_resolved(&current_url, &resolved)?
-                .redirect(no_redirect_policy())
-                .build()?
+            apply_route(
+                build_client_with_resolved(&current_url, &resolved, None)?,
+                route,
+                proxy_url,
+            )?
+            .redirect(no_redirect_policy())
+            .build()?
         };
 
         let resp = req_client
             .get(&current_url)
-            .header(USER_AGENT, ua)
+            .header(USER_AGENT, user_agent())
             .send()
             .await?;
 
@@ -294,9 +350,7 @@ async fn send_and_follow(
             .headers()
             .get(reqwest::header::LOCATION)
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                Error::Other(format!("redirect without Location: {}", resp.status()))
-            })?;
+            .ok_or_else(|| Error::Other(format!("redirect without Location: {}", resp.status())))?;
         // 相对/绝对解析：reqwest 的 Url::join 处理相对 Location
         let next_url = parsed_join(&current_url, location)?;
         warn!("Following redirect {} -> {}", current_url, next_url);
@@ -312,9 +366,9 @@ async fn send_and_follow(
 fn parsed_join(base: &str, location: &str) -> Result<Url> {
     let base_url = Url::parse(base)
         .map_err(|e| Error::InvalidArgument(format!("invalid base URL: {}: {}", base, e)))?;
-    base_url
-        .join(location)
-        .map_err(|e| Error::InvalidArgument(format!("invalid redirect Location '{}': {}", location, e)))
+    base_url.join(location).map_err(|e| {
+        Error::InvalidArgument(format!("invalid redirect Location '{}': {}", location, e))
+    })
 }
 
 /// 应用自身 mihomo 混合端口代理地址（`http://127.0.0.1:{mixed_port}`）。
@@ -366,11 +420,7 @@ mod tests {
             "http://myhost.local/x",
             "http://sub.localhost/x",
         ] {
-            assert!(
-                validate_url_sync(url).is_err(),
-                "must reject: {}",
-                url
-            );
+            assert!(validate_url_sync(url).is_err(), "must reject: {}", url);
         }
         for url in [
             "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",

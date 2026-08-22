@@ -8,10 +8,19 @@
 //! （校验 → 持久化 → 重生成运行时配置 → 热重载核心 → 失败回滚），
 //! 删除/重命名激活中的 Profile 时同步修正激活标记。
 
-use tauri::{command, AppHandle, Manager};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use tauri::{command, AppHandle, Manager};
+use tracing::{info, warn};
+
+use crate::util::atomic::atomic_write;
 use crate::util::error::{Error, Result};
 use crate::util::paths::{get_profiles_dir, sanitize_profile_name};
+
+/// 临时文件名计数器（与进程 id 组合成随机后缀，保证同一进程内不撞名）
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // P1-8：订阅资源限制
 /// 最大下载大小（10 MB）
@@ -84,10 +93,15 @@ fn validate_subscription_content(text: &str) -> Result<()> {
 /// 等现有协议能力不被破坏。
 fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> {
     let Some(map) = node.as_mapping() else {
-        return Err(Error::Subscription(format!("Node #{} is not a mapping", index)));
+        return Err(Error::Subscription(format!(
+            "Node #{} is not a mapping",
+            index
+        )));
     };
-    let get_str = |key: &str| map.get(serde_yaml::Value::String(key.to_string()))
-        .and_then(|v| v.as_str());
+    let get_str = |key: &str| {
+        map.get(serde_yaml::Value::String(key.to_string()))
+            .and_then(|v| v.as_str())
+    };
     let has = |key: &str| map.contains_key(serde_yaml::Value::String(key.to_string()));
     let protocol = get_str("type").unwrap_or("unknown");
     let name = get_str("name").unwrap_or("unnamed");
@@ -109,7 +123,12 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
             }
         }
         "ssr" => {
-            if !has("port") || !has("cipher") || !has("password") || !has("protocol") || !has("obfs") {
+            if !has("port")
+                || !has("cipher")
+                || !has("password")
+                || !has("protocol")
+                || !has("obfs")
+            {
                 return Err(Error::Subscription(format!(
                     "Node #{} ('{}', {}) requires port, cipher, password, protocol, obfs",
                     index, name, protocol
@@ -165,21 +184,11 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
                 )));
             }
         }
-        "http" | "https" => {
-            if !has("port") {
-                return Err(Error::Subscription(format!(
-                    "Node #{} ('{}', {}) requires port",
-                    index, name, protocol
-                )));
-            }
-        }
-        "socks5" => {
-            if !has("port") {
-                return Err(Error::Subscription(format!(
-                    "Node #{} ('{}', {}) requires port",
-                    index, name, protocol
-                )));
-            }
+        "http" | "https" | "socks5" if !has("port") => {
+            return Err(Error::Subscription(format!(
+                "Node #{} ('{}', {}) requires port",
+                index, name, protocol
+            )));
         }
         _ => {
             // 未知协议：仅要求 name 和 server（已校验），不阻断导入
@@ -193,6 +202,45 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
 fn profile_path(profiles_dir: &std::path::Path, name: &str) -> Result<std::path::PathBuf> {
     let safe = sanitize_profile_name(name)?;
     Ok(profiles_dir.join(format!("{}.yaml", safe)))
+}
+
+/// 生成临时文件路径：`{path}.tmp.{pid}-{n}`（随机后缀，与目标同目录同文件系统）。
+fn temp_path_for(path: &Path) -> PathBuf {
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp.{}-{}", std::process::id(), n));
+    path.with_file_name(name)
+}
+
+/// 生成备份文件路径：`{name}.yaml` -> `{name}.yaml.bak`
+fn backup_path_for(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".bak");
+    path.with_file_name(name)
+}
+
+/// 日志脱敏订阅 URL：只保留 `scheme://host[:port]/path`，丢弃 query
+/// （token/key 等凭证常在 query 里）。解析失败返回 `"***"`。
+fn redact_url(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => {
+            let mut out = String::new();
+            out.push_str(parsed.scheme());
+            out.push_str("://");
+            if let Some(host) = parsed.host_str() {
+                out.push_str(host);
+            }
+            if let Some(port) = parsed.port() {
+                out.push(':');
+                out.push_str(&port.to_string());
+            }
+            if !parsed.path().is_empty() && parsed.path() != "/" {
+                out.push_str(parsed.path());
+            }
+            out
+        }
+        Err(_) => "***".to_string(),
+    }
 }
 
 /// 当前激活的 profile 名（来自共享配置）
@@ -279,7 +327,7 @@ dns:
         .to_string()
     });
 
-    std::fs::write(&file_path, yaml)?;
+    atomic_write(&file_path, yaml.as_bytes())?;
     Ok(())
 }
 
@@ -368,7 +416,7 @@ pub async fn update_profile_content(app: AppHandle, name: String, content: Strin
     // 校验是合法 YAML
     serde_yaml::from_str::<serde_yaml::Value>(&content)?;
 
-    std::fs::write(file_path, content)?;
+    atomic_write(&file_path, content.as_bytes())?;
     Ok(())
 }
 
@@ -384,7 +432,7 @@ pub async fn import_profile(app: AppHandle, name: String, content: String) -> Re
     // 校验是合法 YAML
     serde_yaml::from_str::<serde_yaml::Value>(&content)?;
 
-    std::fs::write(file_path, content)?;
+    atomic_write(&file_path, content.as_bytes())?;
     Ok(())
 }
 
@@ -441,34 +489,29 @@ pub async fn import_profile_from_url(app: AppHandle, name: String, url: String) 
         return Err(Error::InvalidArgument("Profile already exists".to_string()));
     }
 
-    // 拉取动作直连优先：直连不通自动切应用自身代理兜底（软件代理模式不变）
-    let resp = crate::util::fetch::get_direct_first(&app, &url).await?;
+    info!("Importing subscription from {}", redact_url(&url));
 
-    if !resp.status().is_success() {
-        return Err(Error::Other(format!(
-            "Failed to fetch subscription: HTTP {}",
-            resp.status()
-        )));
+    // 流式下载到临时文件（Content-Length 预检 + chunk 累计上限），
+    // 注释头先行写入；失败自动清理临时文件，不残留半成品。
+    let temp_path = temp_path_for(&file_path);
+    let header = format!("# subscribe-url: {}\n", parsed.as_str());
+    download_subscription_streaming(&app, &url, &header, &temp_path).await?;
+
+    // 校验 YAML 合法 + 资源限制（节点数量/名称长度/字段值长度）；失败清理临时文件
+    let text = match std::fs::read_to_string(&temp_path) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(e.into());
+        }
+    };
+    if let Err(e) = validate_subscription_content(&text) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
     }
 
-    let text = resp.text().await?;
-
-    // P1-8：校验下载内容大小
-    if text.len() as u64 > MAX_DOWNLOAD_BYTES {
-        return Err(Error::Subscription(format!(
-            "Download exceeds {} bytes limit",
-            MAX_DOWNLOAD_BYTES
-        )));
-    }
-
-    // P1-8：校验 YAML 合法 + 资源限制（节点数量/名称长度/字段值长度）
-    validate_subscription_content(&text)?;
-
-    // 顶部写入订阅地址注释头，供「更新」命令读回 URL 重新拉取。
-    // 注释不影响 YAML 解析；订阅源自带的首行注释会原样保留在其正文中。
-    // C6：写入用规范化后的 parsed.as_str()，而非用户原始字符串——
-    // 原始串可能带换行/控制符/反斜杠注入到 YAML 注释头（反射注入）。
-    std::fs::write(file_path, format!("# subscribe-url: {}\n{}\n", parsed.as_str(), text))?;
+    // 新文件：临时文件原子 rename 为正式文件（目标不存在，无需备份）
+    commit_profile_file(&temp_path, &file_path)?;
     Ok(())
 }
 
@@ -494,26 +537,89 @@ fn extract_subscribe_url(content: &str) -> Option<String> {
 /// - `https://user:pass@host:port/path?token=secret#frag` → `https://host:port/path`
 /// - `https://host/path?token=secret` → `https://host/path`
 /// - `https://host:port/path` → 原样返回（无敏感字段）
-/// - 解析失败 → 返回 `"***"`（不泄露原始字符串）
+/// - 解析失败 → 返回 None（不泄露原始字符串）
 fn redact_subscribe_url(url: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    let mut redacted = String::new();
-    redacted.push_str(parsed.scheme());
-    redacted.push_str("://");
-    if let Some(host) = parsed.host_str() {
-        redacted.push_str(host);
+    reqwest::Url::parse(url).ok()?;
+    Some(redact_url(url))
+}
+
+// P1 审计修复：流式大小限制 + 事务式替换
+//
+/// 流式下载订阅内容到临时文件（带 10MB 上限）。
+/// - 响应头 Content-Length 超限：立即拒绝（不读 body）；
+/// - 否则 `chunk()` 循环累计写入临时文件，累计超限即中止、删除临时文件并报错，
+///   避免 `resp.text().await` 把恶意超大响应先整个读进内存。
+/// - `header` 先行写入临时文件（订阅地址注释头，供「更新」命令读回 URL）；
+///   其字节数计入总量上限。
+async fn download_subscription_streaming(
+    app: &AppHandle,
+    url: &str,
+    header: &str,
+    temp_path: &Path,
+) -> Result<()> {
+    // 拉取动作直连优先：直连不通自动切应用自身代理兜底（软件代理模式不变）
+    let mut resp = crate::util::fetch::get_direct_first(app, url).await?;
+
+    if !resp.status().is_success() {
+        return Err(Error::Other(format!(
+            "Failed to fetch subscription: HTTP {}",
+            resp.status()
+        )));
     }
-    if let Some(port) = parsed.port() {
-        if parsed.host_str().is_some() {
-            redacted.push(':');
-            redacted.push_str(&port.to_string());
+
+    if let Some(len) = resp.content_length() {
+        if len > MAX_DOWNLOAD_BYTES {
+            return Err(Error::Subscription(format!(
+                "Download exceeds {} bytes limit",
+                MAX_DOWNLOAD_BYTES
+            )));
         }
     }
-    if !parsed.path().is_empty() && parsed.path() != "/" {
-        redacted.push_str(parsed.path());
+
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create_new(true)
+        .open(temp_path)?;
+    let mut total: u64 = 0;
+    file.write_all(header.as_bytes())?;
+    total += header.len() as u64;
+    while let Some(chunk) = resp.chunk().await? {
+        total += chunk.len() as u64;
+        if total > MAX_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = std::fs::remove_file(temp_path);
+            return Err(Error::Subscription(format!(
+                "Download exceeds {} bytes limit",
+                MAX_DOWNLOAD_BYTES
+            )));
+        }
+        file.write_all(&chunk)?;
     }
-    // 不包含 query（token/key 常在 query 参数里）和 fragment
-    Some(redacted)
+    file.flush()?;
+    Ok(())
+}
+
+/// 事务式用临时文件替换正式 profile 文件：
+/// 1. 若旧文件存在，先重命名为 `{name}.yaml.bak`（残留旧备份先清理）；
+/// 2. 临时文件 rename 为正式文件；
+/// 3. 任一步失败：把 .bak 恢复原位、清理临时文件，返回 Err——
+///    保证原来能工作的订阅不会因半途失败而丢失。
+fn commit_profile_file(temp_path: &Path, target: &Path) -> Result<()> {
+    let backup = backup_path_for(target);
+
+    if target.exists() {
+        let _ = std::fs::remove_file(&backup);
+        std::fs::rename(target, &backup)?;
+    }
+
+    if let Err(e) = std::fs::rename(temp_path, target) {
+        if backup.exists() && !target.exists() {
+            let _ = std::fs::rename(&backup, target);
+        }
+        let _ = std::fs::remove_file(temp_path);
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 /// 更新订阅：读回 profile 顶部的订阅 URL，重新拉取内容并覆盖文件。
@@ -547,37 +653,132 @@ pub async fn update_profile_subscription(app: AppHandle, name: String) -> Result
     // C2 SSRF 防护：parse+scheme 校验后再做禁段校验
     crate::util::fetch::validate_url(&url).await?;
 
-    // 拉取动作直连优先：直连不通自动切应用自身代理兜底（软件代理模式不变）
-    let resp = crate::util::fetch::get_direct_first(&app, &url).await?;
+    info!("Updating subscription from {}", redact_url(&url));
 
-    if !resp.status().is_success() {
-        return Err(Error::Other(format!(
-            "Failed to fetch subscription: HTTP {}",
-            resp.status()
-        )));
+    // 事务第一步：下载新内容到临时文件（流式 + 大小上限）。
+    // 注释头先行写入，保留订阅地址供下次更新；
+    // C6：URL 用规范化后的 parsed.as_str()，防止原始字符串反射注入。
+    // 此阶段任何失败都不触碰现有文件，原订阅保持可用。
+    let temp_path = temp_path_for(&file_path);
+    let header = format!("# subscribe-url: {}\n", parsed.as_str());
+    download_subscription_streaming(&app, &url, &header, &temp_path).await?;
+
+    // 内容校验在替换前完成；失败则清理临时文件并返回 Err
+    let text = match std::fs::read_to_string(&temp_path) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(e.into());
+        }
+    };
+    if let Err(e) = validate_subscription_content(&text) {
+        let _ = std::fs::remove_file(&temp_path);
+        warn!(
+            "Subscription update rejected for {}: {}",
+            redact_url(&url),
+            e
+        );
+        return Err(e);
     }
 
-    let text = resp.text().await?;
-
-    // P1-8：校验下载内容大小
-    if text.len() as u64 > MAX_DOWNLOAD_BYTES {
-        return Err(Error::Subscription(format!(
-            "Download exceeds {} bytes limit",
-            MAX_DOWNLOAD_BYTES
-        )));
-    }
-
-    // P1-8：校验资源限制（节点数量/名称长度/字段值长度）
-    validate_subscription_content(&text)?;
-
-    // 保留订阅地址注释头，供下次更新；正文为订阅源最新内容。
-    // C6：写入用规范化后的 parsed.as_str()，防止原始字符串反射注入。
-    std::fs::write(&file_path, format!("# subscribe-url: {}\n{}\n", parsed.as_str(), text))?;
+    // 事务第二步/第三步：备份旧文件为 .bak，再把临时文件 rename 为正式文件；
+    // 任一步失败自动恢复 .bak 并清理临时文件。
+    commit_profile_file(&temp_path, &file_path)?;
 
     // 更新激活中的 Profile：热重载使新节点/规则生效
     if active_profile(&app) == name {
         crate::core::runtime::activate_profile(&app, &name).await?;
     }
 
+    info!("Subscription updated: {}", redact_url(&url));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "clashedge-profiles-test-{}-{}-{}",
+                tag,
+                std::process::id(),
+                TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn redact_url_drops_query_and_userinfo() {
+        assert_eq!(
+            redact_url("https://example.com/path?token=secret&id=1"),
+            "https://example.com/path"
+        );
+        assert_eq!(
+            redact_url("https://user:pass@sub.example.com:8443/api/sub?token=abc#frag"),
+            "https://sub.example.com:8443/api/sub"
+        );
+        assert_eq!(redact_url("http://host/"), "http://host");
+        // 解析失败不泄露原始串
+        assert_eq!(redact_url("not a url \n bad"), "***");
+    }
+
+    #[test]
+    fn temp_paths_are_unique_and_suffixed() {
+        let dir = TempDir::new("tmpname");
+        let target = dir.path("sub.yaml");
+        let a = temp_path_for(&target);
+        let b = temp_path_for(&target);
+        assert_ne!(a, b);
+        let name = a.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("sub.yaml.tmp."));
+        assert!(a.parent() == target.parent(), "temp 必须与目标同目录");
+    }
+
+    #[test]
+    fn commit_replaces_file_and_keeps_backup() {
+        let dir = TempDir::new("commit-ok");
+        let target = dir.path("sub.yaml");
+        std::fs::write(&target, b"old content").unwrap();
+        let temp = temp_path_for(&target);
+        std::fs::write(&temp, b"new content").unwrap();
+
+        commit_profile_file(&temp, &target).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new content");
+        // 旧内容保留在 .bak，临时文件已被消费（rename 走）不再存在
+        assert_eq!(
+            std::fs::read_to_string(backup_path_for(&target)).unwrap(),
+            "old content"
+        );
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn commit_failure_restores_backup_and_cleans_temp() {
+        let dir = TempDir::new("rollback");
+        let target = dir.path("sub.yaml");
+        std::fs::write(&target, b"original").unwrap();
+        // 临时文件不存在 → 第二步 rename 必然失败，触发回滚
+        let temp = temp_path_for(&target);
+
+        assert!(commit_profile_file(&temp, &target).is_err());
+
+        // .bak 已恢复原位：原订阅内容完好，无残留备份/临时文件
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        assert!(!backup_path_for(&target).exists());
+        assert!(!temp.exists());
+    }
 }

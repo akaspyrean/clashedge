@@ -55,9 +55,7 @@ fn env_data_dir() -> Option<PathBuf> {
 
 /// 获取规范化后的当前 exe 路径（去掉 `\\?\` 前缀）。
 fn current_exe_normalized() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .map(strip_verbatim_prefix)
+    std::env::current_exe().ok().map(strip_verbatim_prefix)
 }
 
 /// 是否为便携模式：
@@ -75,8 +73,7 @@ pub fn portable_root() -> Option<PathBuf> {
     if let Some(data) = env_data_dir() {
         return data.parent().map(|p| p.to_path_buf());
     }
-    current_exe_normalized()
-        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+    current_exe_normalized().and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
 }
 
 /// 便携判定依据。
@@ -154,6 +151,7 @@ pub fn get_sidecar_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
 /// - 参考包（C# 启动器）：内层 exe 在 `App\ClashEdge\`，sidecar 名 `mihomo-win64.exe`
 ///   位于 `App\ClashEdge\sidecar\`（= exe 旁的 `sidecar/`，Tauri resource_dir 子目录）；
 /// - 原生便携：mihomo 在 `<root>/App/clash-edge-core.exe`。
+///
 /// 以及非便携安装版：`resource_dir/sidecar/clash-edge-core.exe`。
 ///
 /// 依次尝试候选路径，命中即返回；全部缺失才报错（不再回退 %APPDATA%）。
@@ -162,7 +160,8 @@ pub fn get_mihomo_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
 
     // 候选 1/2：参考包布局——exe 旁 sidecar/ 目录，两种内核名都认。
     // （内层 exe 位于 App\ClashEdge\，sidecar 与之同目录。）
-    if let Some(exe_dir) = current_exe_normalized().and_then(|e| e.parent().map(|p| p.to_path_buf()))
+    if let Some(exe_dir) =
+        current_exe_normalized().and_then(|e| e.parent().map(|p| p.to_path_buf()))
     {
         candidates.push(exe_dir.join("sidecar").join("mihomo-win64.exe"));
         candidates.push(exe_dir.join("sidecar").join("clash-edge-core.exe"));
@@ -198,7 +197,10 @@ pub fn get_mihomo_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
 pub fn mihomo_missing_hint(app_handle: &tauri::AppHandle) -> String {
     if env_data_dir().is_some() {
         let data = env_data_dir().unwrap_or_default();
-        let root = data.parent().map(|p| p.display().to_string()).unwrap_or_default();
+        let root = data
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         format!(
             "mihomo not found in portable (launcher) mode (root: {}).\n\
              Expected App/ClashEdge/sidecar/mihomo-win64.exe (or clash-edge-core.exe) next to\n\
@@ -259,7 +261,10 @@ pub fn mihomo_missing_hint(app_handle: &tauri::AppHandle) -> String {
 /// mihomo 缺失」，不改变任何路径判定逻辑。
 pub fn portable_mode_diagnostic() -> String {
     if let Some(data) = env_data_dir() {
-        let root = data.parent().map(|p| p.display().to_string()).unwrap_or_default();
+        let root = data
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         format!(
             "portable (launcher) mode; CLASH_EDGE_DATA_DIR = {}, root = {}",
             data.display(),

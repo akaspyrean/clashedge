@@ -19,7 +19,10 @@ pub async fn start_log_stream(app: AppHandle) -> Result<()> {
 
     let (controller, secret) = {
         let cfg = state.config_manager.lock().unwrap().get_config();
-        (cfg.proxy.external_controller.clone(), cfg.proxy.secret.clone())
+        (
+            cfg.proxy.external_controller.clone(),
+            cfg.proxy.secret.clone(),
+        )
     };
 
     let handle = crate::core::logs::spawn_log_stream(app.clone(), &controller, &secret);

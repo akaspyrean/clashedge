@@ -21,26 +21,8 @@ const VALID_PROXY_MODES: &[&str] = &["rule", "global", "direct"];
 /// 官方模板注释：`# find-process-mode has 3 values: always, strict, off`。
 const VALID_FIND_PROCESS_MODES: &[&str] = &["off", "strict", "always"];
 
-/// 运行时受控键：订阅内容即使携带这些键也不得覆盖应用设置
-/// （端口 / 控制器 / 模式 / TUN / DNS 由应用 UI 统一管控，
-/// 否则订阅改端口会导致应用连不上控制器）。
-const APP_CONTROLLED_KEYS: &[&str] = &[
-    "mixed-port",
-    "allow-lan",
-    "mode",
-    "log-level",
-    "ipv6",
-    "find-process-mode",
-    "external-controller",
-    "external-ui",
-    "secret",
-    "tun",
-    "dns",
-    "listeners",
-    "hosts",
-    "sniffer",
-    "script",
-];
+/// mihomo `log-level` 合法值（官方模板：debug / info / warning / error / silent）
+const VALID_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error", "silent"];
 
 /// 订阅内容允许透传到运行时配置的顶层键白名单。
 ///
@@ -65,91 +47,12 @@ const EXTRA_ALLOWED_KEYS: &[&str] = &[];
 /// 语义不同，这些值不会写给 mihomo）。
 const APP_GEODATA_MODES: &[&str] = &["manual", "use-external", "remote"];
 
-/// 净化 provider 名 → 安全文件基名（C3）。
-///
-/// 与 `util::paths::sanitize_profile_name` 的区别：provider 名可能含非 ASCII /
-/// emoji（如订阅节点名），这里**只剥离路径分隔符与控制符**，保留其余字符，
-/// 避免把合法中文/emoji 名误杀成空。
-fn sanitize_provider_path(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        if c.is_control() || matches!(c, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*') {
-            continue;
-        }
-        out.push(c);
-    }
-    let out = out.trim();
-    if out.is_empty() || out == "." || out == ".." {
-        "provider".to_string()
-    } else {
-        out.to_string()
-    }
-}
-
-/// 判断 provider 的 `path` 是否为安全相对路径（无绝对前缀 / 盘符 / 反斜杠 /
-/// `..` 穿越段）。内置 rule-providers 使用 `./rules/xxx.yaml` 这类合法相对路径，
-/// 保持原样；`C:\evil.yaml`、`../../evil.yaml`、`/abs/path` 视为不安全。
-fn is_safe_relative_path(path: &str) -> bool {
-    if path.starts_with('/') || path.starts_with('\\') {
-        return false;
-    }
-    // 盘符（C:）与 Windows 反斜杠分隔符 → 非安全
-    if path.contains(':') || path.contains('\\') {
-        return false;
-    }
-    // 不含 `..` 路径穿越段（按 / 分段检查）
-    if path.split('/').any(|seg| seg == "..") {
-        return false;
-    }
-    true
-}
-
-/// 对单个 provider 映射强制规范化 `path`（C3）：
-/// - `path` 缺失 → 补 `providers/<name>.yaml`（name 经净化）；
-/// - `path` 存在但非安全相对路径 → 强制改写为 `providers/<name>.yaml`；
-/// - 已是安全相对路径（如内置 `./rules/xxx.yaml`）→ 保持原样，不破坏内置加载。
-fn sanitize_provider_paths(map: &mut serde_yaml::Mapping) {
-    for (k, v) in map.iter_mut() {
-        let name = k.as_str().unwrap_or("provider");
-        let Some(pmap) = v.as_mapping_mut() else { continue };
-        let path_key = serde_yaml::Value::String("path".to_string());
-        let normalized = || {
-            serde_yaml::Value::String(format!(
-                "providers/{}.yaml",
-                sanitize_provider_path(name)
-            ))
-        };
-        match pmap.get(&path_key) {
-            Some(existing) => {
-                let existing_str = existing.as_str().unwrap_or("");
-                if !is_safe_relative_path(existing_str) {
-                    pmap.insert(path_key, normalized());
-                }
-            }
-            None => {
-                pmap.insert(path_key, normalized());
-            }
-        }
-    }
-}
-
-/// 对 `proxy-providers` / `rule-providers` 容器值整体规范化（非映射原样透传）。
-fn sanitize_providers_value(value: &serde_yaml::Value) -> serde_yaml::Value {
-    match value.as_mapping() {
-        Some(m) => {
-            let mut pmap = m.clone();
-            sanitize_provider_paths(&mut pmap);
-            serde_yaml::Value::Mapping(pmap)
-        }
-        None => value.clone(),
-    }
-}
-
 /// 合并配置规则 - profile-preprocessor.cjs 逻辑的 Rust 实现
 /// - 校验并修正代理模式（rule / global / direct）
 /// - 校验 geodata_mode（应用级值，仅空串回退 manual，不覆盖 mihomo 语义值）
 /// - 校验 find_process_mode（off / strict / always）
 /// - 确保默认配置文件存在
+///
 /// 在 `ConfigManager::init`（加载）与测试中调用，保证运行时配置永远合法。
 pub(crate) fn merge_rules(config: Config) -> Config {
     let mut config = config;
@@ -225,14 +128,54 @@ pub fn build_runtime_config(
         serde_yaml::Value::from(app.general.mixed_port)
     );
     put!("allow-lan", serde_yaml::Value::from(app.general.allow_lan));
+    // P1-5：allow-lan 高级控制。仅 allow-lan=true 时写入：
+    // - bind-address：限定监听接口（如仅内网 IP）；
+    // - lan-allowed-ips：来源网段白名单（CIDR）。
+    // 值为空/None 时不写键，保持 mihomo 默认行为；非法值（含空白/控制符
+    // 的 bind-address、非 CIDR 形态的网段）直接丢弃，不进入运行时配置。
+    if app.general.allow_lan {
+        let bind = app.general.bind_address.as_deref().unwrap_or("").trim();
+        let bind_valid = !bind.is_empty()
+            && (bind == "*"
+                || bind.parse::<std::net::IpAddr>().is_ok()
+                || (!bind.chars().any(|c| c.is_whitespace() || c.is_control())
+                    && !bind.contains('|')));
+        if bind_valid {
+            put!("bind-address", serde_yaml::Value::from(bind.to_string()));
+        }
+        let allowed: Vec<String> = app
+            .general
+            .lan_allowed_ips
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| {
+                s.parse::<std::net::IpAddr>().is_ok()
+                    || s.split_once('/')
+                        .is_some_and(|(ip, _)| ip.trim().parse::<std::net::IpAddr>().is_ok())
+            })
+            .collect();
+        if !allowed.is_empty() {
+            put!("lan-allowed-ips", serde_yaml::to_value(&allowed)?);
+        }
+    }
     put!(
         "mode",
         serde_yaml::Value::from(app.general.proxy_mode.clone())
     );
-    // 日志级别固定为 info：客户端内置"日志"页（走控制器 /logs 流），
-    // error 级别会让日志页看起来永远空着。旧配置可能残留 error（R8.3 遗留），
-    // 这里统一抬到 info（mihomo 官方模板默认值），保证日志功能可用。
-    put!("log-level", serde_yaml::Value::from("info"));
+    // 日志级别实装（P1-11）：设置页的 log-level 真正写入运行时配置，
+    // 不再固定 info。非法值/空值归一到 info（mihomo 官方模板默认值）。
+    // 注意 silent/error 会让内置日志页几乎无输出——这是用户显式选择，
+    // UI 侧应有相应提示，后端不再越权改写用户意图。
+    let log_level = {
+        let l = app.general.log_level.trim().to_ascii_lowercase();
+        if VALID_LOG_LEVELS.contains(&l.as_str()) {
+            l
+        } else {
+            "info".to_string()
+        }
+    };
+    put!("log-level", serde_yaml::Value::from(log_level));
     put!("ipv6", serde_yaml::Value::from(app.general.ipv6));
     put!(
         "find-process-mode",
@@ -252,12 +195,12 @@ pub fn build_runtime_config(
         .general
         .geodata_mode
         .as_str()
-        .map_or(false, |s| APP_GEODATA_MODES.contains(&s));
+        .is_some_and(|s| APP_GEODATA_MODES.contains(&s));
     let geodata_is_empty = app
         .general
         .geodata_mode
         .as_str()
-        .map_or(false, |s| s.is_empty());
+        .is_some_and(|s| s.is_empty());
     if !geodata_is_app_level && !geodata_is_empty {
         put!("geodata-mode", app.general.geodata_mode.clone());
     }
@@ -341,6 +284,57 @@ pub fn build_runtime_config(
         put!("proxies", serde_yaml::to_value(proxies)?);
     } else if let Some(p) = app.extra.get("proxies") {
         put!("proxies", p.clone());
+    }
+
+    // 6) 零节点兜底：mihomo（v1.19.x）拒绝 proxies 为空的代理组
+    //    （"`use` or `proxies` missing"，配置校验直接失败，核心无法启动）。
+    //    约束：自动优选是 url-test 组，只能含真实节点——DIRECT/REJECT 占位
+    //    都不行（url-test 会把 DIRECT 当零延迟节点永久霸占，REJECT 则黑掉流量）。
+    //    故零节点时不生成自动优选组，并从其余组的 proxies 引用中同步剔除，
+    //    保证不存在悬空引用；人工优选（select）补 DIRECT 兜底保持直连可用。
+    //    一旦订阅提供节点，step 5 会注入真实节点名，自动优选恢复生成。
+    let mut has_auto_group = false;
+    for group in groups.iter_mut() {
+        let Some(gmap) = group.as_mapping_mut() else { continue };
+        let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else { continue };
+        if gname == "自动优选" {
+            let is_empty = gmap
+                .get("proxies")
+                .and_then(|p| p.as_sequence())
+                .map(|s| s.is_empty())
+                .unwrap_or(true);
+            if is_empty {
+                has_auto_group = true;
+            }
+        }
+    }
+    if has_auto_group {
+        groups.retain(|g| {
+            g.get("name").and_then(|n| n.as_str()) != Some("自动优选")
+        });
+        for group in groups.iter_mut() {
+            let Some(gmap) = group.as_mapping_mut() else { continue };
+            // 从引用列表剔除自动优选
+            if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
+                plist.retain(|v| v.as_str() != Some("自动优选"));
+            }
+            // 人工优选为空时补 DIRECT：MATCH 兜底规则会把全部流量引向
+            // 扶梯出行 → 叶子组，DIRECT 占位让无订阅状态保持直连可用。
+            let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else { continue };
+            if gname == "人工优选" {
+                let is_empty = gmap
+                    .get("proxies")
+                    .and_then(|p| p.as_sequence())
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true);
+                if is_empty {
+                    gmap.insert(
+                        serde_yaml::Value::from("proxies"),
+                        serde_yaml::Value::Sequence(vec![serde_yaml::Value::from("DIRECT")]),
+                    );
+                }
+            }
+        }
     }
     put!("proxy-groups", serde_yaml::to_value(groups)?);
     put!("rules", serde_yaml::to_value(app.rules.clone())?);
@@ -455,6 +449,121 @@ proxies:
     }
 
     #[test]
+    fn build_runtime_config_zero_nodes_drops_auto_group_keeps_manual_direct() {
+        // mihomo v1.19.x 拒绝空 proxies 的代理组（"`use` or `proxies` missing"）。
+        // 零节点约束：自动优选只能含真实节点信息——不得注入任何占位，
+        // 因此整组移除，且其余组的引用列表同步剔除避免悬空引用；
+        // 人工优选（select）补 DIRECT 兜底使配置校验通过。
+        let app = Config::default();
+        let runtime = build_runtime_config(&app, None).unwrap();
+        let groups = runtime
+            .as_mapping()
+            .unwrap()
+            .get("proxy-groups")
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+
+        // 自动优选整组移除
+        assert!(
+            !groups
+                .iter()
+                .any(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选")),
+            "auto group must be dropped when no nodes"
+        );
+
+        for name in ["GLOBAL", "扶梯出行", "人工智能", "影音视听"] {
+            let group = groups
+                .iter()
+                .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
+                .unwrap();
+            let names: Vec<&str> = group
+                .get("proxies")
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p.as_str())
+                .collect();
+            assert!(
+                !names.contains(&"自动优选"),
+                "{} must not reference dropped auto group",
+                name
+            );
+        }
+
+        // 人工优选补 DIRECT 兜底
+        let manual = groups
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("人工优选"))
+            .unwrap();
+        let names: Vec<&str> = manual
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(names, vec!["DIRECT"]);
+    }
+
+    #[test]
+    fn build_runtime_config_subscription_restores_full_group_structure() {
+        // 有真实节点时自动优选必须恢复生成，且只含真实节点名。
+        let app = Config::default();
+        let profile = r#"
+proxies:
+  - name: Node1
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: pwd
+"#;
+        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let groups = runtime
+            .as_mapping()
+            .unwrap()
+            .get("proxy-groups")
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+
+        let auto = groups
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选"))
+            .expect("auto group must exist with subscription");
+        let names: Vec<&str> = auto
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(names, vec!["Node1"]);
+
+        // GLOBAL 引用完整（含自动优选）
+        let global = groups
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("GLOBAL"))
+            .unwrap();
+        let global_names: Vec<&str> = global
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(
+            global_names,
+            vec!["DIRECT", "REJECT", "人工优选", "自动优选"]
+        );
+    }
+
+    #[test]
     fn build_runtime_config_always_injects_subscription_nodes_into_leaf_groups() {
         let app = Config::default();
         let expected_rules = app.rules.len();
@@ -487,7 +596,14 @@ rules:
             .collect();
         assert_eq!(
             group_names,
-            vec!["GLOBAL", "扶梯出行", "人工智能", "影音视听", "人工优选", "自动优选"]
+            vec![
+                "GLOBAL",
+                "扶梯出行",
+                "人工智能",
+                "影音视听",
+                "人工优选",
+                "自动优选"
+            ]
         );
         // 订阅节点强制注入叶子组（即使订阅自带 proxy-groups/rules）：
         // 人工优选与自动优选都只含真实节点——url-test 不得含 DIRECT
@@ -580,25 +696,46 @@ proxies:
         // P0-2：未知顶层字段不透传——订阅携带的 hosts/sniffer/script/listeners/
         // external-ui/dns/tun/proxy-providers/rule-providers 均不得进入运行时
         assert!(map.get("hosts").is_none(), "hosts must not pass through");
-        assert!(map.get("sniffer").is_none(), "sniffer must not pass through");
+        assert!(
+            map.get("sniffer").is_none(),
+            "sniffer must not pass through"
+        );
         assert!(map.get("script").is_none(), "script must not pass through");
-        assert!(map.get("listeners").is_none(), "listeners must not pass through");
-        assert!(map.get("external-ui").is_none(), "external-ui must not pass through");
-        assert!(map.get("proxy-providers").is_none(), "proxy-providers must not pass through");
+        assert!(
+            map.get("listeners").is_none(),
+            "listeners must not pass through"
+        );
+        assert!(
+            map.get("external-ui").is_none(),
+            "external-ui must not pass through"
+        );
+        assert!(
+            map.get("proxy-providers").is_none(),
+            "proxy-providers must not pass through"
+        );
         // dns/tun 保持应用值（受控键），不被订阅覆盖
         assert_eq!(
-            map.get("dns").unwrap().get("enable").and_then(|v| v.as_bool()),
+            map.get("dns")
+                .unwrap()
+                .get("enable")
+                .and_then(|v| v.as_bool()),
             Some(true),
             "dns stays at app default"
         );
         assert_eq!(
-            map.get("tun").unwrap().get("enable").and_then(|v| v.as_bool()),
+            map.get("tun")
+                .unwrap()
+                .get("enable")
+                .and_then(|v| v.as_bool()),
             Some(false),
             "tun stays at app default"
         );
         // rule-providers 仅应用内置 5 组，订阅 rule-providers 被忽略
         let rp = map.get("rule-providers").unwrap().as_mapping().unwrap();
-        assert!(rp.get("r").is_none(), "subscription rule-providers must be ignored");
+        assert!(
+            rp.get("r").is_none(),
+            "subscription rule-providers must be ignored"
+        );
         assert!(
             rp.get("direct").is_some(),
             "builtin rule-providers preserved"
@@ -668,14 +805,5 @@ rule-providers:
             Some("./rules/ai.yaml"),
             "builtin safe relative path must be preserved"
         );
-    }
-
-    /// C3：净化函数只剥离路径分隔符/控制符，非 ASCII / emoji 名保留。
-    #[test]
-    fn sanitize_provider_path_keeps_unicode() {
-        assert_eq!(sanitize_provider_path("香港 1 🚀"), "香港 1 🚀");
-        assert_eq!(sanitize_provider_path("a/b\\c:d"), "abcd");
-        assert_eq!(sanitize_provider_path("\u{0000}.."), "provider");
-        assert_eq!(sanitize_provider_path("普通节点"), "普通节点");
     }
 }

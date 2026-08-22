@@ -100,6 +100,19 @@ pub struct GeneralConfig {
     #[serde(default)]
     pub allow_lan: bool,
 
+    /// P1-5：allow-lan 高级控制——绑定地址（mihomo `bind-address`）。
+    /// None/空 → 不写该键（mihomo 默认绑定所有接口）；
+    /// 常用值："*"（所有接口）、"127.0.0.1"（仅本机，等价关闭 LAN 访问）、
+    /// 具体内网 IP。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_address: Option<String>,
+
+    /// P1-5：允许访问代理的来源网段白名单（mihomo `lan-allowed-ips`，
+    /// CIDR 列表如 192.168.1.0/24）。空列表 → 不写该键（mihomo 默认
+    /// 0.0.0.0/0 + ::/0 即全部放行）。仅在 allow-lan=true 时写入运行时。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lan_allowed_ips: Vec<String>,
+
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
@@ -157,6 +170,8 @@ impl Default for GeneralConfig {
         Self {
             mixed_port: default_mixed_port(),
             allow_lan: false,
+            bind_address: None,
+            lan_allowed_ips: Vec::new(),
             log_level: default_log_level(),
             ipv6: false,
             geodata_mode: default_geodata_mode(),
@@ -225,9 +240,7 @@ pub fn generate_random_secret() -> String {
 /// `ConfigManager::ensure_secure_secret`（H1 收敛的落盘前统一轮换）
 /// 与系统代理开启前兜底（C9）复用同一判定，避免两处判定逻辑漂移。
 pub fn needs_secret_rotation(secret: &str) -> bool {
-    secret.is_empty()
-        || secret == default_secret_placeholder()
-        || secret == "clash-f-win-secret"
+    secret.is_empty() || secret == default_secret_placeholder() || secret == "clash-f-win-secret"
 }
 
 /// 校验外部控制器地址：仅允许回环地址（`127.0.0.1:<port>` / `localhost:<port>` /
@@ -265,10 +278,7 @@ pub fn validate_external_controller(addr: &str) -> crate::util::error::Result<()
     };
 
     let port: u16 = port_str.parse().map_err(|_| {
-        Error::InvalidArgument(format!(
-            "invalid port in external-controller: '{}'",
-            addr
-        ))
+        Error::InvalidArgument(format!("invalid port in external-controller: '{}'", addr))
     })?;
     if port == 0 {
         return Err(Error::InvalidArgument(format!(
@@ -606,8 +616,9 @@ ad:
 ///
 /// 注意：`自动优选` 是 `url-test` 类型，mihomo 仅对真实代理节点做延迟测速，
 /// DIRECT 不是代理节点——注入 DIRECT 会让 url-test 把直连当作"零延迟最优节点"
-/// 永久霸占自动组，所有真实节点永远拿不到流量。故自动优选初始与运行时都
-/// 不含 DIRECT，无订阅节点时该组保持空列表（mihomo 接受空 proxies 的 url-test）。
+/// 永久霸占自动组，所有真实节点永远拿不到流量。故订阅注入时只放真实节点名。
+/// mihomo（v1.19.x）拒绝 proxies 为空的代理组，无订阅时的空列表由
+/// `build_runtime_config` 在生成运行时配置时补 DIRECT 占位（仅零节点状态）。
 pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
     const YAML: &str = r#"
 - name: GLOBAL

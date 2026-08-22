@@ -12,13 +12,12 @@ import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
 import "./styles.css";
-import { getTheme } from "./theme";
+import { getTheme, setTheme } from "./theme";
 
-// R8.3 主界面为深色，默认深色；设置页可切换浅色（localStorage cfw-theme 持久化）。
+// R8.3 默认深色；设置页可选 system/light/dark 三态（localStorage cfw-theme 持久化）。
 // data-theme 驱动设计系统；dark class 供 Element Plus 深色 css-vars 使用。
-const initialTheme = getTheme();
-document.documentElement.classList.toggle("dark", initialTheme === "dark");
-document.documentElement.setAttribute("data-theme", initialTheme);
+// setTheme 会解析 system 态并注册跟随监听，幂等。
+setTheme(getTheme());
 
 // 应用生命周期监听器：这些监听跟随应用整个生命周期（非页面级），收集 UnlistenFn
 // 便于统一释放；bootstrap 只执行一次，此处由 bootstrapStarted 防重入。

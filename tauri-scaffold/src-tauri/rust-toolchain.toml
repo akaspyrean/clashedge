@@ -1,0 +1,4 @@
+# ClashEdge 工具链锁定：使用官方 stable，不依赖本机 Delta 项目的自定义工具链
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

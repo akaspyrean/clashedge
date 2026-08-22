@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_override_bypass_join() {
-        let bypass = vec!["<local>".to_string(), "lan".to_string()];
+        let bypass = ["<local>".to_string(), "lan".to_string()];
         assert_eq!(bypass.join(","), "<local>,lan");
     }
 }

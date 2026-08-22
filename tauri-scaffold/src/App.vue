@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
+import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, FullScreen, CopyDocument, Close } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
@@ -19,6 +20,7 @@ const appStore = useAppStore();
 const configStore = useConfigStore();
 const coreStore = useCoreStore();
 const route = useRoute();
+const { t } = useI18n();
 
 onMounted(async () => {
   setTheme(getTheme()); // 同步主题 class 与 localStorage，幂等。
@@ -60,11 +62,13 @@ onMounted(async () => {
       void syncMaximized();
     }, 500);
   }
+  narrowMql.addEventListener("change", onNarrowChange);
 });
 
 onUnmounted(() => {
   unlistenResized?.();
   if (pollTimer !== undefined) window.clearInterval(pollTimer);
+  narrowMql.removeEventListener("change", onNarrowChange);
 });
 
 const elLocale = computed(() =>
@@ -124,13 +128,21 @@ async function onClose() {
   // 首次点击提示用户应用仍在托盘运行，避免误以为已退出。
   if (!closeHintShown) {
     closeHintShown = true;
-    ElMessage.info("已最小化到托盘，右键托盘图标可退出。");
+    ElMessage.info(t("titlebar.minimized_to_tray"));
   }
   try {
     await win.close();
   } catch {
     // ignore
   }
+}
+
+// ---- 响应式侧栏：窗口 < 750px 收为 icon-only（文字语义由 title 提示保留）----
+const narrowMql = window.matchMedia("(max-width: 749px)");
+const isNarrow = ref(narrowMql.matches);
+
+function onNarrowChange(e: MediaQueryListEvent) {
+  isNarrow.value = e.matches;
 }
 </script>
 
@@ -146,6 +158,7 @@ async function onClose() {
             type="button"
             class="tb-btn"
             :title="$t('titlebar.minimize')"
+            :aria-label="$t('titlebar.minimize')"
             @click="onMinimize"
           >
             <el-icon :size="14"><Minus /></el-icon>
@@ -154,6 +167,7 @@ async function onClose() {
             type="button"
             class="tb-btn"
             :title="isMaximized ? $t('titlebar.restore') : $t('titlebar.maximize')"
+            :aria-label="isMaximized ? $t('titlebar.restore') : $t('titlebar.maximize')"
             @click="onToggleMaximize"
           >
             <el-icon :size="13">
@@ -165,6 +179,7 @@ async function onClose() {
             type="button"
             class="tb-btn tb-close"
             :title="$t('titlebar.close')"
+            :aria-label="$t('titlebar.close')"
             @click="onClose"
           >
             <el-icon :size="14"><Close /></el-icon>
@@ -173,18 +188,19 @@ async function onClose() {
       </header>
 
       <el-container class="app-shell">
-        <el-aside width="216px" class="app-aside">
+        <el-aside :width="isNarrow ? '64px' : '216px'" class="app-aside" :class="{ narrow: isNarrow }">
           <el-menu :default-active="route.path" router class="app-menu">
             <el-menu-item
               v-for="item in menuItems"
               :key="item.path"
               :index="item.path"
+              :title="$t(item.key)"
             >
               <el-icon><component :is="item.icon" /></el-icon>
-              <span>{{ $t(item.key) }}</span>
+              <span class="menu-label">{{ $t(item.key) }}</span>
             </el-menu-item>
           </el-menu>
-          <div v-if="appStore.version" class="app-footer">
+          <div v-if="appStore.version && !isNarrow" class="app-footer">
             v{{ appStore.version }}
           </div>
         </el-aside>
@@ -272,6 +288,23 @@ async function onClose() {
 .tb-close:hover {
   background-color: var(--error);
   color: var(--on-error);
+}
+
+/* 键盘可达性：标题栏按钮聚焦时显示清晰焦点环。 */
+.tb-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 响应式：窗口 < 860px 时侧栏收为 icon-only，
+   文字语义保留在 el-menu-item 的 title 提示上。 */
+.app-aside.narrow :deep(.menu-label) {
+  display: none;
+}
+
+.app-aside.narrow :deep(.app-menu .el-menu-item) {
+  justify-content: center;
+  padding: 0 !important;
 }
 
 /* 覆盖全局 .app-shell { height: 100vh }，改为在标题栏下方弹性填满。 */

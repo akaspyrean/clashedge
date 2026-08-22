@@ -18,6 +18,7 @@ titlebar:
   maximize: "Maximize"
   restore: "Restore"
   close: "Close"
+  minimized_to_tray: "Minimized to tray. Right-click the tray icon to quit."
 
 dashboard:
   title: "Dashboard"
@@ -94,6 +95,13 @@ general:
   title: "General Settings"
   mixed_port: "Mixed Port"
   allow_lan: "Allow LAN Connections"
+  allow_lan_confirm: "Once enabled, other devices on the same network may use this machine as a proxy. Consider the advanced restrictions below."
+  lan_advanced: "Advanced Restrictions"
+  bind_address: "Bind Address"
+  bind_address_placeholder: "* for all interfaces; an intranet IP limits the listening scope"
+  lan_allowed_ips: "Allowed Subnets"
+  lan_allowed_ips_placeholder: "Comma or newline separated CIDRs, e.g. 192.168.1.0/24"
+  lan_ips_invalid: "Invalid subnet format (ignored by backend on save)"
   system_proxy: "System Proxy"
   log_level: "Log Level"
   ipv6: "IPv6"
@@ -159,7 +167,7 @@ advanced:
   rules: "Rules"
 
 profiles:
-  title: "Profile Management"
+  title: "Profiles"
   new: "New Profile"
   import: "Import Profile"
   export: "Export Profile"
@@ -183,7 +191,7 @@ profiles:
   empty: "No profiles yet. Click 'New Profile' or 'Subscribe Management' to get started"
 
 proxies:
-  title: "Proxy Groups"
+  title: "Proxy"
   group: "Group"
   select: "Select"
   latency: "Latency"
@@ -223,6 +231,7 @@ logs:
   clear: "Clear"
   export: "Export"
   follow: "Follow"
+  auto_scroll: "Auto-scroll to bottom"
   timestamp: "Time"
   message: "Message"
   placeholder: "No logs yet"
@@ -241,6 +250,11 @@ about:
   wiki: "Wiki"
   license: "License"
   acknowledgements: "Acknowledgements"
+  check_update: "Check for updates"
+  up_to_date: "You are up to date"
+  update_available: "Version {version} available, downloading and verifying…"
+  update_staged: "Version {version} is ready; the launcher will install it on next start (data is preserved)"
+  update_failed: "Update check failed: {error}"
 
 common:
   save: "Save"

@@ -1,10 +1,26 @@
-/* src/styles.css - 全局样式与主题变量（浅色/深色）
+﻿/* src/styles.css - 全局样式与主题变量（浅色/深色）
  * 设计系统：:root 为浅色；html[data-theme="dark"] 为深色。
+ * 规范文档：docs/DESIGN_SYSTEM.md（ClashEdge Hybrid Design System v1.0，
+ * 品牌性格 Quiet Power；改视觉先读文档 §9 维护流程——只改此处 token，
+ * 视图组件禁止写死色值/字号/圆角。）
  * Element Plus 深色主题（dark/css-vars.css）依赖 html.dark class，
  * 故 theme.ts/main.ts 同时维护 data-theme 属性（本设计系统）与 dark class（EP）。
  * 窗口原生底色由 tauri.conf.json 的 backgroundColor 固定（深色），不再由前端同步。 */
 
 @import "element-plus/theme-chalk/dark/css-vars.css";
+
+/* ---- 全局 token（与主题无关）：间距 / 动效 ----
+ * 4pt 网格间距 + 动效纪律（150ms/200ms，唯一缓动 ease，见文档 §5/§7）。 */
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+}
 
 /* ---- 浅色主题（设计系统）---- */
 :root {
@@ -109,34 +125,39 @@
   --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #000);
 }
 
-/* ---- 深色主题（设计系统）---- */
+/* ---- 深色主题（设计系统）----
+ * 海拔分层对齐 Apple HIG：base < sidebar < surface < raised，
+ * 相邻层亮度差 ≥ 4%，让卡片靠底色浮起而不是靠描边。 */
 html[data-theme="dark"] {
   color-scheme: dark;
 
   /* ===== 背景 ===== */
-  --bg-app: #101214;
-  --bg-surface: #171A1D;
-  --bg-raised: #1D2125;
-  --bg-sidebar: #14171A;
-  --bg-soft: #20262D;
+  --bg-app: #0e1013;
+  --bg-surface: #191c21;
+  --bg-raised: #23272e;
+  --bg-sidebar: #131519;
+  --bg-soft: #262b33;
 
   /* ===== 文本 ===== */
-  --text-primary: #F4F6F8;
-  --text-secondary: #C0C7D0;
-  --text-tertiary: #A7B0BA;
+  /* 中性灰阶：去蓝色倾向，一级到三级亮度阶梯拉开。 */
+  --text-primary: #f5f6f7;
+  --text-secondary: #b9bfc7;
+  --text-tertiary: #858d97;
 
   /* ===== 边框 ===== */
-  --border-subtle: #353C44;
+  /* 表面分层增强后，描边可以更弱，减少线框噪音。 */
+  --border-subtle: #31363e;
 
   /* ===== 强调色 ===== */
-  --accent: #77A7FF;
-  --accent-soft: #1C2C47;
+  /* 主色向 iOS systemBlue(dark) 靠拢：更高饱和、更干净的蓝。 */
+  --accent: #4e8fff;
+  --accent-soft: rgba(78, 143, 255, 0.14);
 
   /* ===== 状态色 ===== */
-  --approval: #F2B866;
-  --done: #7EDB99;
-  --error: #FF9A93;
-  --idle: #C0C7D0;
+  --approval: #f2b866;
+  --done: #7edb99;
+  --error: #ff9a93;
+  --idle: #b9bfc7;
 
   /* ===== 尺寸/字体 ===== */
   --r-sm: 8px;
@@ -153,7 +174,7 @@ html[data-theme="dark"] {
   /* ---- 派生 token（深色）---- */
   --on-error: #101214;
   --interactive-hover: var(--bg-soft);
-  --card-border: #2A3038;
+  --card-border: #262a31;
   --menu-active-bg: var(--accent-soft);
 
   /* ---- Element Plus 主题映射（深色）----
@@ -282,16 +303,26 @@ body {
   max-width: 1080px;
 }
 
+/* 页面标题：Flyme 式轻盈层级——中字号中字重，不做视觉重锤。 */
 .page-title {
   margin: 0 0 16px;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
   color: var(--text-primary);
 }
 
 /* ---- 精致化精修 ----
  * 统一卡片 / 侧边栏 / 滚动条 / 空态，使各视图层次一致、克制的阴影与描边。
  * 原则：只在现有结构上加细节，不做布局重构。 */
+
+/* Element Plus 组件圆角与设计 token 对齐（按钮/输入框/下拉/开关等统一 8px）。 */
+:root,
+html[data-theme="dark"] {
+  --el-border-radius-base: var(--r-sm);
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+}
 
 /* 卡片：默认无阴影，靠底色与极细描边分层；hover 轻微抬升（可点击卡片场景）。 */
 .el-card {
@@ -302,7 +333,17 @@ body {
   box-shadow: none;
 }
 
-/* 侧边栏：选中项显示左侧强调指示条 + 淡底色，比 EP 默认整块高亮更克制耐看。 */
+/* 卡片标题：14px 中字重，与正文拉开层级但不压过页面标题。
+ * 内边距显式用 token 定死，不依赖 EP 的 calc(var(--el-card-padding))——
+ * 该 calc 遇到双值自定义属性会整体失效（贴边 bug 根因），此处兜底。 */
+.el-card__header {
+  font-size: 14px;
+  font-weight: 500;
+  padding: var(--space-3) var(--space-5);
+}
+
+/* 侧边栏：选中项仅用淡底色 + 强调色文字（单一强调，不做双重指示），
+ * 圆角胶囊比整块高亮更轻盈。 */
 .app-menu .el-menu-item {
   position: relative;
   border-radius: var(--r-sm);
@@ -310,25 +351,14 @@ body {
   height: 40px;
   line-height: 40px;
   transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 
 .app-menu .el-menu-item.is-active {
   background: var(--menu-active-bg);
   color: var(--accent);
-  font-weight: 600;
-}
-
-.app-menu .el-menu-item.is-active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--accent);
+  font-weight: 500;
 }
 
 .app-menu .el-menu-item:hover {
@@ -368,12 +398,10 @@ body {
   --el-table-row-hover-bg-color: var(--interactive-hover);
 }
 
-/* 空态：图标/文案颜色跟随文本弱化层级，间距更舒展。 */
-.el-empty__description {
-  color: var(--text-tertiary);
-}
-
+/* 空态：图标/文案颜色跟随文本弱化层级，间距更舒展；
+ * 插画收敛到 128px，避免大箱子图霸占视觉中心。 */
 .el-empty {
+  --el-empty-padding: 32px 0;
   --el-empty-fill-color-0: var(--bg-soft);
   --el-empty-fill-color-1: var(--border-subtle);
   --el-empty-fill-color-2: var(--bg-soft);
@@ -386,20 +414,48 @@ body {
   --el-empty-fill-color-9: var(--border-subtle);
 }
 
+.el-empty__description {
+  color: var(--text-tertiary);
+}
+
+.el-empty__image {
+  width: 128px;
+}
+
+/* 标签：圆角与字重对齐设计系统；状态类标签一律 plain 描边风（视图层），
+ * 禁用高饱和实心底（Quiet Power，见 docs/DESIGN_SYSTEM.md §8）。 */
+.el-tag {
+  border-radius: var(--el-border-radius-small);
+  font-weight: 500;
+}
+
 /* 对话框：更明确的圆角与浅阴影，避免默认直角生硬。 */
 .el-dialog {
   border-radius: var(--r-md);
   --el-dialog-bg-color: var(--bg-surface);
 }
 
-/* 页签（Settings 左侧标签）：选中项底色与文字层级统一。 */
+/* 页签（Settings 左侧标签）：选中项底色与文字层级统一；
+ * 左侧布局收敛导航列宽，标签项高度更紧凑。 */
 .el-tabs__item {
   color: var(--text-secondary);
+  transition: color var(--dur-fast) ease;
 }
 
 .el-tabs__item.is-active {
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 500;
+}
+
+.el-tabs--left .el-tabs__nav-wrap {
+  margin-right: 24px;
+}
+
+.el-tabs--left .el-tabs__item {
+  height: 40px;
+  line-height: 40px;
+  text-align: left;
+  justify-content: flex-start;
 }
 
 /* 描述列表（About）：底色随 surface，分隔更含蓄。 */

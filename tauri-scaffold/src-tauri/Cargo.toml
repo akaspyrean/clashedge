@@ -1,6 +1,6 @@
 [package]
 name = "clash-edge"
-version = "0.8.7"
+version = "1.0.0"
 description = "ClashEdge - Lightweight Clash Client for Windows"
 authors = ["akaspyrean"]
 edition = "2021"
@@ -55,6 +55,8 @@ once_cell = "1.19"
 parking_lot = "0.12"
 base64 = "0.21"
 rand = "0.8"
+# Portable Updater 更新包完整性校验（SHA256，Cargo.lock 锁 0.10.9）
+sha2 = "0.10"
 # 托盘图标运行时着色（系统代理开=绿 / 关=灰）；
 # 已作为传递依赖存在于 Cargo.lock（image 0.25.10），无需新增下载。
 image = { version = "0.25", default-features = false, features = ["png"] }

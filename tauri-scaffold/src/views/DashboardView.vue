@@ -25,7 +25,6 @@ const statusKey = computed(() =>
         ? "dashboard.running"
         : "dashboard.stopped"
 );
-const statusType = computed(() => (running.value ? "success" : "info"));
 
 /** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色），
  *  成功后同步本地 store，避免下次整包保存时把该字段覆盖回 false。 */
@@ -72,7 +71,10 @@ async function onReload() {
       <template #header>
         <div class="status-head">
           <span>{{ $t("dashboard.core_status") }}</span>
-          <el-tag :type="statusType" size="large">{{ $t(statusKey) }}</el-tag>
+          <span class="status-pill" :class="{ running: running }">
+            <span class="status-dot" aria-hidden="true"></span>
+            {{ $t(statusKey) }}
+          </span>
         </div>
       </template>
 
@@ -105,6 +107,7 @@ async function onReload() {
         <el-button
           v-else
           type="danger"
+          plain
           class="core-btn"
           :loading="core.stopping"
           @click="core.stop()"
@@ -138,7 +141,32 @@ async function onReload() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-weight: 600;
+  font-weight: 500;
+}
+
+/* 状态指示：小圆点 + 文字，替代高饱和状态灯（设计规范 §8）。 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.status-pill.running {
+  color: var(--done);
+}
+
+.status-pill.running .status-dot {
+  background: var(--done);
 }
 
 .status-grid {
@@ -148,10 +176,11 @@ async function onReload() {
 }
 
 .stat-item {
-  background: var(--bg-raised);
-  border: 1px solid var(--card-border);
-  border-radius: var(--r-sm);
-  padding: 14px 16px;
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+}
+
+.stat-item + .stat-item {
+  border-left: 1px solid var(--card-border);
 }
 
 .stat-label {
@@ -167,7 +196,9 @@ async function onReload() {
 }
 
 .status-card {
-  --el-card-padding: 20px 24px;
+  /* 单值！EP 头部用 calc(var(--el-card-padding) - 2px)，双值会让 calc
+     失效、头部内边距归零（核心状态/运行中贴边的根因）。 */
+  --el-card-padding: var(--space-5);
 }
 
 .core-actions {
@@ -198,7 +229,7 @@ async function onReload() {
 }
 
 .set-label {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14px;
   color: var(--text-primary);
 }
