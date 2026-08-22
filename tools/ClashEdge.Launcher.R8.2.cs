@@ -2,10 +2,105 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 
 internal static class ClashEdgeLauncher
 {
+    // --- Junction target resolution (audit P1-6) ------------------------------
+
+    private const int FsctlGetReparsePoint = 0x000900A8;
+    private const uint IoReparseTagMountPoint = 0xA0000003;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateFile(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(
+        IntPtr hDevice,
+        int dwIoControlCode,
+        IntPtr lpInBuffer,
+        int nInBufferSize,
+        byte[] lpOutBuffer,
+        int nOutBufferSize,
+        out int lpBytesReturned,
+        IntPtr lpOverlapped);
+
+    /// 解析目录联接（junction）的替代名称，形如 \??\C:\real\path。
+    /// 不是挂载点联接、打开失败或解析失败时返回 null。
+    private static string GetJunctionTarget(string path)
+    {
+        // 以零访问权打开 reparse point 本身（FILE_FLAG_OPEN_REPARSE_POINT
+        // 阻止内核穿透到目标；零访问权避免对目标目录的任何权限要求）。
+        IntPtr handle = CreateFile(path, 0, 7, IntPtr.Zero, 3,
+            0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS */
+                | 0x00200000 /* FILE_FLAG_OPEN_REPARSE_POINT */,
+            IntPtr.Zero);
+        if (handle.ToInt64() == -1) return null;
+        try
+        {
+            var buffer = new byte[16 * 1024];
+            int returned;
+            if (!DeviceIoControl(handle, FsctlGetReparsePoint, IntPtr.Zero, 0,
+                    buffer, buffer.Length, out returned, IntPtr.Zero))
+                return null;
+
+            // REPARSE_DATA_BUFFER：Tag(4) DataLength(2) Reserved(2)
+            // MountPoint：SubstituteNameOffset(2) SubstituteNameLength(2)
+            //             PrintNameOffset(2) PrintNameLength(2) PathBuffer...
+            uint tag = BitConverter.ToUInt32(buffer, 0);
+            if (tag != IoReparseTagMountPoint) return null;
+            ushort substituteOffset = BitConverter.ToUInt16(buffer, 8);
+            ushort substituteLength = BitConverter.ToUInt16(buffer, 10);
+            int start = 16 + substituteOffset;
+            if (start + substituteLength > returned) return null;
+            return Encoding.Unicode.GetString(buffer, start, substituteLength);
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    /// 规范化联接目标路径用于比对：剥离 \??\ / \\?\ 前缀并取完整路径。
+    private static string NormalizeJunctionPath(string path)
+    {
+        if (path == null) return null;
+        if (path.StartsWith(@"\??\", StringComparison.Ordinal)) path = path.Substring(4);
+        else if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) path = path.Substring(4);
+        try { return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar); }
+        catch { return path.TrimEnd(Path.DirectorySeparatorChar); }
+    }
+
+    /// P1-6：校验已存在的联接真实指向便携根下的 Data 目录。
+    /// 目标不符或解析失败时抛异常终止启动——防止 junction 被篡改后
+    /// 应用把用户数据写到任意位置（如系统目录或其他盘）。
+    private static void ValidateJunctionTarget(string appDataDirectory, string portableDataDirectory)
+    {
+        string actual = NormalizeJunctionPath(GetJunctionTarget(appDataDirectory));
+        string expected = NormalizeJunctionPath(portableDataDirectory);
+        bool match = actual != null && string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
+        if (!match)
+        {
+            throw new InvalidOperationException(
+                "数据目录联接校验失败（App\\ClashEdge\\data 未指向本便携包的 Data 目录）。" +
+                "\n预期目标: " + (expected ?? "<未知>") +
+                "\n实际目标: " + (actual ?? "<解析失败>") +
+                "\n为防数据写入错误位置已拒绝启动。请删除 App\\ClashEdge\\data 后重新运行，或重新解压完整便携包。");
+        }
+    }
+
     private static void CopyMissing(string source, string destination)
     {
         if (!Directory.Exists(source)) return;
@@ -51,11 +146,11 @@ internal static class ClashEdgeLauncher
         }
     }
 
-    /// 确保 App/ClashEdge/data 是有效联接。三种情况：
-    /// 1. 已是有效联接 → 直接返回；
-    /// 2. 是真实目录（手动创建或旧版本残留）→ 内容并入 Data/ 后删除并重建联接；
-    /// 3. 是损坏的联接 → 删除后重建。
-    /// 不再对真实目录报错，而是自愈。
+    /// 确保 App/ClashEdge/data 是指向便携根 Data/ 的有效联接。四种情况：
+    /// 1. 已是联接且目标正确 → 校验通过，直接返回（P1-6）；
+    /// 2. 是联接但目标不符 / 解析失败 → 报错退出（防篡改）；
+    /// 3. 是真实目录（手动创建或旧版本残留）→ 内容并入 Data/ 后删除并重建联接；
+    /// 4. 是损坏的联接（目标不存在）→ 删除后重建。
     private static void EnsureDataJunction(string appDataDirectory, string portableDataDirectory)
     {
         if (PathExists(appDataDirectory))
@@ -63,8 +158,13 @@ internal static class ClashEdgeLauncher
             var attrs = File.GetAttributes(appDataDirectory);
             if ((attrs & FileAttributes.ReparsePoint) != 0)
             {
-                // 有效联接（目标存在）即返回；损坏联接 Directory.Exists == false，走重建。
-                if (Directory.Exists(appDataDirectory)) return;
+                // 有效联接（目标存在）必须校验其真实目标；损坏联接
+                // Directory.Exists == false，走删除重建。
+                if (Directory.Exists(appDataDirectory))
+                {
+                    ValidateJunctionTarget(appDataDirectory, portableDataDirectory);
+                    return;
+                }
                 File.Delete(appDataDirectory); // 只删联接本身，不递归目标
             }
             else
@@ -94,6 +194,139 @@ internal static class ClashEdgeLauncher
         return "\"" + value.Replace("\\\"", "\\\\\"") + "\"";
     }
 
+    // --- Portable Updater apply (0.8.10 Phase 3) ------------------------------
+
+    /// 从 pending.json 提取简单字符串字段（避免引入 JSON 依赖；C# 5 / 最小引用）
+    private static string ExtractJsonField(string json, string field)
+    {
+        var key = "\"" + field + "\"";
+        int keyIdx = json.IndexOf(key, StringComparison.Ordinal);
+        if (keyIdx < 0) return null;
+        int colon = json.IndexOf(':', keyIdx + key.Length);
+        if (colon < 0) return null;
+        int open = json.IndexOf('"', colon);
+        if (open < 0) return null;
+        int close = json.IndexOf('"', open + 1);
+        if (close < 0) return null;
+        return json.Substring(open + 1, close - open - 1);
+    }
+
+    private static string Sha256OfFile(string path)
+    {
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+        using (var stream = File.OpenRead(path))
+        {
+            var hash = sha.ComputeHash(stream);
+            var sb = new StringBuilder(hash.Length * 2);
+            foreach (var b in hash) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+    }
+
+    /// 应用暂存更新：Data/update-staging/pending.json 存在时，
+    /// 复验 ZIP 哈希 → 解压 → 结构校验（必须含 ClashEdge.exe）→
+    /// 替换 App/ClashEdge（旧目录先改名保留，失败即回滚）→ 清理暂存。
+    /// 任何失败都不阻断正常启动——保留旧版本继续运行，仅清理无效暂存。
+    private static void ApplyPendingUpdate(string root, bool silent)
+    {
+        string staging;
+        try { staging = Path.Combine(root, "Data", "update-staging"); }
+        catch { return; }
+        try
+        {
+            var pendingPath = Path.Combine(staging, "pending.json");
+            if (!File.Exists(pendingPath)) return;
+
+            var json = File.ReadAllText(pendingPath);
+            string zipPath = ExtractJsonField(json, "zip_path");
+            string expectedSha = ExtractJsonField(json, "sha256");
+            string version = ExtractJsonField(json, "version") ?? "?";
+            if (string.IsNullOrEmpty(zipPath) || string.IsNullOrEmpty(expectedSha)
+                || !File.Exists(zipPath))
+            {
+                Directory.Delete(staging, true);
+                return;
+            }
+
+            // 复验哈希（下载端已验一次；应用前不信任暂存区状态）
+            string actualSha = Sha256OfFile(zipPath);
+            if (!string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("SHA256 mismatch on staged update");
+
+            // 解压到临时目录
+            var extracted = Path.Combine(staging, "extracted");
+            if (Directory.Exists(extracted)) Directory.Delete(extracted, true);
+            System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, extracted);
+
+            // 定位应用根：ZIP 根直接是应用，或带一层顶层目录
+            string appRoot = null;
+            if (File.Exists(Path.Combine(extracted, "App", "ClashEdge", "ClashEdge.exe")))
+                appRoot = extracted;
+            else
+            {
+                foreach (var dir in Directory.GetDirectories(extracted))
+                {
+                    if (File.Exists(Path.Combine(dir, "App", "ClashEdge", "ClashEdge.exe")))
+                    {
+                        appRoot = dir;
+                        break;
+                    }
+                }
+            }
+            if (appRoot == null)
+                throw new InvalidOperationException(
+                    "Staged update does not contain App/ClashEdge/ClashEdge.exe");
+
+            // 启动器自更新：ZIP 根若带新版 ClashEdge.exe 且内容不同，
+            // 用 rename 技巧换掉正在运行的自身（Windows 允许重命名运行中的映像）
+            try
+            {
+                string newLauncher = Path.Combine(appRoot, "ClashEdge.exe");
+                string selfExe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                if (File.Exists(newLauncher) && File.Exists(selfExe)
+                    && !string.Equals(Sha256OfFile(newLauncher), Sha256OfFile(selfExe),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    var selfOld = selfExe + ".old-" + DateTime.Now.Ticks;
+                    File.Move(selfExe, selfOld);
+                    File.Copy(newLauncher, selfExe, true);
+                }
+            }
+            catch { } // 自更新失败不阻断 App/ 更新
+
+            // 完整便携布局替换：以 appRoot 为新根，替换根下的 App/；
+            // Data/ 在根级、不在包内，天然不受影响。
+            string rootApp = Path.Combine(root, "App");
+            string backup = rootApp + ".old-" + DateTime.Now.Ticks;
+            Directory.Move(rootApp, backup);
+            try
+            {
+                CopyMissing(Path.Combine(appRoot, "App"), rootApp);
+            }
+            catch
+            {
+                // 回滚：新内容复制失败 → 恢复旧 App/
+                try { if (Directory.Exists(rootApp)) Directory.Delete(rootApp, true); } catch { }
+                Directory.Move(backup, rootApp);
+                throw;
+            }
+            try { Directory.Delete(backup, true); } catch { }
+            Directory.Delete(staging, true);
+
+            if (!silent)
+                MessageBox.Show("ClashEdge 已更新到 " + version + "。", "更新完成",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            // 更新失败绝不阻断启动：清理暂存，继续用当前版本
+            try { Directory.Delete(staging, true); } catch { }
+            if (!silent)
+                MessageBox.Show("更新应用失败，已保留当前版本。\n\n" + ex.Message,
+                    "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -109,6 +342,8 @@ internal static class ClashEdgeLauncher
             CopyMissing(Path.Combine(root, "App", "DefaultData"), data);
             Directory.CreateDirectory(data);
             EnsureDataJunction(Path.Combine(appDirectory, "data"), data);
+            // 0.8.10 Portable Updater：拉起内层前应用已验签的暂存更新
+            ApplyPendingUpdate(root, silent);
             var home = Path.Combine(data, "Home");
             Directory.CreateDirectory(home);
             var forwarded = string.Join(" ", args.Select(Quote));
