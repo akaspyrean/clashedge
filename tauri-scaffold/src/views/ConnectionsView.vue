@@ -1,4 +1,4 @@
-<!-- src/views/ConnectionsView.vue - 连接列表：每 2s 轮询 get_connections -->
+﻿<!-- src/views/ConnectionsView.vue - 连接列表：每 2s 轮询 get_connections -->
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import {
@@ -72,15 +72,39 @@ async function onCloseAll() {
   }
 }
 
-onMounted(() => {
-  void refresh();
+function startPolling() {
+  if (timer !== undefined) return;
   timer = window.setInterval(() => {
     void refresh();
   }, POLL_INTERVAL);
+}
+
+function stopPolling() {
+  if (timer !== undefined) {
+    window.clearInterval(timer);
+    timer = undefined;
+  }
+}
+
+// 页面隐藏（最小化/切走）时暂停 2s 轮询，恢复可见时立即拉一次并重启轮询。
+function onVisibilityChange() {
+  if (document.hidden) {
+    stopPolling();
+  } else {
+    void refresh();
+    startPolling();
+  }
+}
+
+onMounted(() => {
+  void refresh();
+  startPolling();
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
 onUnmounted(() => {
-  if (timer !== undefined) window.clearInterval(timer);
+  stopPolling();
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 });
 </script>
 
@@ -164,7 +188,7 @@ onUnmounted(() => {
 
 .totals b {
   color: var(--text-primary);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .totals-sep {

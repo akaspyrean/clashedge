@@ -1,8 +1,8 @@
-<!-- src/views/LogsView.vue - 日志：通过 Mihomo 外部控制器 /logs 实时流展示
+﻿<!-- src/views/LogsView.vue - 日志：通过 Mihomo 外部控制器 /logs 实时流展示
      后端 core::logs 连接控制器 SSE 长连接，逐行转发为 log-line 事件；
      本页挂载时启动流、卸载时停止，保证不残留后台连接。 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logsApi } from "@/api/logs";
 import { useCoreStore } from "@/stores/core";
@@ -24,6 +24,20 @@ let unlisteners: UnlistenFn[] = [];
 
 const listEl = ref<HTMLElement | null>(null);
 
+// 「自动滚动到底」开关：默认开。强制滚动仅在「开关开 && 视口处于底部」时执行，
+// 用户向上滚动离开底部即自然暂停，重新触底或重新打开开关后恢复。
+const follow = ref(true);
+
+/** 触底判定：scrollTop + clientHeight >= scrollHeight - 8。 */
+function isAtBottom(el: HTMLElement): boolean {
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+}
+
+function scrollToBottom() {
+  const el = listEl.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
 const statusText = computed(() => {
   if (connected.value) return "logs.connected";
   if (errorMsg.value) return "logs.disconnected";
@@ -35,11 +49,17 @@ function push(level: string, message: string) {
   if (entries.value.length > MAX_LINES) {
     entries.value.splice(0, entries.value.length - MAX_LINES);
   }
-  // 自动跟随到底部（下一帧，等 DOM 更新）
+  // 自动跟随到底部（下一帧，等 DOM 更新）：仅在开关开启且当前处于底部时执行。
   requestAnimationFrame(() => {
-    if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight;
+    const el = listEl.value;
+    if (el && follow.value && isAtBottom(el)) el.scrollTop = el.scrollHeight;
   });
 }
+
+/** 开关切换：打开时立即滚到底部，恢复跟随。 */
+watch(follow, (v) => {
+  if (v) scrollToBottom();
+});
 
 function clear() {
   entries.value = [];
@@ -98,13 +118,18 @@ onUnmounted(() => {
     <h2 class="page-title">{{ $t("logs.title") }}</h2>
 
     <div class="log-toolbar">
-      <el-tag :type="connected ? 'success' : 'info'" size="small">
+      <span class="status-pill" :class="{ running: connected }">
+        <span class="status-dot" aria-hidden="true"></span>
         {{ $t(statusText) }}
-      </el-tag>
-      <el-button size="small" :disabled="!core.status.running" @click="connect">
+      </span>
+      <el-button :disabled="!core.status.running" @click="connect">
         {{ $t("logs.reconnect") }}
       </el-button>
-      <el-button size="small" @click="clear">{{ $t("logs.clear") }}</el-button>
+      <el-button @click="clear">{{ $t("logs.clear") }}</el-button>
+      <span class="log-follow">
+        <span class="log-follow-label">{{ $t("logs.auto_scroll") }}</span>
+        <el-switch v-model="follow" size="small" />
+      </span>
     </div>
 
     <el-empty
@@ -128,11 +153,48 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 状态指示：与概览页同一套「小圆点 + 文字」语言（设计规范 §8）。 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.status-pill.running {
+  color: var(--done);
+}
+
+.status-pill.running .status-dot {
+  background: var(--done);
+}
+
 .log-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.log-follow {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.log-follow-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
 }
 
 .log-scroll {
@@ -151,9 +213,9 @@ onUnmounted(() => {
   align-items: baseline;
   gap: 10px;
   padding: 3px 6px;
-  border-radius: 4px;
+  border-radius: var(--el-border-radius-small);
   color: var(--text-secondary);
-  transition: background-color 0.15s ease;
+  transition: background-color var(--dur-fast) ease;
 }
 
 .log-line:hover {
@@ -173,9 +235,5 @@ onUnmounted(() => {
   color: var(--text-tertiary);
   text-align: center;
   padding: 32px 0;
-}
-
-.log-empty {
-  padding: 40px 0;
 }
 </style>

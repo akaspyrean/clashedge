@@ -5,6 +5,7 @@
 //! - 参考包 C# 启动器布局：launcher = 包根 `ClashEdge.exe`（负责设置
 //!   `CLASH_EDGE_DATA_DIR`/`HOME`/`APPDATA` 并拉起内层应用）；
 //! - 原生便携布局：launcher = 应用本体自身。
+//!
 //! `repair_autostart` 会在便携包移动/改名后把 Run 键路径自愈重写为当前位置。
 //!
 //! 写注册表 `HKCU\...\Run` 时，值固定为 `"<root>\ClashEdge.exe" --clash-edge-autostart`。
@@ -41,10 +42,10 @@ pub fn parse_launcher_path(value: &std::ffi::OsStr) -> Option<PathBuf> {
     let s = s.trim();
 
     // 引号包裹路径："C:\...\ClashEdge.exe" --arg
-    if s.starts_with('"') {
+    if let Some(stripped) = s.strip_prefix('"') {
         // 引号未闭合 → 非法，不猜测
-        let inner_end = s[1..].find('"')?;
-        let inner = &s[1..1 + inner_end];
+        let inner_end = stripped.find('"')?;
+        let inner = &stripped[..inner_end];
         if inner.is_empty() {
             return None; // 空引号 "" → 非法
         }
@@ -62,7 +63,9 @@ pub fn parse_launcher_path(value: &std::ffi::OsStr) -> Option<PathBuf> {
 /// 判断两个路径是否指向同一文件（大小写不敏感比较，Windows 下 canonicalize 可能
 /// 失败，因此先比较字符串上，若相同再尝试 canonicalize）。
 fn paths_equal(a: &Path, b: &Path) -> bool {
-    if a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()) {
+    if a.to_string_lossy()
+        .eq_ignore_ascii_case(&b.to_string_lossy())
+    {
         return true;
     }
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
@@ -114,7 +117,8 @@ pub fn repair_autostart() -> Result<()> {
 
     tracing::info!(
         "Repairing autostart path: stored {:?} -> launcher {:?}",
-        stored, launcher
+        stored,
+        launcher
     );
     let new_value = format!("\"{}\" {}", launcher.display(), AUTOSTART_ARG);
     run.set_value(VALUE_NAME, &new_value)?;
@@ -253,7 +257,10 @@ mod tests {
     #[test]
     fn parses_quoted_path_with_args() {
         let p = launcher_path(r#""D:\Apps\ClashEdge Port\ClashEdge.exe" --clash-edge-autostart"#);
-        assert_eq!(p, Some(PathBuf::from(r"D:\Apps\ClashEdge Port\ClashEdge.exe")));
+        assert_eq!(
+            p,
+            Some(PathBuf::from(r"D:\Apps\ClashEdge Port\ClashEdge.exe"))
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ titlebar:
   maximize: "最大化"
   restore: "还原"
   close: "关闭"
+  minimized_to_tray: "已最小化到托盘，右键托盘图标可退出。"
 
 dashboard:
   title: "概览"
@@ -94,6 +95,13 @@ general:
   title: "常规设置"
   mixed_port: "混合端口"
   allow_lan: "允许局域网连接"
+  allow_lan_confirm: "开启后，同一网络中的其他设备可能使用本机代理。建议配合下方高级限制使用。"
+  lan_advanced: "高级限制"
+  bind_address: "绑定地址"
+  bind_address_placeholder: "* 表示所有接口；填内网 IP 可限定监听范围"
+  lan_allowed_ips: "允许网段"
+  lan_allowed_ips_placeholder: "逗号或换行分隔 CIDR，如 192.168.1.0/24"
+  lan_ips_invalid: "以下网段格式不合法（保存时将被后端忽略）"
   system_proxy: "系统代理"
   log_level: "日志级别"
   ipv6: "IPv6"
@@ -159,7 +167,7 @@ advanced:
   rules: "规则"
 
 profiles:
-  title: "配置文件管理"
+  title: "配置"
   new: "新建配置"
   import: "导入配置"
   export: "导出配置"
@@ -183,7 +191,7 @@ profiles:
   empty: "暂无配置文件，点击「新建配置」或「订阅管理」开始使用"
 
 proxies:
-  title: "代理组"
+  title: "代理"
   group: "组"
   select: "选择"
   latency: "延迟"
@@ -200,7 +208,7 @@ proxies:
   direct_hint: "直连模式：所有流量直连，不走代理。"
 
 connections:
-  title: "连接列表"
+  title: "连接"
   process: "进程"
   protocol: "协议"
   host: "主机"
@@ -223,6 +231,7 @@ logs:
   clear: "清空"
   export: "导出"
   follow: "跟随"
+  auto_scroll: "自动滚动到底"
   timestamp: "时间"
   message: "消息"
   placeholder: "暂无日志"
@@ -241,6 +250,11 @@ about:
   wiki: "Wiki"
   license: "许可证"
   acknowledgements: "致谢"
+  check_update: "检查更新"
+  up_to_date: "已是最新版本"
+  update_available: "发现新版本 {version}，正在下载并校验…"
+  update_staged: "新版本 {version} 已就绪，重启应用后由启动器完成安装（数据不受影响）"
+  update_failed: "检查更新失败：{error}"
 
 common:
   save: "保存"

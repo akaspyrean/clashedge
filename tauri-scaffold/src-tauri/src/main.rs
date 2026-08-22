@@ -20,6 +20,7 @@ mod geodata;
 mod i18n;
 mod proxy;
 mod tray;
+mod update;
 mod util;
 
 use crate::config::persistence::ConfigManager;
@@ -44,6 +45,11 @@ pub struct AppState {
         std::sync::Mutex<Option<crate::proxy::system_proxy::SystemProxyConfig>>,
     /// 日志流任务句柄（前端日志页启用/停止；std Mutex，abort 为同步调用）
     pub log_stream: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// P1-7：最近一次 mihomo 子进程 PID 缓存（CoreSupervisor 在每次成功 spawn
+    /// 后更新、stop 时清零）。退出清理在 core_manager 锁被 async 任务占用时
+    /// 用它做按 PID 精确清杀，取代旧的「按进程名 taskkill」——后者会误杀
+    /// 用户自己在跑的其他 mihomo 实例。0 = 本会话从未启动过子进程。
+    pub core_pid_cache: std::sync::atomic::AtomicU32,
 }
 
 impl AppState {
@@ -54,6 +60,7 @@ impl AppState {
             tray: std::sync::Mutex::new(None),
             original_system_proxy: std::sync::Mutex::new(None),
             log_stream: std::sync::Mutex::new(None),
+            core_pid_cache: std::sync::atomic::AtomicU32::new(0),
         }
     }
 }
@@ -83,7 +90,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 半成品 Tauri updater 已移除（AUDIT-0.8.7：pubkey 为空、无前端调用、
+        // Release 构建不产 bundle 构件，属于假功能）。更新机制待 Portable
+        // Updater 方案（docs/AUDIT-0.8.7.md Phase 3）落地后再实现。
         .plugin(init_logging())
         .manage(AppState::new())
         .setup(|app| {
@@ -104,6 +113,12 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let mut config_mgr = state.config_manager.lock().unwrap();
                 config_mgr.init(&data_dir)?;
+
+                // P1-8 Recovery Journal 自愈：上次会话异常结束（强杀/断电）且
+                // 系统代理仍指向本应用端口时，先恢复用户原始代理再继续。
+                if let Some(msg) = crate::proxy::journal::recover_on_startup(&data_dir) {
+                    warn!("Proxy journal recovery: {}", msg);
+                }
 
                 // 快照启动前的系统代理状态，用于退出时还原。
                 // 若当前系统代理恰好指向我们自己的端口（127.0.0.1:<mixed-port>），
@@ -151,39 +166,38 @@ pub fn run() {
             // Tauri 2 仅在 WebviewWindowBuilder 上提供 on_navigation（窗口实例与
             // 配置式窗口均无此钩子），因此主窗口改为在 setup 中通过 Builder 创建，
             // 窗口属性与原先 tauri.conf.json app.windows[0] 保持一致。
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::App("index.html".into()),
-            )
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("ClashEdge")
-            .inner_size(850.0, 603.0)
-            .min_inner_size(850.0, 603.0)
-            .background_color(tauri::window::Color(0x10, 0x12, 0x14, 0xff))
-            .decorations(false)
-            .resizable(true)
-            .maximizable(true)
-            .minimizable(true)
-            .closable(false)
-            .center()
-            .visible(false)
-            .on_navigation(|url| {
-                let allowed = match (url.scheme(), url.host_str()) {
-                    ("tauri", Some("localhost")) => true,
-                    ("http" | "https", Some("tauri.localhost")) => true,
-                    #[cfg(debug_assertions)]
-                    ("http", Some("localhost")) => url.port() == Some(1420),
-                    _ => false,
-                };
-                if !allowed {
-                    warn!(
-                        "Navigation blocked (outside allowed origins): {}",
-                        url.as_str()
-                    );
-                }
-                allowed
-            })
-            .build()?;
+            // 默认尺寸 832×554（紧凑基准 756×504 上浮 10%）；
+            // 高于前端窄窗阈值 749，侧栏文字正常展示。
+            .inner_size(832.0, 554.0)
+            .min_inner_size(560.0, 400.0)
+                    .background_color(tauri::window::Color(0x10, 0x12, 0x14, 0xff))
+                    .decorations(false)
+                    .resizable(true)
+                    .maximizable(true)
+                    .minimizable(true)
+                    .closable(false)
+                    .center()
+                    .visible(false)
+                    .on_navigation(|url| {
+                        let allowed = match (url.scheme(), url.host_str()) {
+                            ("tauri", Some("localhost")) => true,
+                            ("http" | "https", Some("tauri.localhost")) => true,
+                            #[cfg(debug_assertions)]
+                            ("http", Some("localhost")) => url.port() == Some(1420),
+                            _ => false,
+                        };
+                        if !allowed {
+                            warn!(
+                                "Navigation blocked (outside allowed origins): {}",
+                                url.as_str()
+                            );
+                        }
+                        allowed
+                    })
+                    .build()?;
 
             // 任务栏/窗口图标：与桌面（exe 内嵌 cat.ico 资源）图标保持一致。
             // Tauri 默认窗口图标可能与 exe 资源图标不一致，这里显式设置。
@@ -269,9 +283,7 @@ pub fn run() {
                     } else if sys_proxy_intent && !started {
                         // 内核没起来但配置里仍想开系统代理：保持关闭，否则会指向死端口。
                         // 配置里的意图保留为 true，内核后续手动启动时再开。
-                        warn!(
-                            "System proxy stays OFF: core failed to start (config intent=true)"
-                        );
+                        warn!("System proxy stays OFF: core failed to start (config intent=true)");
                     }
                 });
             }
@@ -295,6 +307,7 @@ pub fn run() {
             crate::commands::config::reset_config,
             crate::commands::config::export_config,
             crate::commands::config::import_config,
+            crate::commands::config::read_import_file,
             // Connections commands
             crate::commands::connections::get_connections,
             crate::commands::connections::close_all_connections,
@@ -338,6 +351,11 @@ pub fn run() {
             crate::commands::util::get_supported_locales,
             crate::commands::util::set_locale,
             crate::commands::util::get_i18n_messages,
+            // Portable Updater commands
+            crate::commands::update::check_update,
+            crate::commands::update::download_update,
+            crate::commands::update::get_staged_update,
+            crate::commands::update::discard_staged_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -355,8 +373,10 @@ pub fn run() {
 /// 放在 RunEvent::Exit 同步执行（taskkill + 注册表写入，不依赖 async runtime）。
 fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     // 1. 停止 mihomo：孤儿 mihomo 会让用户以为退出了代理实际还在代理。
-    //    优先用 PID 精确清杀；try_lock 可能因 async 任务持有锁而失败，
-    //    兜底改用按进程名 taskkill，保证无论锁状态如何都能杀到 mihomo。
+    //    P1-7：只按 PID 精确清杀自己创建的进程。优先走 core_manager 锁拿
+    //    实时 PID；锁被 async 任务占用时退回 supervisor 维护的 PID 缓存。
+    //    两者都没有（本会话从未成功启动过核心）就什么都不杀——绝不按
+    //    进程名 taskkill，避免误杀用户另行运行的 mihomo。
     let state = app_handle.state::<AppState>();
     let pid = {
         let guard = state.core_manager.try_lock();
@@ -364,44 +384,79 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
             Ok(g) => g.as_ref().and_then(|c| c.child_pid()),
             Err(_) => None,
         }
-    };
+    }
+    .or_else(|| {
+        let cached = state
+            .core_pid_cache
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if cached == 0 {
+            None
+        } else {
+            Some(cached)
+        }
+    });
     if let Some(pid) = pid {
         info!("Killing mihomo (PID {}) on exit", pid);
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
             .status();
     } else {
-        // 锁竞争失败（async 启动任务仍持有）或 core 未初始化：
-        // 按进程名清杀兜底，防误杀上一轮孤儿 mihomo。
-        // 两种内核名都清（参考包布局 mihomo-win64.exe / 原生便携 clash-edge-core.exe）。
-        warn!("core_manager lock contended on exit; killing mihomo by name");
-        for name in ["clash-edge-core.exe", "mihomo-win64.exe"] {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/IM", name, "/F"])
-                .status();
-        }
+        info!(
+            "No mihomo child recorded this session; skipping kill \
+             (will not touch unrelated mihomo processes)"
+        );
     }
 
     // 2. 还原系统代理：若启动前用户已有代理则还原之，否则清除我们设置的代理。
     let original = state.original_system_proxy.lock().unwrap().clone();
-    match original {
+    let restore_result = match original {
         Some(orig) if orig.enabled => {
             match crate::proxy::system_proxy::set_system_proxy(
                 true,
                 &orig.address,
                 &orig.bypass_list,
             ) {
-                Ok(()) => info!(
-                    "System proxy restored to original ({}) on exit",
-                    orig.address
-                ),
-                Err(e) => error!("Failed to restore system proxy on exit: {}", e),
+                Ok(()) => {
+                    info!(
+                        "System proxy restored to original ({}) on exit",
+                        orig.address
+                    );
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to restore system proxy on exit: {}", e);
+                    Err(e)
+                }
             }
         }
         _ => match crate::proxy::system_proxy::set_system_proxy(false, "", &[]) {
-            Ok(()) => info!("System proxy cleared on exit"),
-            Err(e) => error!("Failed to clear system proxy on exit: {}", e),
+            Ok(()) => {
+                info!("System proxy cleared on exit");
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to clear system proxy on exit: {}", e);
+                Err(e)
+            }
         },
+    };
+
+    // 3. P1-8：干净关闭路径——无论还原结果如何，本次会话的 journal 已完成
+    //    使命。仅当注册表代理已不再指向我们时才清（还原失败时保留 journal，
+    //    下次启动的自愈仍能依据它把死代理改回来）。
+    if let Ok(data_dir) = crate::util::paths::get_app_data_dir(app_handle) {
+        let ours = {
+            let cfg = state.config_manager.lock().unwrap().get_config();
+            format!("127.0.0.1:{}", cfg.general.mixed_port)
+        };
+        let still_ours = crate::proxy::system_proxy::get_system_proxy()
+            .map(|c| c.enabled && c.address == ours)
+            .unwrap_or(false);
+        if restore_result.is_ok() || !still_ours {
+            crate::proxy::journal::clear_journal(&data_dir);
+        } else {
+            warn!("Proxy journal kept: system proxy still points at us after failed restore");
+        }
     }
 }
 

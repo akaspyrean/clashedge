@@ -12,6 +12,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::time::Duration;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{info, warn};
@@ -22,6 +23,9 @@ use tauri::{Emitter, Manager};
 /// 单个 geo 数据文件下载上限（200 MB）：geoip.dat / geosite.dat 正常体积
 /// 在 10~100 MB 量级，超限视为恶意/损坏源，防止把磁盘写爆。
 const MAX_GEO_DATA_BYTES: u64 = 200 * 1024 * 1024;
+/// 单个数据文件的整体下载 deadline：无总超时的流式客户端必须有时间兜底，
+/// 防止慢速/挂起的源把更新任务无限拖住。
+const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(600);
 
 /// 更新完成后通知前端刷新 geo 状态（托盘触发与命令触发都受益）。
 /// 成功/失败都发，前端据此更新「GeoIP/GeoSite 大小」等展示。
@@ -68,11 +72,32 @@ async fn update_geodata_inner(app_handle: &tauri::AppHandle) -> Result<()> {
         // 先下载到临时文件，逐个 URL 尝试。
         // 事务性：下载失败时清理临时文件再中止，不留半截 .download 文件。
         let temp_path = final_path.with_extension("download");
-        let downloaded = match download_file(app_handle, urls, &temp_path).await {
-            Ok(n) => n,
-            Err(e) => {
-                let _ = fs::remove_file(&temp_path).await;
-                return Err(anyhow::anyhow!("Failed to download {}: {}", name, e));
+        let downloaded = {
+            let urls: Vec<String> = (*urls).clone();
+            let temp_path = temp_path.clone();
+            // 整体 deadline：流式客户端无总超时（30s 总超时会掐死大文件），
+            // 这里用 tokio 超时兜底防挂起
+            match tokio::time::timeout(
+                DOWNLOAD_DEADLINE,
+                download_file(app_handle, &urls, &temp_path),
+            )
+            .await
+            {
+                Ok(r) => match r {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = fs::remove_file(&temp_path).await;
+                        return Err(anyhow::anyhow!("Failed to download {}: {}", name, e));
+                    }
+                },
+                Err(_) => {
+                    let _ = fs::remove_file(&temp_path).await;
+                    return Err(anyhow::anyhow!(
+                        "Download of {} exceeded {}s deadline, aborted",
+                        name,
+                        DOWNLOAD_DEADLINE.as_secs()
+                    ));
+                }
             }
         };
 
@@ -110,8 +135,9 @@ fn backup_path(path: &Path) -> std::path::PathBuf {
 }
 
 /// 从 URL 列表下载文件，逐个尝试直到成功。
-/// 每个 URL 走共享拉取助手 `util::fetch::get_direct_first`：
-/// 直连优先，直连不通自动切应用自身代理兜底（软件代理模式不变）。
+/// 每个 URL 走共享拉取助手 `util::fetch::get_direct_first_streaming`：
+/// 无总超时（大文件下载），直连优先，直连不通自动切应用自身代理兜底；
+/// 挂起防护由调用方的整体 deadline 与本函数的大小上限负责。
 async fn download_file(
     app_handle: &tauri::AppHandle,
     urls: &[String],
@@ -131,7 +157,7 @@ async fn download_file(
             continue;
         }
 
-        match crate::util::fetch::get_direct_first(app_handle, url).await {
+        match crate::util::fetch::get_direct_first_streaming(app_handle, url).await {
             Ok(mut response) => {
                 if response.status().is_success() {
                     let mut file = match fs::File::create(target_path).await {

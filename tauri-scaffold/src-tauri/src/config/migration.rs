@@ -1,428 +1,378 @@
 // src-tauri/src/config/migration.rs
-//! 配置版本迁移逻辑
-//! 负责：旧版配置结构 → 新版 Config 结构的转换与升级
+//! 配置版本迁移（P0-1 重构）
+//!
+//! 旧实现的问题：
+//! - `migrate_mixed_format` / `migrate_from_yaml_string` 是空壳（返回"已迁移"
+//!   但什么都没做）；
+//! - `is_new_format` 恒为 true；
+//! - 迁移直接写盘，失败路径会把用户配置静默覆盖成默认值。
+//!
+//! 新策略（与 docs/AUDIT-0.8.7.md P0-1 一致）：
+//! - 迁移**只在内存中**完成：旧内容 → 识别已知字段 → 合并到默认结构 → 校验；
+//! - 落盘交给调用方的下一次显式保存；调用方负责在迁移前备份原文件；
+//! - 任何一步失败都返回 Err，绝不产生"看起来成功实际是默认值"的结果。
 
-use std::path::Path;
+use crate::config::model::Config;
+use crate::util::error::{Error, Result};
 
-use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
-
-use crate::config::model::{
-    AdvancedConfig, Config, DnsConfig, GeneralConfig, ProfilesConfig, ProxyConfig, TunConfig,
-};
-use crate::config::persistence::write_config;
-use crate::util::error::Result;
-
-/// 配置文件版本常量
-const CONFIG_VERSION: &str = "2.0.0";
-
-/// 配置迁移版本信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MigrationInfo {
-    /// 当前配置版本
-    pub current_version: String,
-    /// 目标版本
-    pub target_version: String,
-    /// 已迁移的字段列表
-    pub migrated_fields: Vec<String>,
-    /// 是否需要重启应用
-    pub requires_restart: bool,
+/// 把旧格式 / 部分损坏的配置文本迁移为新版 `Config`（仅内存，不落盘）。
+///
+/// 流程：
+/// 1. 解析为通用 YAML 值（失败 → Err，由调用方进入降级/修复状态）；
+/// 2. 根节点不是 mapping → Err；
+/// 3. 能直接按新结构反序列化 → 原样返回（无需迁移）;
+/// 4. 否则把可识别的旧字段（kebab-case / snake_case 双写法、顶层平铺或
+///    分段嵌套）逐个合并到默认配置上。
+pub fn migrate_content(content: &str) -> Result<Config> {
+    let value: serde_yaml::Value = serde_yaml::from_str(content)
+        .map_err(|e| Error::ConfigParse(format!("not valid YAML: {}", e)))?;
+    if !value.is_mapping() {
+        return Err(Error::ConfigParse(
+            "config root must be a YAML mapping".to_string(),
+        ));
+    }
+    // 直接按新结构（flatten 布局）解析；失败则走字段级宽松合并
+    let mut config = match serde_yaml::from_value::<Config>(value.clone()) {
+        Ok(config) => config,
+        Err(_) => merge_legacy_value(&value),
+    };
+    // 兼容嵌套 `proxy:` 段的历史布局：controller 字段在子映射里时，
+    // flatten 解析会把它丢进 extra，需要显式提取
+    merge_nested_proxy_section(&value, &mut config);
+    // 脱敏占位符不是真实密钥：清空后由 init/set_config 的密钥兜底逻辑轮换
+    if config.proxy.secret == crate::config::model::SECRET_REDACTED {
+        config.proxy.secret = String::new();
+    }
+    Ok(config)
 }
 
-/// 执行配置迁移
-/// - 读取旧配置文件
-/// - 识别旧版本结构
-/// - 逐步迁移到新版结构
-/// - 写入新配置并返回迁移信息
-pub fn migrate(config_path: &Path) -> Result<MigrationInfo> {
-    if !config_path.exists() {
-        info!("No config file to migrate");
-        return Ok(MigrationInfo {
-            current_version: String::new(),
-            target_version: CONFIG_VERSION.to_string(),
-            migrated_fields: Vec::new(),
-            requires_restart: false,
-        });
+/// 从顶层 `proxy:` 子映射中提取 external-controller / secret，
+/// 仅当顶层没有对应字段时才补齐（顶层优先）。
+fn merge_nested_proxy_section(value: &serde_yaml::Value, config: &mut Config) {
+    let Some(map) = value.as_mapping() else {
+        return;
+    };
+    if field(map, "external-controller").is_none() {
+        if let Some(v) = sub_mapping(map, "proxy")
+            .and_then(|m| as_string(field(m, "external-controller")))
+            .filter(|s| !s.is_empty())
+        {
+            config.proxy.external_controller = v;
+        }
     }
-
-    let content = std::fs::read_to_string(config_path)?;
-    let content = crate::config::persistence::strip_utf8_bom(&content);
-
-    if is_legacy_yaml(&content) {
-        // 旧格式配置（profile-preprocessor.cjs 处理前的原始 YAML）
-        debug!("Detected legacy YAML format, migrating from legacy...");
-        migrate_from_legacy_yaml(&content, config_path)
-    } else {
-        // 可能已经是新格式，尝试直接解析
-        match serde_yaml::from_str::<Config>(&content) {
-            Ok(config) => {
-                if is_new_format(&config) {
-                    debug!("Config is already in new format");
-                    return Ok(MigrationInfo {
-                        current_version: "2.0.0".to_string(),
-                        target_version: CONFIG_VERSION.to_string(),
-                        migrated_fields: Vec::new(),
-                        requires_restart: false,
-                    });
-                }
-                // 混合格式，部分迁移
-                migrate_mixed_format(&content, config_path)
-            }
-            Err(_) => {
-                // 解析失败，尝试基础迁移
-                migrate_from_yaml_string(&content, config_path)
-            }
+    if field(map, "secret").is_none() {
+        if let Some(v) = sub_mapping(map, "proxy")
+            .and_then(|m| as_string(field(m, "secret")))
+            .filter(|s| !s.is_empty() && s != crate::config::model::SECRET_REDACTED)
+        {
+            config.proxy.secret = v;
         }
     }
 }
 
-/// 从旧格式 YAML 迁移
-fn migrate_from_legacy_yaml(content: &str, config_path: &Path) -> Result<MigrationInfo> {
-    // 旧格式特征：缺少新结构字段，或结构简化
-    // profile-preprocessor.cjs 生成的格式
-
-    #[derive(Debug, Deserialize)]
-    struct LegacyDns {
-        enable: Option<bool>,
-        listen: Option<String>,
-        ipv6: Option<bool>,
+/// 按 key 的多种历史写法取字段：kebab-case 与 snake_case 等价。
+fn field<'a>(map: &'a serde_yaml::Mapping, name: &str) -> Option<&'a serde_yaml::Value> {
+    let kebab = serde_yaml::Value::String(name.to_string());
+    if let Some(v) = map.get(&kebab) {
+        return Some(v);
     }
+    let snake = serde_yaml::Value::String(name.replace('-', "_"));
+    map.get(&snake)
+}
 
-    #[derive(Debug, Deserialize)]
-    struct LegacyTun {
-        enable: Option<bool>,
-        stack: Option<String>,
-    }
+fn as_bool(v: Option<&serde_yaml::Value>) -> Option<bool> {
+    v.and_then(|v| v.as_bool())
+}
 
-    #[derive(Debug, Deserialize)]
-    struct LegacyAdvanced {
-        log_format: Option<String>,
-        connect_timeout: Option<u64>,
-        read_timeout: Option<u64>,
-        write_timeout: Option<u64>,
-    }
+fn as_string(v: Option<&serde_yaml::Value>) -> Option<String> {
+    v.and_then(|v| v.as_str()).map(|s| s.to_string())
+}
 
-    #[derive(Debug, Deserialize)]
-    struct LegacyConfig {
-        mixed_port: Option<u16>,
-        allow_lan: Option<bool>,
-        log_level: Option<String>,
-        ipv6: Option<bool>,
-        geodata_mode: Option<String>,
-        geo_auto_update: Option<bool>,
-        find_process_mode: Option<String>,
-        proxy_mode: Option<String>,
-        profile: Option<String>,
-        proxies: Option<Vec<String>>,
-        external_controller: Option<String>,
-        secret: Option<String>,
-        dns: Option<LegacyDns>,
-        tun: Option<LegacyTun>,
-        advanced: Option<LegacyAdvanced>,
-        default_profile: Option<String>,
-        mixin_enabled: Option<bool>,
-    }
+fn as_u64(v: Option<&serde_yaml::Value>) -> Option<u64> {
+    v.and_then(|v| v.as_u64())
+}
 
-    let legacy: LegacyConfig = serde_yaml::from_str(content).unwrap_or_else(|_| LegacyConfig {
-        mixed_port: None,
-        allow_lan: None,
-        log_level: None,
-        ipv6: None,
-        geodata_mode: None,
-        geo_auto_update: None,
-        find_process_mode: None,
-        proxy_mode: None,
-        profile: None,
-        proxies: None,
-        external_controller: None,
-        secret: None,
-        dns: None,
-        tun: None,
-        advanced: None,
-        default_profile: None,
-        mixin_enabled: None,
-    });
+fn as_u16(v: Option<&serde_yaml::Value>) -> Option<u16> {
+    v.and_then(|v| v.as_u64())
+        .and_then(|n| u16::try_from(n).ok())
+}
 
-    let migrated = Config {
-        general: GeneralConfig {
-            mixed_port: legacy.mixed_port.unwrap_or(7890),
-            allow_lan: legacy.allow_lan.unwrap_or(false),
-            log_level: legacy.log_level.unwrap_or_else(|| "info".to_string()),
-            ipv6: legacy.ipv6.unwrap_or(false),
-            geodata_mode: legacy
-                .geodata_mode
-                .map(serde_yaml::Value::String)
-                .unwrap_or_else(|| serde_yaml::Value::String("manual".to_string())),
-            geo_auto_update: legacy.geo_auto_update.unwrap_or(false),
-            find_process_mode: legacy
-                .find_process_mode
-                .unwrap_or_else(|| "off".to_string()),
-            proxy_mode: legacy.proxy_mode.unwrap_or_else(|| "rule".to_string()),
-            profile: legacy.profile.unwrap_or_default(),
-            system_proxy: false,
-        },
-        proxy: ProxyConfig {
-            external_controller: legacy
-                .external_controller
-                .unwrap_or_else(|| "127.0.0.1:9090".to_string()),
-            secret: legacy
-                .secret
-                .unwrap_or_else(|| "clash-edge-secret".to_string()),
-        },
-        tun: TunConfig {
-            enable: legacy.tun.as_ref().and_then(|t| t.enable).unwrap_or(false),
-            stack: legacy
-                .tun
-                .as_ref()
-                .and_then(|t| t.stack.clone())
-                .unwrap_or_else(|| "system".to_string()),
-            auto_route: false,
-            auto_detect_interface: false,
-            interface_name: None,
-        },
-        dns: DnsConfig {
-            enable: legacy.dns.as_ref().and_then(|d| d.enable).unwrap_or(true),
-            listen: legacy
-                .dns
-                .as_ref()
-                .and_then(|d| d.listen.clone())
-                .unwrap_or_else(|| "127.0.0.1:9053".to_string()),
-            ipv6: legacy.dns.as_ref().and_then(|d| d.ipv6).unwrap_or(false),
-            enhanced_mode: "fake-ip".to_string(),
-            fake_ip_range: "198.18.0.1/16".to_string(),
-            fake_ip_filter: vec![
-                "+.lan".to_string(),
-                "+.local".to_string(),
-                "+.home.arpa".to_string(),
-                "localhost.ptlogin2.qq.com".to_string(),
-                "+.msftconnecttest.com".to_string(),
-                "+.msftncsi.com".to_string(),
-                "*.n.n.srv.nintendo.net".to_string(),
-            ],
-            default_nameserver: vec!["223.5.5.5".to_string(), "119.29.29.29".to_string()],
-            nameserver: vec![
-                "https://dns.alidns.com/dns-query".to_string(),
-                "https://doh.pub/dns-query".to_string(),
-            ],
-            proxy_server_nameserver: vec!["223.5.5.5".to_string(), "119.29.29.29".to_string()],
-        },
-        advanced: AdvancedConfig {
-            disable_commit_animation: false,
-            log_format: legacy
-                .advanced
-                .as_ref()
-                .and_then(|a| a.log_format.clone())
-                .unwrap_or_else(|| "text".to_string()),
-            explicit_proxy: false,
-            connect_timeout: legacy
-                .advanced
-                .as_ref()
-                .and_then(|a| a.connect_timeout)
-                .unwrap_or(30),
-            read_timeout: legacy
-                .advanced
-                .as_ref()
-                .and_then(|a| a.read_timeout)
-                .unwrap_or(30),
-            write_timeout: legacy
-                .advanced
-                .as_ref()
-                .and_then(|a| a.write_timeout)
-                .unwrap_or(30),
-            geox_url: String::new(),
-            geoip_url: String::new(),
-            geosite_url: String::new(),
-        },
-        profiles: ProfilesConfig {
-            proxies: legacy.proxies.unwrap_or_default(),
-            default_profile: legacy
-                .default_profile
-                .unwrap_or_else(|| "DIRECT".to_string()),
-            auto_group: "自动".to_string(),
-            manual_group: "手动".to_string(),
-            media_group: "媒体".to_string(),
-            ai_group: "AI".to_string(),
-        },
-        mixin_enabled: legacy.mixin_enabled.unwrap_or(false),
-        locale: crate::config::model::default_locale(),
-        rule_providers: crate::config::model::default_rule_providers(),
-        proxy_groups: crate::config::model::default_proxy_groups(),
-        rules: crate::config::model::default_rules(),
-        extra: serde_yaml::Mapping::new(),
+fn as_string_list(v: Option<&serde_yaml::Value>) -> Option<Vec<String>> {
+    v.and_then(|v| v.as_sequence()).map(|seq| {
+        seq.iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+            .collect()
+    })
+}
+
+/// 子映射：顶层 `tun:` / `dns:` 等
+fn sub_mapping<'a>(map: &'a serde_yaml::Mapping, name: &str) -> Option<&'a serde_yaml::Mapping> {
+    field(map, name).and_then(|v| v.as_mapping())
+}
+
+/// 把可识别的旧字段合并到默认配置上（未出现的字段保持默认值）。
+///
+/// 兼容两种历史布局：
+/// - 0.8.x 平铺格式：external-controller / secret 直接在顶层；
+/// - 分段格式：controller 字段位于 `proxy:` 段下。
+fn merge_legacy_value(value: &serde_yaml::Value) -> Config {
+    let mut config = Config::default();
+    let Some(map) = value.as_mapping() else {
+        return config;
     };
 
-    // 写入新格式配置
-    write_config(config_path, &migrated)?;
+    // --- general ---
+    let general = &mut config.general;
+    if let Some(v) = as_u16(field(map, "mixed-port")) {
+        general.mixed_port = v;
+    }
+    if let Some(v) = as_bool(field(map, "allow-lan")) {
+        general.allow_lan = v;
+    }
+    if let Some(v) = as_string(field(map, "log-level")).filter(|s| !s.is_empty()) {
+        general.log_level = v;
+    }
+    if let Some(v) = as_bool(field(map, "ipv6")) {
+        general.ipv6 = v;
+    }
+    if let Some(v) = field(map, "geodata-mode").cloned().filter(|v| !v.is_null()) {
+        general.geodata_mode = v;
+    }
+    if let Some(v) = as_bool(field(map, "geo-auto-update")) {
+        general.geo_auto_update = v;
+    }
+    if let Some(v) = as_string(field(map, "find-process-mode")).filter(|s| !s.is_empty()) {
+        general.find_process_mode = v;
+    }
+    // mihomo 顶层键为 `mode`，历史写法 `proxy-mode`
+    if let Some(v) =
+        as_string(field(map, "mode").or_else(|| field(map, "proxy-mode"))).filter(|s| !s.is_empty())
+    {
+        general.proxy_mode = v;
+    }
+    if let Some(v) = as_string(field(map, "profile")) {
+        general.profile = v;
+    }
 
-    Ok(MigrationInfo {
-        current_version: "1.0.0".to_string(),
-        target_version: CONFIG_VERSION.to_string(),
-        migrated_fields: vec![
-            "mixed_port".to_string(),
-            "allow_lan".to_string(),
-            "log_level".to_string(),
-            "ipv6".to_string(),
-            "geodata_mode".to_string(),
-            "geo_auto_update".to_string(),
-            "find_process_mode".to_string(),
-            "proxy_mode".to_string(),
-            "profile".to_string(),
-            "proxy.external_controller".to_string(),
-            "proxy.secret".to_string(),
-            "tun.enable".to_string(),
-            "tun.stack".to_string(),
-            "dns.enable".to_string(),
-            "dns.listen".to_string(),
-            "dns.enhanced-mode".to_string(),
-            "dns.fake-ip-range".to_string(),
-            "dns.fake-ip-filter".to_string(),
-            "dns.default-nameserver".to_string(),
-            "dns.nameserver".to_string(),
-            "advanced.log_format".to_string(),
-            "advanced.connect_timeout".to_string(),
-            "advanced.read_timeout".to_string(),
-            "advanced.write_timeout".to_string(),
-            "profiles.default_profile".to_string(),
-            "profiles.mixin_enabled".to_string(),
-        ],
-        requires_restart: true,
-    })
-}
+    // --- proxy（控制器）：顶层平铺或 `proxy:` 段 ---
+    let controller_section = sub_mapping(map, "proxy");
+    if let Some(v) = as_string(
+        field(map, "external-controller")
+            .or_else(|| controller_section.and_then(|m| field(m, "external-controller"))),
+    )
+    .filter(|s| !s.is_empty())
+    {
+        config.proxy.external_controller = v;
+    }
+    if let Some(v) = as_string(
+        field(map, "secret").or_else(|| controller_section.and_then(|m| field(m, "secret"))),
+    ) {
+        if !v.is_empty() && v != crate::config::model::SECRET_REDACTED {
+            config.proxy.secret = v;
+        }
+    }
 
-/// 从混合格式迁移（部分新字段，部分旧字段）
-fn migrate_mixed_format(_content: &str, _config_path: &Path) -> Result<MigrationInfo> {
-    // 混合格式处理：检查哪些新字段存在，缺失则填充默认值
-    Ok(MigrationInfo {
-        current_version: "1.5.0".to_string(),
-        target_version: CONFIG_VERSION.to_string(),
-        migrated_fields: vec![],
-        requires_restart: true,
-    })
-}
+    // --- tun ---
+    if let Some(tun) = sub_mapping(map, "tun") {
+        if let Some(v) = as_bool(field(tun, "enable")) {
+            config.tun.enable = v;
+        }
+        if let Some(v) = as_string(field(tun, "stack")).filter(|s| !s.is_empty()) {
+            config.tun.stack = v;
+        }
+        if let Some(v) = as_bool(field(tun, "auto-route")) {
+            config.tun.auto_route = v;
+        }
+        if let Some(v) = as_bool(field(tun, "auto-detect-interface")) {
+            config.tun.auto_detect_interface = v;
+        }
+        if let Some(v) = as_string(field(tun, "interface-name")).filter(|s| !s.is_empty()) {
+            config.tun.interface_name = Some(v);
+        }
+    }
 
-/// 检查是否为旧格式 YAML
-/// 新格式：顶层存在 `proxy:` 映射（含 external-controller/secret）
-/// 旧格式：字段平铺在顶层（external-controller / secret 直接出现在顶层）
-fn is_legacy_yaml(content: &str) -> bool {
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(content) else {
-        return false;
-    };
-    let has_proxy_section = value.get("proxy").map(|v| v.is_mapping()).unwrap_or(false);
-    !has_proxy_section
-}
+    // --- dns ---
+    if let Some(dns) = sub_mapping(map, "dns") {
+        if let Some(v) = as_bool(field(dns, "enable")) {
+            config.dns.enable = v;
+        }
+        if let Some(v) = as_string(field(dns, "listen")).filter(|s| !s.is_empty()) {
+            config.dns.listen = v;
+        }
+        if let Some(v) = as_string(field(dns, "enhanced-mode")).filter(|s| !s.is_empty()) {
+            config.dns.enhanced_mode = v;
+        }
+        if let Some(v) = as_string(field(dns, "fake-ip-range")).filter(|s| !s.is_empty()) {
+            config.dns.fake_ip_range = v;
+        }
+        if let Some(v) = as_string_list(field(dns, "fake-ip-filter")) {
+            if !v.is_empty() {
+                config.dns.fake_ip_filter = v;
+            }
+        }
+        if let Some(v) = as_string_list(field(dns, "default-nameserver")) {
+            if !v.is_empty() {
+                config.dns.default_nameserver = v;
+            }
+        }
+        if let Some(v) = as_string_list(field(dns, "nameserver")) {
+            if !v.is_empty() {
+                config.dns.nameserver = v;
+            }
+        }
+        if let Some(v) = as_string_list(field(dns, "proxy-server-nameserver")) {
+            if !v.is_empty() {
+                config.dns.proxy_server_nameserver = v;
+            }
+        }
+    }
 
-/// 检查是否为新格式配置
-fn is_new_format(_config: &Config) -> bool {
-    true // 简化实现
-}
+    // --- advanced ---
+    if let Some(advanced) = sub_mapping(map, "advanced") {
+        if let Some(v) = as_bool(field(advanced, "disable-commit-animation")) {
+            config.advanced.disable_commit_animation = v;
+        }
+        if let Some(v) = as_string(field(advanced, "log-format")).filter(|s| !s.is_empty()) {
+            config.advanced.log_format = v;
+        }
+        if let Some(v) = as_bool(field(advanced, "explicit-proxy")) {
+            config.advanced.explicit_proxy = v;
+        }
+        if let Some(v) = as_u64(field(advanced, "connect-timeout")) {
+            config.advanced.connect_timeout = v;
+        }
+        if let Some(v) = as_u64(field(advanced, "read-timeout")) {
+            config.advanced.read_timeout = v;
+        }
+        if let Some(v) = as_u64(field(advanced, "write-timeout")) {
+            config.advanced.write_timeout = v;
+        }
+        if let Some(v) = as_string(field(advanced, "geoip-url")) {
+            config.advanced.geoip_url = v;
+        }
+        if let Some(v) = as_string(field(advanced, "geosite-url")) {
+            config.advanced.geosite_url = v;
+        }
+        if let Some(v) = as_string(field(advanced, "geox-url")) {
+            config.advanced.geox_url = v;
+        }
+    }
 
-/// 从 YAML 字符串迁移（用于解析失败的情况）
-fn migrate_from_yaml_string(_content: &str, _config_path: &Path) -> Result<MigrationInfo> {
-    Ok(MigrationInfo {
-        current_version: "1.0.0".to_string(),
-        target_version: CONFIG_VERSION.to_string(),
-        migrated_fields: Vec::new(),
-        requires_restart: true,
-    })
+    // --- profiles ---
+    if let Some(profiles) = sub_mapping(map, "profiles") {
+        let p = &mut config.profiles;
+        if let Some(v) = as_string_list(field(profiles, "proxies")) {
+            p.proxies = v;
+        }
+        if let Some(v) = as_string(field(profiles, "default-profile")).filter(|s| !s.is_empty()) {
+            p.default_profile = v;
+        }
+        if let Some(v) = as_string(field(profiles, "auto-group")).filter(|s| !s.is_empty()) {
+            p.auto_group = v;
+        }
+        if let Some(v) = as_string(field(profiles, "manual-group")).filter(|s| !s.is_empty()) {
+            p.manual_group = v;
+        }
+        if let Some(v) = as_string(field(profiles, "media-group")).filter(|s| !s.is_empty()) {
+            p.media_group = v;
+        }
+        if let Some(v) = as_string(field(profiles, "ai-group")).filter(|s| !s.is_empty()) {
+            p.ai_group = v;
+        }
+    }
+
+    // --- mixin ---
+    if let Some(v) = as_bool(field(map, "mixin-enabled")) {
+        config.mixin_enabled = v;
+    }
+
+    config
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "clash-edge-migration-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
+    /// 旧版平铺格式：能识别全部已知字段并合并到默认结构上
     #[test]
-    fn test_migrate_from_legacy() {
-        let dir = temp_dir();
-        let config_path = dir.join("config.yaml");
-
-        let legacy_yaml = r#"
-mixed-port: 7890
+    fn migrates_legacy_flat_layout() {
+        let yaml = r#"
+mixed-port: 7897
 allow-lan: true
-log-level: error
-ipv6: false
-geodata-mode: manual
-geo-auto-update: false
+log-level: warning
 find-process-mode: strict
-proxy-mode: rule
-profile: default
-
-external-controller: 127.0.0.1:9090
+proxy-mode: global
+external-controller: 127.0.0.1:9091
 secret: mysecret
 
 dns:
-  enable: true
-  listen: 0.0.0.0:9053
-  ipv6: false
+  enable: false
+  listen: 127.0.0.1:1053
 
 tun:
   enable: true
-  stack: system
+  stack: gvisor
 "#;
-
-        std::fs::write(&config_path, legacy_yaml).unwrap();
-        let info = migrate(&config_path).unwrap();
-
-        assert_eq!(info.current_version, "1.0.0");
-        assert_eq!(info.target_version, "2.0.0");
-        assert!(!info.migrated_fields.is_empty());
-        assert!(info.requires_restart);
-
-        let _ = std::fs::remove_dir_all(&dir);
+        let config = migrate_content(yaml).unwrap();
+        assert_eq!(config.general.mixed_port, 7897);
+        assert!(config.general.allow_lan);
+        assert_eq!(config.general.log_level, "warning");
+        assert_eq!(config.general.find_process_mode, "strict");
+        assert_eq!(config.general.proxy_mode, "global");
+        assert_eq!(config.proxy.external_controller, "127.0.0.1:9091");
+        assert_eq!(config.proxy.secret, "mysecret");
+        assert!(!config.dns.enable);
+        assert_eq!(config.dns.listen, "127.0.0.1:1053");
+        assert!(config.tun.enable);
+        assert_eq!(config.tun.stack, "gvisor");
+        // 未出现字段保持默认（DNS nameserver 有内置默认值）
+        assert!(!config.dns.nameserver.is_empty());
     }
 
+    /// 分段布局（controller 在 proxy: 段下）同样能识别
     #[test]
-    fn test_migrate_already_new() {
-        let dir = temp_dir();
-        let config_path = dir.join("config.yaml");
-
-        let new_yaml = r#"
+    fn migrates_sectioned_layout() {
+        let yaml = r#"
 mixed-port: 7890
-allow-lan: true
-
 proxy:
   external-controller: 127.0.0.1:9090
-  secret: mysecret
-
-dns:
-  enable: true
-  listen: 127.0.0.1:9053
-
-tun:
-  enable: true
-  stack: system
-
-advanced:
-  log-format: text
-  connect-timeout: 30
-  read-timeout: 30
-  write-timeout: 30
-
-profiles:
-  default-profile: DIRECT
+  secret: section-secret
 "#;
+        let config = migrate_content(yaml).unwrap();
+        assert_eq!(config.proxy.external_controller, "127.0.0.1:9090");
+        assert_eq!(config.proxy.secret, "section-secret");
+    }
 
-        std::fs::write(&config_path, new_yaml).unwrap();
-        let info = migrate(&config_path).unwrap();
+    /// 已经是新格式的配置原样通过（不丢字段）
+    #[test]
+    fn passes_new_format_through() {
+        let mut config = Config::default();
+        config.general.mixed_port = 7899;
+        config.general.allow_lan = true;
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let migrated = migrate_content(&yaml).unwrap();
+        assert_eq!(migrated.general.mixed_port, 7899);
+        assert!(migrated.general.allow_lan);
+    }
 
-        assert_eq!(info.current_version, "2.0.0");
-        assert_eq!(info.target_version, "2.0.0");
-        assert!(info.migrated_fields.is_empty());
-        assert!(!info.requires_restart);
+    /// 非 YAML / 根节点非 mapping → 明确报错（绝不返回默认配置冒充成功）
+    #[test]
+    fn rejects_invalid_yaml() {
+        assert!(migrate_content("key: [unclosed").is_err());
+        assert!(migrate_content("{broken").is_err());
+        assert!(migrate_content("- just\n- a\n- list\n").is_err());
+        assert!(migrate_content("").is_err());
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
+    /// 脱敏占位 secret 不应覆盖真实密钥（前端回传场景的防御）。
+    /// 注意占位符以 `*` 开头，YAML 中必须加引号（否则是 alias 语法）。
+    #[test]
+    fn redacted_secret_not_merged() {
+        let yaml = format!(
+            "mixed-port: 7890\nsecret: \"{}\"\n",
+            crate::config::model::SECRET_REDACTED
+        );
+        let config = migrate_content(&yaml).unwrap();
+        assert_ne!(config.proxy.secret, crate::config::model::SECRET_REDACTED);
     }
 }

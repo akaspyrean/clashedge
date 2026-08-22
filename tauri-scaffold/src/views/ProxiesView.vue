@@ -1,9 +1,10 @@
-<!-- src/views/ProxiesView.vue - 代理组：切换代理模式、查看各组节点、手动选择与延迟测试 -->
+﻿<!-- src/views/ProxiesView.vue - 代理组：切换代理模式、查看各组节点、手动选择与延迟测试 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { Lightning, Refresh } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { proxyApi, type ProxyGroup } from "@/api/proxy";
+import { resolveGroupId } from "@/constants/groups";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
@@ -70,7 +71,7 @@ function delayOf(name: string): string {
 }
 
 /** 人工优选组（手动挑选节点场景）专属：提供组内节点逐一测速。 */
-const isManual = (g: ProxyGroup) => g.name === "人工优选";
+const isManual = (g: ProxyGroup) => resolveGroupId(g.name) === "manual";
 
 /** 节点延迟文本：未测不显示；测过失败显示 "—"；成功显示 "N ms"。 */
 function nodeDelayOf(name: string): string {
@@ -79,23 +80,30 @@ function nodeDelayOf(name: string): string {
   return d === null ? "—" : `${d} ms`;
 }
 
-/** 规则模式下代理组的规范排序（自上而下）；mihomo /proxies 返回无序，需显式排序。 */
-const GROUP_ORDER = ["扶梯出行", "人工智能", "影音视听", "人工优选", "自动优选"];
+/** 规则模式下代理组的规范排序（自上而下）；mihomo /proxies 返回无序，需显式排序。
+ *  排序按语义 ID 比较，不依赖中文字面量；自定义组 resolveGroupId 回退原名，排最后。 */
+const GROUP_ORDER = ["proxy", "ai", "media", "manual", "auto"];
 
 /** 按当前模式筛选可见组并排序：rule 显示 5 组（隐藏 GLOBAL）、global 只显示 GLOBAL、direct 无组。 */
 const visibleGroups = computed(() => {
   const mode = configStore.proxyMode;
-  if (mode === "global") return proxyStore.groups.filter((g) => g.name === "GLOBAL");
+  if (mode === "global")
+    return proxyStore.groups.filter((g) => resolveGroupId(g.name) === "global");
   if (mode === "direct") return [];
-  const rank = new Map(GROUP_ORDER.map((n, i) => [n, i]));
+  const rank = new Map(GROUP_ORDER.map((id, i) => [id, i]));
   return proxyStore.groups
-    .filter((g) => g.name !== "GLOBAL")
-    .sort((a, b) => (rank.get(a.name) ?? 99) - (rank.get(b.name) ?? 99));
+    .filter((g) => resolveGroupId(g.name) !== "global")
+    .sort(
+      (a, b) =>
+        (rank.get(resolveGroupId(a.name)) ?? 99) -
+        (rank.get(resolveGroupId(b.name)) ?? 99)
+    );
 });
 
 /** 叶子组（人工优选/自动优选）屏蔽内置 DIRECT，只显示真实节点。 */
 function visibleProxies(g: ProxyGroup): string[] {
-  return g.name === "人工优选" || g.name === "自动优选"
+  const id = resolveGroupId(g.name);
+  return id === "manual" || id === "auto"
     ? g.all.filter((p) => p !== "DIRECT")
     : g.all;
 }
@@ -143,7 +151,6 @@ watch(
         {{ $t("proxies.test_all") }}
       </el-button>
       <el-button
-        circle
         text
         :title="$t('proxies.reload')"
         :loading="proxyStore.testing"
@@ -201,10 +208,11 @@ watch(
           </div>
         </template>
 
-        <ul class="proxy-list">
-          <li
+        <div class="proxy-list">
+          <button
             v-for="proxy in visibleProxies(g)"
             :key="proxy"
+            type="button"
             class="proxy-item"
             :class="{ active: proxy === g.now }"
             @click="onSelectNode(g.name, proxy)"
@@ -213,8 +221,8 @@ watch(
             <span v-if="isManual(g)" class="proxy-node-delay">
               {{ nodeDelayOf(proxy) }}
             </span>
-          </li>
-        </ul>
+          </button>
+        </div>
       </el-collapse-item>
     </el-collapse>
   </div>
@@ -224,9 +232,8 @@ watch(
 .proxy-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
 .mode-field {
@@ -241,10 +248,6 @@ watch(
   white-space: nowrap;
 }
 
-.proxy-empty {
-  padding: 48px 0;
-}
-
 .group-title {
   display: flex;
   align-items: center;
@@ -257,7 +260,7 @@ watch(
 }
 
 .group-name {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -286,15 +289,19 @@ watch(
 }
 
 .proxy-list {
-  list-style: none;
-  margin: 0;
-  padding: 4px 0 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin: 0;
+  padding: 4px 0 0;
 }
 
+/* button 元素天然支持 Tab/Enter/Space；重置 UA 默认样式以保持原视觉。 */
 .proxy-item {
+  appearance: none;
+  font-family: inherit;
+  text-align: left;
+  list-style: none;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -304,6 +311,7 @@ watch(
   border: 1px solid var(--card-border);
   color: var(--text-secondary);
   font-size: 13px;
+  line-height: inherit;
   cursor: pointer;
   user-select: none;
   transition:
@@ -332,10 +340,15 @@ watch(
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .proxy-item.active .proxy-node-delay {
   color: var(--accent);
+}
+
+.proxy-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 </style>

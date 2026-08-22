@@ -54,41 +54,38 @@ pub fn build_tray_menu(
     config: &Config,
     i18n: &I18n,
 ) -> crate::util::error::Result<Menu<tauri::Wry>> {
-    let mut items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
-
     // --- Fixed items ---
 
-    // Control panel
-    items.push(Box::new(
-        MenuItemBuilder::with_id("control_panel", i18n.t("tray.control_panel")).build(app)?,
-    ));
-
-    items.push(Box::new(PredefinedMenuItem::separator(app)?));
-
-    // System proxy / TUN / config mixin check items
-    // 系统代理勾选状态来自独立的 system_proxy 状态（非 allow-lan）。
-    items.push(Box::new(
-        CheckMenuItemBuilder::with_id("system_proxy", i18n.t("tray.system_proxy"))
-            .checked(config.general.system_proxy)
-            .build(app)?,
-    ));
-    items.push(Box::new(
-        CheckMenuItemBuilder::with_id("tun_mode", i18n.t("tray.tun_mode"))
-            .checked(config.tun.enable)
-            .build(app)?,
-    ));
-    items.push(Box::new(
-        CheckMenuItemBuilder::with_id("config_mixin", i18n.t("tray.config_mixin"))
-            .checked(config.mixin_enabled)
-            .build(app)?,
-    ));
-    items.push(Box::new(
-        CheckMenuItemBuilder::with_id("autostart", i18n.t("tray.autostart"))
-            .checked(crate::util::autostart::get_autostart().unwrap_or(false))
-            .build(app)?,
-    ));
-
-    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    let mut items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = vec![
+        // Control panel
+        Box::new(
+            MenuItemBuilder::with_id("control_panel", i18n.t("tray.control_panel")).build(app)?,
+        ),
+        Box::new(PredefinedMenuItem::separator(app)?),
+        // System proxy / TUN / config mixin check items
+        // 系统代理勾选状态来自独立的 system_proxy 状态（非 allow-lan）。
+        Box::new(
+            CheckMenuItemBuilder::with_id("system_proxy", i18n.t("tray.system_proxy"))
+                .checked(config.general.system_proxy)
+                .build(app)?,
+        ),
+        Box::new(
+            CheckMenuItemBuilder::with_id("tun_mode", i18n.t("tray.tun_mode"))
+                .checked(config.tun.enable)
+                .build(app)?,
+        ),
+        Box::new(
+            CheckMenuItemBuilder::with_id("config_mixin", i18n.t("tray.config_mixin"))
+                .checked(config.mixin_enabled)
+                .build(app)?,
+        ),
+        Box::new(
+            CheckMenuItemBuilder::with_id("autostart", i18n.t("tray.autostart"))
+                .checked(crate::util::autostart::get_autostart().unwrap_or(false))
+                .build(app)?,
+        ),
+        Box::new(PredefinedMenuItem::separator(app)?),
+    ];
 
     // Proxy mode submenu
     // 注意：mihomo 仅支持 rule/global/direct；script 是 Clash Premium 遗留，
@@ -121,7 +118,9 @@ pub fn build_tray_menu(
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
 
     // Proxy groups (dynamic)
-    let group_items = build_proxy_group_items(app, proxies)?;
+    // 每次重建菜单时同步整体替换 ID → 名称 映射（见 tray/mod.rs）。
+    let (group_items, id_map) = build_proxy_group_items(app, proxies)?;
+    crate::tray::replace_tray_menu_map(id_map);
     let group_refs: Vec<&dyn IsMenuItem<tauri::Wry>> =
         group_items.iter().map(|b| b.as_ref()).collect();
     items.push(Box::new(
@@ -148,19 +147,20 @@ pub fn build_tray_menu(
 
     // More submenu
     // dev_tools（打开 devtools）仅 debug 构建展示；release 不暴露调试面。
-    let mut more_items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
+    // move_to_monitor 无真实实现（违反「已展示=必须可用」），菜单中移除；
+    // 待 Portable Updater 阶段实现后再恢复。
+    // dev_tools 是 cfg 条件条目，无法收进 vec![] 字面量：先建非空 Vec，
+    // debug 构建再把 dev_tools 插到队首，菜单顺序与旧实现一致。
+    #[allow(unused_mut)]
+    let mut more_items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = vec![
+        Box::new(MenuItemBuilder::with_id("restart", i18n.t("tray.restart")).build(app)?),
+        Box::new(MenuItemBuilder::with_id("force_quit", i18n.t("tray.force_quit")).build(app)?),
+    ];
     #[cfg(debug_assertions)]
-    more_items.push(Box::new(
-        MenuItemBuilder::with_id("dev_tools", i18n.t("tray.dev_tools")).build(app)?,
-    ));
-    more_items.push(Box::new(
-        MenuItemBuilder::with_id("move_to_monitor", i18n.t("tray.move_to_monitor"))
-            .build(app)?,
-    ));
-    more_items.push(Box::new(
-        MenuItemBuilder::with_id("restart", i18n.t("tray.restart")).build(app)?,
-    ));
-    more_items.push(Box::new(MenuItemBuilder::with_id("force_quit", i18n.t("tray.force_quit")).build(app)?));
+    more_items.insert(
+        0,
+        Box::new(MenuItemBuilder::with_id("dev_tools", i18n.t("tray.dev_tools")).build(app)?),
+    );
     let more_refs: Vec<&dyn IsMenuItem<tauri::Wry>> =
         more_items.iter().map(|b| b.as_ref()).collect();
     items.push(Box::new(
@@ -191,49 +191,72 @@ pub fn build_tray_menu(
 /// Build the proxy groups submenu items dynamically
 ///
 /// This creates the items to be placed inside the "proxy_groups" submenu.
-/// A group without subgroups becomes a single checkable item (`proxy_group_{group}`);
-/// a group with subgroups becomes a nested submenu (`proxy_group_{group}`) whose
-/// children are one checkable item per subgroup (`proxy_group_{group}_{proxy}`).
+/// A group without subgroups becomes a single checkable item; a group with
+/// subgroups becomes a nested submenu whose children are one checkable item
+/// per subgroup.
+///
+/// 审计 P1-9：MenuId 不再编码真实组名/节点名（含 `_` 时反解歧义、中文进 ID），
+/// 改用按构建顺序分配的稳定序号 ID（`proxy-item-0001`），真实名称写入返回的
+/// 映射（ID → (组名, 节点名)；节点名为空串表示组本身，无可选节点）。
+///
+/// 代理组子菜单条目 + 不透明序号 ID → (组名, 节点名) 映射。
+type GroupItemsAndMap = (
+    Vec<Box<dyn IsMenuItem<tauri::Wry>>>,
+    crate::tray::TrayMenuMap,
+);
+
 fn build_proxy_group_items(
     app: &AppHandle,
     proxies: &[ProxyGroupInfo],
-) -> crate::util::error::Result<Vec<Box<dyn IsMenuItem<tauri::Wry>>>> {
+) -> crate::util::error::Result<GroupItemsAndMap> {
     let mut items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
+    let mut id_map: crate::tray::TrayMenuMap = std::collections::HashMap::new();
+    let mut next_id: usize = 0;
+
+    // 分配下一个不透明序号 ID，并登记其真实名称。
+    macro_rules! alloc_id {
+        ($entry:expr) => {{
+            let id = format!("proxy-item-{:04}", next_id);
+            next_id += 1;
+            id_map.insert(id.clone(), $entry);
+            id
+        }};
+    }
 
     for group in proxies {
         let group_name = &group.name;
 
         if group.subgroups.is_empty() {
-            // Simple proxy group - a single checkable item
-            let item =
-                CheckMenuItemBuilder::with_id(format!("proxy_group_{}", group_name), group_name)
-                    .checked(group.is_selected)
-                    .build(app)?;
+            // Simple proxy group - a single checkable item（无子节点，点击不触发 select）
+            let id = alloc_id!((group_name.clone(), String::new()));
+            let item = CheckMenuItemBuilder::with_id(id, group_name)
+                .checked(group.is_selected)
+                .build(app)?;
             items.push(Box::new(item));
         } else {
             // Complex group with subgroups - a nested submenu
             let mut subgroup_items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
             for subgroup in &group.subgroups {
-                let sub_item = CheckMenuItemBuilder::with_id(
-                    format!("proxy_group_{}_{}", group_name, subgroup.name),
-                    &subgroup.name,
-                )
-                .checked(subgroup.is_selected)
-                .build(app)?;
+                let id = alloc_id!((group_name.clone(), subgroup.name.clone()));
+                let sub_item = CheckMenuItemBuilder::with_id(id, &subgroup.name)
+                    .checked(subgroup.is_selected)
+                    .build(app)?;
                 subgroup_items.push(Box::new(sub_item));
             }
 
             let subgroup_refs: Vec<&dyn IsMenuItem<tauri::Wry>> =
                 subgroup_items.iter().map(|b| b.as_ref()).collect();
-            let submenu =
-                SubmenuBuilder::with_id(app, format!("proxy_group_{}", group_name), group_name)
-                    .items(&subgroup_refs)
-                    .build()?;
+            // 子菜单自身 ID 仅作容器标识，不参与事件分发，同样使用不透明序号。
+            let submenu_id = format!("proxy-group-sub-{:04}", next_id);
+            next_id += 1;
+            let submenu = SubmenuBuilder::with_id(app, submenu_id, group_name)
+                .items(&subgroup_refs)
+                .build()?;
             items.push(Box::new(submenu));
         }
     }
 
-    Ok(items)
+    Ok((items, id_map))
 }
 
 /// 托盘图标：系统代理开 → 绿（活跃态）；系统代理关 → 蓝（闲置态）。
@@ -243,12 +266,14 @@ fn build_proxy_group_items(
 /// WCAG 1.4.3/1.4.11 对比度：单一纯色不可能同时对纯黑和纯白任务栏都 ≥4.5:1
 /// （对白 ≥4.5 需 L≤0.175，对黑 ≥4.5 需 L≥0.175，二者互斥），所以按系统主题
 /// 取两套配色——浅色任务栏用深色猫身+白眼，深色任务栏用浅色猫身+深眼：
-///   - 浅色任务栏（AppsUseLightTheme=1）：
-///       开=深绿 #0A5A2A (8.37:1)  关=深蓝 #174FA0 (7.89:1)  眼睛=白 #FFFFFF
-///   - 深色任务栏（AppsUseLightTheme=0）：
-///       开=浅绿 #96DFB0 (13.48:1) 关=浅蓝 #A8C8F5 (12.25:1) 眼睛=深 #242428
+/// - 浅色任务栏（AppsUseLightTheme=1）：
+///   开=深绿 #0A5A2A (8.37:1)  关=深蓝 #174FA0 (7.89:1)  眼睛=白 #FFFFFF
+/// - 深色任务栏（AppsUseLightTheme=0）：
+///   开=浅绿 #96DFB0 (13.48:1) 关=浅蓝 #A8C8F5 (12.25:1) 眼睛=深 #242428
+///
 /// 眼睛-猫身对比度（小尺寸细节，按 AAA 文本级 ≥7:1 复核）：
-///   浅色开 8.37:1 / 浅色关 7.89:1 / 深色开 9.93:1 / 深色关 9.02:1 —— 均 ≥7:1。
+/// 浅色开 8.37:1 / 浅色关 7.89:1 / 深色开 9.93:1 / 深色关 9.02:1 —— 均 ≥7:1。
+///
 /// 猫身-任务栏背景对比度（整图）：浅色开 8.37 / 浅色关 7.89 / 深色开 12.18 /
 /// 深色关 11.07 —— 均 ≥7:1。眼睛永远被猫身包围（眼睛区域只在猫身内部，
 /// 不触透明背景），故「眼睛-任务栏」不作为衡量项。
@@ -266,12 +291,12 @@ fn build_proxy_group_items(
 /// - 旧实现 v3：阈值 `sum>=380` 匹配亮白眼睛，但再叠加 3+1 轮膨胀把 4x4 白点
 ///   扩成 ~9px 斑块（用户反馈「像真眼珠，吓人」）→ 移除膨胀，保留原图白点。
 /// - 当前：阈值 `sum>=380` 精准匹配白点眼睛，猫身与眼睛各自正确着色，无膨胀。
-pub fn build_tray_icon(config: &Config) -> crate::util::error::Result<tauri::image::Image<'static>> {
+pub fn build_tray_icon(
+    config: &Config,
+) -> crate::util::error::Result<tauri::image::Image<'static>> {
     let bytes = include_bytes!("../../icons/32x32.png");
     let img = image::load_from_memory(bytes)
-        .map_err(|e| {
-            crate::util::error::Error::Other(format!("tray icon decode failed: {}", e))
-        })?
+        .map_err(|e| crate::util::error::Error::Other(format!("tray icon decode failed: {}", e)))?
         .to_rgba8();
     let (w, h) = img.dimensions();
 

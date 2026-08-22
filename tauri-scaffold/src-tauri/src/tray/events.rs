@@ -110,26 +110,28 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             );
         }
 
-        // Proxy group selection (id: proxy_group_{group} or proxy_group_{group}_{proxy})
-        name if name.starts_with("proxy_group_") => {
-            let name = &name["proxy_group_".len()..];
-            info!("Tray: selecting proxy group {}", name);
+        // Proxy group selection（ID 为不透明序号，真实名称查 tray/mod.rs 的映射）
+        name if name.starts_with("proxy-item-") => {
+            let Some((group, proxy)) = crate::tray::lookup_tray_menu_item(name) else {
+                debug!("Tray: unknown proxy item id: {}", name);
+                return Ok(());
+            };
+            // 节点名为空串 = 组本身（无子节点项），不触发 select。
+            if proxy.is_empty() {
+                debug!("Tray: proxy group {} has no selectable node", group);
+                return Ok(());
+            }
+            info!("Tray: selecting proxy in group {}: {}", group, proxy);
             let state = app_handle.state::<crate::AppState>();
             let selected = {
                 // 临界区内仅执行核心操作，块结束释放 guard 后再 refresh_tray/emit
                 //（tokio Mutex 不可重入，refresh_tray 内部会再次 lock）。
-                let mut parts = name.rsplitn(2, '_');
-                let proxy = parts.next().unwrap_or(name).to_string();
-                let group = parts.next().unwrap_or(&proxy).to_string();
                 let core = state.core_manager.lock().await;
                 match core.as_ref() {
-                    Some(c) => match c
-                        .select_proxy_group(group.clone(), proxy.clone())
-                        .await
-                    {
+                    Some(c) => match c.select_proxy_group(group.clone(), proxy.clone()).await {
                         Ok(()) => Some((group, proxy)),
                         Err(e) => {
-                            warn!("Failed to select proxy group {}: {}", name, e);
+                            warn!("Failed to select proxy in group {}: {}", group, e);
                             None
                         }
                     },
@@ -151,27 +153,34 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
         "geodata_update" => {
             info!("Tray: initiating geo data update");
             let h = app_handle.clone();
-            let _ = tauri::async_runtime::spawn(async move {
+            std::mem::drop(tauri::async_runtime::spawn(async move {
                 if let Err(e) = crate::geodata::updater::update_geodata(&h).await {
                     error!("Geo data update failed: {}", e);
                 }
-            });
+            }));
         }
 
         // Rollback geo data
         "geodata_rollback" => {
             info!("Tray: rolling back geo data");
             let h = app_handle.clone();
-            let _ = tauri::async_runtime::spawn(async move {
+            std::mem::drop(tauri::async_runtime::spawn(async move {
                 if let Err(e) = crate::geodata::updater::rollback_geodata(&h).await {
                     error!("Geo data rollback failed: {}", e);
                 }
-            });
+            }));
         }
 
-        // Close all connections (stub)
+        // Close all connections
+        // 与 restart 相同的锁纪律：在 tokio Mutex 临界区内跨 await 调用核心接口，
+        // 块结束后释放 guard，避免影响其他需要锁的操作。
         "close_all" => {
-            info!("Tray: close all connections (stub)");
+            info!("Tray: closing all connections");
+            let state = app_handle.state::<crate::AppState>();
+            let core = state.core_manager.lock().await;
+            if let Some(c) = core.as_ref() {
+                c.close_all_connections().await?;
+            }
         }
 
         // Restart core
@@ -198,11 +207,6 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             if let Some(w) = app_handle.get_webview_window("main") {
                 w.open_devtools();
             }
-        }
-
-        // Move to monitor (stub)
-        "move_to_monitor" => {
-            info!("Tray: move to monitor (stub)");
         }
 
         // Force quit / quit

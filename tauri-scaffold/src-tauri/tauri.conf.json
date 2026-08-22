@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  // 安全说明：前端不直连任何外部 HTTP/WebSocket —— 订阅 / geodata 拉取均由后端
-  // reqwest 完成，日志走 Tauri 事件通道，前端仅通过 invoke 调后端命令。
-  // 故 CSP 的 connect-src 仅保留 'self'（同源 invoke / 事件），并显式关闭
-  // object / frame 注入面。style-src 保留 'unsafe-inline' 因 Element Plus 需要。
+  // 瀹夊叏璇存槑锛氬墠绔笉鐩磋繛浠讳綍澶栭儴 HTTP/WebSocket 鈥斺€?璁㈤槄 / geodata 鎷夊彇鍧囩敱鍚庣
+  // reqwest 瀹屾垚锛屾棩蹇楄蛋 Tauri 浜嬩欢閫氶亾锛屽墠绔粎閫氳繃 invoke 璋冨悗绔懡浠ゃ€?
+  // 鏁?CSP 鐨?connect-src 浠呬繚鐣?'self'锛堝悓婧?invoke / 浜嬩欢锛夛紝骞舵樉寮忓叧闂?
+  // object / frame 娉ㄥ叆闈€俿tyle-src 淇濈暀 'unsafe-inline' 鍥?Element Plus 闇€瑕併€?
   "productName": "ClashEdge",
-  "version": "0.8.7",
+  "version": "1.0.0",
   "identifier": "com.clashedge.portable",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,10 +14,10 @@
     "frontendDist": "../dist"
   },
   "app": {
-    // 前端全部通过显式 import 调命令，无需注入全局 __TAURI__。
-    // 主窗口不在配置中声明：Tauri 2 的 on_navigation 导航锁定仅在
-    // WebviewWindowBuilder 上可用（配置式窗口无法挂接），故在 main.rs setup
-    // 中通过 WebviewWindowBuilder 创建，窗口属性与旧配置保持一致。
+    // 鍓嶇鍏ㄩ儴閫氳繃鏄惧紡 import 璋冨懡浠わ紝鏃犻渶娉ㄥ叆鍏ㄥ眬 __TAURI__銆?
+    // 涓荤獥鍙ｄ笉鍦ㄩ厤缃腑澹版槑锛歍auri 2 鐨?on_navigation 瀵艰埅閿佸畾浠呭湪
+    // WebviewWindowBuilder 涓婂彲鐢紙閰嶇疆寮忕獥鍙ｆ棤娉曟寕鎺ワ級锛屾晠鍦?main.rs setup
+    // 涓€氳繃 WebviewWindowBuilder 鍒涘缓锛岀獥鍙ｅ睘鎬т笌鏃ч厤缃繚鎸佷竴鑷淬€?
     "withGlobalTauri": false,
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'none'"
@@ -37,15 +37,6 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
-    }
-  },
-  "plugins": {
-    "updater": {
-      "endpoints": ["https://github.com/akaspyrean/clashedge/releases/latest/download/latest.json"],
-      "pubkey": "",
-      "windows": {
-        "installMode": "passive"
-      }
     }
   }
 }

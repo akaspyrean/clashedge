@@ -33,7 +33,10 @@ const VALID_MODES: &[&str] = &["rule", "global", "direct"];
 /// - 仅靠 `<local>`（对应空主机名/局域网）不会覆盖字面量 IP 127.0.0.1 与
 ///   tauri.localhost 域名，导致这些回环请求被错误地代理到 mihomo 的 7890，
 ///   在内核未就绪/重启时返回 ERR_CONNECTION_REFUSED（BUG1 根因之一）。
-fn default_bypass() -> Vec<String> {
+///
+/// pub(crate)：CoreSupervisor 在崩溃自愈恢复系统代理时复用同一份绕过列表，
+/// 保证恢复值与正常开启路径完全一致。
+pub(crate) fn default_bypass() -> Vec<String> {
     vec![
         "<local>".to_string(),
         "127.0.0.1".to_string(),
@@ -175,11 +178,13 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
         old
     };
 
-    // 2. 写注册表（真实生效）
+    // 2. 写注册表（真实生效）。写之前快照当前 Windows 代理状态，
+    //    作为 Recovery Journal 的"用户原始状态"记录。
     let address = {
         let cfg = state.config_manager.lock().unwrap().get_config();
         format!("127.0.0.1:{}", cfg.general.mixed_port)
     };
+    let before_change = crate::proxy::system_proxy::get_system_proxy().ok();
     let bypass = default_bypass();
     if let Err(e) = crate::proxy::system_proxy::set_system_proxy(enable, &address, &bypass) {
         // 3. 回滚
@@ -189,6 +194,37 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
         let _ = cfg_mgr.set_config(cfg);
         error!("apply_system_proxy({}) failed, rolled back: {}", enable, e);
         return Err(e);
+    }
+
+    // 4. P1-8 Recovery Journal：
+    //    - 接管成功 → 记录"接管前"的原始代理状态（断电/强杀后的启动自愈依据）；
+    //    - 主动关闭成功 → 清除 journal（干净关闭无需恢复）。
+    match crate::util::paths::get_app_data_dir(app) {
+        Ok(data_dir) => {
+            if enable {
+                crate::proxy::journal::write_journal(
+                    &data_dir,
+                    &crate::proxy::journal::ProxyJournal {
+                        session_id: format!(
+                            "{:016x}{:016x}",
+                            rand::random::<u64>(),
+                            rand::random::<u64>()
+                        ),
+                        pid: std::process::id(),
+                        mixed_port: address
+                            .rsplit(':')
+                            .next()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(0),
+                        original: before_change,
+                        owned: true,
+                    },
+                );
+            } else {
+                crate::proxy::journal::clear_journal(&data_dir);
+            }
+        }
+        Err(e) => warn!("Failed to resolve data dir for proxy journal: {}", e),
     }
 
     info!(

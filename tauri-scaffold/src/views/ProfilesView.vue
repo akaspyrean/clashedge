@@ -1,4 +1,4 @@
-<!-- src/views/ProfilesView.vue - 配置文件管理（独立导航页）：
+﻿<!-- src/views/ProfilesView.vue - 配置文件管理（独立导航页）：
      页面级完整管理：工具栏（订阅 / 新建 / [更多▾: 导入/导出]）+ 配置文件卡片列表
      （激活 / 更新 / 重命名 / 原始编辑 / 删除）。 -->
 <script setup lang="ts">
@@ -255,7 +255,7 @@ async function onDelete(name: string) {
         <template #header>
           <div class="card-header">
             <span class="profile-name">{{ profile.name }}</span>
-            <el-tag v-if="profile.active" type="success" size="small">
+            <el-tag v-if="profile.active" type="success" size="small" effect="plain">
               {{ $t("profiles.active") }}
             </el-tag>
           </div>
@@ -264,7 +264,7 @@ async function onDelete(name: string) {
            <el-button
             v-if="!profile.active"
             size="small"
-            type="info"
+            type="primary"
             plain
             @click="onActivate(profile.name)"
           >
@@ -273,16 +273,14 @@ async function onDelete(name: string) {
           <el-button
             v-if="profile.url"
             size="small"
-            type="success"
-            plain
             @click="onUpdate(profile.name)"
           >
             {{ $t("profiles.update") }}
           </el-button>
-          <el-button size="small" type="info" plain @click="onRenameOpen(profile.name)">
+          <el-button size="small" @click="onRenameOpen(profile.name)">
             {{ $t("profiles.rename") }}
           </el-button>
-          <el-button size="small" type="info" plain @click="onEditOpen(profile.name)">
+          <el-button size="small" @click="onEditOpen(profile.name)">
             {{ $t("profiles.raw_edit") }}
           </el-button>
           <el-button size="small" type="danger" plain @click="onDelete(profile.name)">
@@ -293,7 +291,7 @@ async function onDelete(name: string) {
     </div>
 
     <!-- 订阅配置 -->
-    <el-dialog v-model="subscribeVisible" :title="$t('profiles.subscribe')" width="520px">
+    <el-dialog v-model="subscribeVisible" :title="$t('profiles.subscribe')" width="min(640px, calc(100vw - 32px))">
       <el-form label-position="top">
         <el-form-item :label="$t('profiles.subscribe_url')">
           <el-input
@@ -317,7 +315,7 @@ async function onDelete(name: string) {
     </el-dialog>
 
     <!-- 新建配置 -->
-    <el-dialog v-model="newVisible" :title="$t('profiles.new')" width="520px">
+    <el-dialog v-model="newVisible" :title="$t('profiles.new')" width="min(640px, calc(100vw - 32px))">
       <el-form label-position="top">
         <el-form-item :label="$t('profiles.name')">
           <el-input v-model="newName" :placeholder="$t('profiles.name')" />
@@ -335,7 +333,7 @@ async function onDelete(name: string) {
     </el-dialog>
 
     <!-- 导入配置 -->
-    <el-dialog v-model="importVisible" :title="$t('profiles.import')" width="520px">
+    <el-dialog v-model="importVisible" :title="$t('profiles.import')" width="min(640px, calc(100vw - 32px))">
       <el-form label-position="top">
         <el-form-item :label="$t('profiles.name')">
           <el-input v-model="importName" :placeholder="$t('profiles.name')" />
@@ -353,7 +351,7 @@ async function onDelete(name: string) {
     </el-dialog>
 
     <!-- 导出配置 -->
-    <el-dialog v-model="exportVisible" :title="$t('profiles.export')" width="560px">
+    <el-dialog v-model="exportVisible" :title="$t('profiles.export')" width="min(640px, calc(100vw - 32px))">
       <el-form label-position="top">
         <el-form-item :label="$t('profiles.name')">
           <el-select v-model="exportTarget" style="width: 100%">
@@ -384,7 +382,7 @@ async function onDelete(name: string) {
     </el-dialog>
 
     <!-- 重命名 -->
-    <el-dialog v-model="renameVisible" :title="$t('profiles.rename')" width="420px">
+    <el-dialog v-model="renameVisible" :title="$t('profiles.rename')" width="min(640px, calc(100vw - 32px))">
       <el-form label-position="top">
         <el-form-item :label="$t('profiles.name')">
           <el-input v-model="renameNewName" />
@@ -402,7 +400,7 @@ async function onDelete(name: string) {
     <el-dialog
       v-model="editVisible"
       :title="$t('profiles.raw_edit')"
-      width="640px"
+      width="min(640px, calc(100vw - 32px))"
       @open="onEditDialogOpen"
     >
       <el-input
@@ -458,7 +456,7 @@ async function onDelete(name: string) {
 }
 
 .profile-name {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 15px;
   color: var(--text-primary);
 }
