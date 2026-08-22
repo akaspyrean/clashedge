@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -52,7 +56,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Idempotent: wipe any stale release (failed-run draft) for this tag, then create fresh.
+          if (gh release view ${{ github.ref_name }} 2>$null) {
+            gh release delete ${{ github.ref_name }} --yes
+          }
           gh release create ${{ github.ref_name }} `
+            --target ${{ github.sha }} `
             --title "${{ github.ref_name }}" `
             --draft `
             --generate-notes
@@ -79,8 +88,8 @@ jobs:
         run: |
           $zip = ".\release\ClashEdge-portable-${{ steps.meta.outputs.version }}-win64.zip"
           $sha = "$zip.sha256"
-          gh release upload ${{ github.ref_name }} $zip $sha
-          gh release upload ${{ github.ref_name }} "$zip#ClashEdge-portable-win64.zip"
+          gh release upload ${{ github.ref_name }} $zip $sha --clobber
+          gh release upload ${{ github.ref_name }} "$zip#ClashEdge-portable-win64.zip" --clobber
 
       - name: Check updater signing key
         id: check-key
@@ -120,9 +129,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} ".\release\latest.json"
+          gh release upload ${{ github.ref_name }} ".\release\latest.json" --clobber
           $sig = ".\release\ClashEdge-portable-${{ steps.meta.outputs.version }}-win64.zip.sig"
-          if (Test-Path $sig) { gh release upload ${{ github.ref_name }} $sig }
+          if (Test-Path $sig) { gh release upload ${{ github.ref_name }} $sig --clobber }
 
       - name: Publish release
         shell: pwsh
