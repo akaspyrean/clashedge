@@ -27,6 +27,14 @@ jobs:
         working-directory: tauri-scaffold
         run: npm ci
 
+      - name: cargo fmt --check
+        working-directory: tauri-scaffold/src-tauri
+        run: cargo fmt --check
+
+      - name: cargo clippy (-D warnings)
+        working-directory: tauri-scaffold/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: cargo test
         working-directory: tauri-scaffold/src-tauri
         run: cargo test
