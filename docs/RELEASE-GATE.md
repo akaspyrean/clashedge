@@ -6,24 +6,34 @@
 
 ## 当前已知阻断项
 
-- [ ] **设置页从文件导入 YAML 的 fs 权限**：前端 SettingsView 使用 `open()` + `readTextFile()`（`@tauri-apps/plugin-fs`），但 `src-tauri/capabilities/default.json` 仅授予 `dialog:default`，**没有任何 fs 读权限**——预计实机点击导入后 readTextFile 直接权限拒绝。需实机验证；若确认失败，改为 Rust command 在后端读文件（前端只回传路径），并补回归测试。
+- [x] **设置页从文件导入 YAML 的 fs 权限**：已确认修复——前端不再使用 plugin-fs 读文件，统一走后端 Rust command `read_import_file`（前端零 fs 依赖）。2026-08-23 核查。
+
+## 实测记录（2026-08-23，v1.0.0 便携包，脚本化实机测试）
+
+| 测试 | 结果 | 证据 |
+| --- | --- | --- |
+| 中文+空格路径启动（`测试 目录 GateA/`） | ✅ PASS | App 与 mihomo-win64 均从该路径正常启动 |
+| 端口占用：7890 被占时启动核心 | ✅ PASS | mihomo 报 `bind: Only one usage of each socket address`；UI 红条如实呈现错误+可操作提示（点名旧版 Clash.F.Win）；状态保持「已停止」，绝不假运行 |
+| 损坏 config.yaml 保护 | ✅ PASS | 非法 YAML 写入后启动：原内容保留为 `config.yaml.corrupt-<ts>.bak`，**不被默认配置覆盖**，应用降级模式可启动 |
+| 强杀 mihomo 自动重启 | ✅ PASS | 强杀后 ~1s 自动拉起新进程（新 PID） |
+| 连续崩溃熔断（P0-7） | ✅ PASS | 10 分钟窗口内第 3 次强杀后停止自动重启，UI 显示「mihomo exited unexpectedly」Error 态 |
 
 ---
 
 ## 一、构建与校验
 
-- [ ] `npm run build`（vue-tsc 类型检查 + Vite 生产构建）零错误
-- [ ] `cargo test` 全部通过
-- [ ] `npm run tauri -- build --no-bundle` 产出真实应用 exe（体积 > 启动器残片阈值）
-- [ ] `tools/build-portable.ps1` 打包成功：前置校验、csc 编译根启动器、后置 7 项断言全部通过
-- [ ] 产物 zip 与 .sha256 一致，SHA256 校验通过
-- [ ] 版本号三处一致：tauri.conf.json / package.json / HANDOVER.md 头部
-- [ ] 产物内不含订阅地址、密钥等非程序必需数据（路径泄露扫描通过）
+- [x] `npm run build`（vue-tsc 类型检查 + Vite 生产构建）零错误（2026-08-23）
+- [x] `cargo test` 全部通过——62/62（2026-08-23，含 P0 回归测试）
+- [x] `npm run tauri -- build --no-bundle` 产出真实应用 exe（体积 > 启动器残片阈值）（2026-08-23）
+- [x] `tools/build-portable.ps1` 打包成功：前置校验、csc 编译根启动器、后置断言全部通过——9/9 invariants（2026-08-23）
+- [x] 产物 zip 与 .sha256 一致，SHA256 校验通过（2026-08-23）
+- [x] 版本号三处一致：tauri.conf.json / package.json / HANDOVER.md 头部 = **1.0.0**（2026-08-23）
+- [x] 产物内不含订阅地址、密钥等非程序必需数据（路径泄露扫描通过）（2026-08-23）
 
 ## 二、核心生命周期与状态一致性
 
-- [ ] 空闲端口启动：内核监听正常，无绑定冲突
-- [ ] **7890 / 9090 / 9053 任一端口被占用时给出明确错误**，UI 呈现 Error，绝不假运行（绑定冲突检测生效）
+- [x] 空闲端口启动：内核监听正常，无绑定冲突（2026-08-23）
+- [x] **7890 / 9090 / 9053 任一端口被占用时给出明确错误**，UI 呈现 Error，绝不假运行（绑定冲突检测生效）——7890 实测（2026-08-23）
 - [ ] 启动/停止/重启各 10 次，状态机无卡死、无僵尸进程残留
 - [ ] **多次 restart 后永远只有一个 watcher**（观察事件不重复推送、崩溃后不重复自动重启）
 - [ ] Settings 页修改 mixed-port 并保存：runtime-config.yaml 更新、Mihomo 实际监听新端口、系统代理同步新端口（P0-3 验收）
@@ -53,19 +63,20 @@
 - [ ] 正常退出（托盘 Quit）：系统代理按意图关闭，注册表干净
 - [ ] 异常退出（强杀/断电模拟）：下次启动能确定性恢复或清除系统代理，不留死端口
 - [ ] mihomo 自动重启健康检查通过后，系统代理按配置意图恢复（P0-5 验收）
-- [ ] 10 分钟窗口内连续崩溃 3 次：停止自动重启，UI 显示 Error，不无限循环（P0-7 验收）
+- [x] **10 分钟窗口内连续崩溃 3 次：停止自动重启，UI 显示 Error，不无限循环（P0-7 验收）**——实测第 3 次强杀后停止重启、UI 显示「mihomo exited unexpectedly」（2026-08-23）
+- [x] mihomo 异常退出后自动拉起新进程——实测强杀后 ~1s 重启（新 PID）（2026-08-23；系统代理恢复路径待系统代理开启场景补测）
 - [ ] TUN 开启后异常退出：虚拟网卡/路由不留残留（如适用）
 - [ ] 开机自启：注册表 Run 键写入正确，重启系统后随系统启动正常
 - [ ] 便携目录整体移动/换盘符后，自启路径在下次启动被自动修复
 
 ## 五、便携包
 
-- [ ] **中文路径**下解压并正常运行（如 `D:\工具\ClashEdge\`）
-- [ ] **路径含空格**正常运行（如 `C:\Test Dir\ClashEdge\`）
+- [x] **中文路径**下解压并正常运行——实测 `release/测试 目录 GateA/`（2026-08-23）
+- [x] **路径含空格**正常运行——同上测试路径含空格（2026-08-23）
 - [ ] **移动盘符变更**（U 盘换机器盘符变化）后 portable.dat 自愈判定仍生效，内核路径解析正确
 - [ ] Data 目录随包迁移后配置/Profile/规则完整保留
 - [ ] 根 ClashEdge.exe 图标与 App 内应用图标一致
-- [ ] App/portable.dat、App/clash-edge-core.exe 等 7 项打包断言齐备
+- [x] App/portable.dat、App/clash-edge-core.exe 等打包断言齐备——9/9 invariants OK（2026-08-23）
 - [ ] 卸载式删除：直接删目录即可移除（除自启注册表键需说明）
 
 ## 六、更新链路（Phase 3 重做后启用；当前 updater 为半成品，以下暂记为未达成）
