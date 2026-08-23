@@ -154,11 +154,13 @@ jobs:
             if (-not (Test-Path $f)) { throw "Missing release artifact: $f" }
           }
 
-          # SHA256 文件必须与实际 ZIP 哈希一致
+          # SHA256 文件必须与实际 ZIP 哈希一致（大小写不敏感：
+          # build-portable.ps1 写入的是 Get-FileHash 的大写形式）
           $actualZipSha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           $shaLine = (Get-Content $sha -Raw).Trim()
-          if (-not $shaLine.StartsWith($actualZipSha)) {
-            throw "ZIP sha256 file mismatch:`n  file says: $shaLine`n  actual:    $actualZipSha"
+          $shaFileHash = ($shaLine -split '\s+')[0].Trim()
+          if (-not $shaFileHash.Equals($actualZipSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "ZIP sha256 file mismatch:`n  file says: $shaFileHash`n  actual:    $actualZipSha"
           }
 
           # manifest 必须指向同一个真实存在的 ZIP 资产名，且内嵌哈希一致
