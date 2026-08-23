@@ -81,7 +81,9 @@ async function onCheckUpdate() {
     const status = await updateApi.check();
     if (status.status === "available") {
       updateMsg.value = t("about.update_available", { version: status.version });
-      await updateApi.download(status);
+      // P0-6：下载不传任何参数——后端只使用刚验签过的 manifest，
+      // WebView 传入的 version/url/hash 不参与下载决策。
+      await updateApi.download();
       stagedVersion.value = status.version;
       ElMessage.success(t("about.update_staged", { version: status.version }));
     } else {

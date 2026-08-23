@@ -57,6 +57,10 @@ base64 = "0.21"
 rand = "0.8"
 # Portable Updater 更新包完整性校验（SHA256，Cargo.lock 锁 0.10.9）
 sha2 = "0.10"
+# P0-6（Release Gate）：Portable Updater manifest 签名验证（minisign 兼容，
+# verify-only，无私钥代码路径）。发布端用 minisign 对 portable-manifest.json
+# 签名；客户端用内置公钥验签后才信任 manifest 内容。
+minisign-verify = "0.2"
 # 托盘图标运行时着色（系统代理开=绿 / 关=灰）；
 # 已作为传递依赖存在于 Cargo.lock（image 0.25.10），无需新增下载。
 image = { version = "0.25", default-features = false, features = ["png"] }

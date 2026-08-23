@@ -1,20 +1,30 @@
 // src-tauri/src/update/mod.rs
-//! Portable Updater（0.8.10，AUDIT Phase 3 重做）
+//! Portable Updater（1.0 Release Gate P0-6 重做：真实签名信任链）
 //!
-//! 半成品 Tauri updater 已移除；便携包更新走自有链路：
+//! 便携包更新走自有链路：
 //!
 //! ```text
-//! 检查 portable-manifest.json → 版本比较 → 流式下载 versioned ZIP
-//!   → SHA256 校验 → 暂存 Data/update-staging/ + 写 pending.json
-//!   → 下次由根启动器在拉起内层前应用（解压→结构校验→替换 App/→保留 Data/）
-//!   → 失败回滚（启动器负责：App.new 校验不过就保留旧 App/）
+//! 内置公钥（编译期固定）
+//!   ↓
+//! 下载 portable-manifest.json + portable-manifest.json.minisig
+//!   ↓
+//! minisign 验签 manifest（未签名 / 错签名 / 公钥不匹配 → 一律拒绝）
+//!   ↓
+//! 解析 manifest（version/url/sha256 从此才可信）
+//!   ↓
+//! 流式下载 ZIP → SHA256 与 manifest 比对
+//!   ↓
+//! 暂存 Data/update-staging/ + 写 pending.json
+//!   ↓
+//! 下次由根启动器在拉起内层前应用（见 tools/ClashEdge.Launcher.R8.2.cs，
+//! 启动器带更新事务 journal，断电可恢复；Data/ 永不被替换）
 //! ```
 //!
-//! 职责边界：
-//! - 本模块只做「检查 / 下载 / 验签 / 暂存」，绝不在运行中自我替换；
-//!   Windows 无法覆盖运行中的自身映像，最终交换由启动器在下次启动完成；
-//! - ZIP 解压与 App/ 替换在 tools/ClashEdge.Launcher.R8.2.cs 中实现，
-//!   启动器是唯一有权限安全替换内层映像的组件。
+//! 安全边界：
+//! - 签名不是 optional：公钥未配置或验签失败时更新功能整体不可用；
+//! - 前端传入的 version/url/hash 一律不信任——`download_update` 命令无参数，
+//!   只使用 `check_update` 刚验证过并缓存的后端 manifest；
+//! - 本模块只做「检查 / 验签 / 下载 / 暂存」，绝不在运行中自我替换。
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,9 +32,20 @@ use tracing::{info, warn};
 
 use crate::util::error::{Error, Result};
 
-/// 更新清单地址（GitHub Releases latest 钉定产物）
+/// 更新清单地址（GitHub Releases latest 钉定产物）。
+/// 客户端同时拉取 `<endpoint>.minisig` 作为其 minisign 签名。
 pub const UPDATE_ENDPOINT: &str =
     "https://github.com/akaspyrean/clashedge/releases/latest/download/portable-manifest.json";
+
+/// P0-6：更新清单验签公钥（minisign 公钥，base64）。
+///
+/// 编译期由环境变量 `CLASHEDGE_UPDATE_PUBKEY` 注入（release workflow 从
+/// 同一枚私钥对应的仓库 Secret 传入）。为空 = 更新链不可用，check_update
+/// 返回明确错误——绝不降级成"纯 SHA256 无身份校验"的自动更新。
+pub const UPDATE_PUBLIC_KEY: &str = match option_env!("CLASHEDGE_UPDATE_PUBKEY") {
+    Some(k) => k,
+    None => "",
+};
 
 /// 单次下载大小上限（便携包 ZIP 正常 <100 MB）
 const MAX_UPDATE_BYTES: u64 = 300 * 1024 * 1024;
@@ -88,9 +109,65 @@ fn is_newer(remote: &str, current: &str) -> bool {
     }
 }
 
-/// 检查更新：拉取 manifest 并比较版本。
-/// 网络失败/清单非法一律返回 Err——不假装"已是最新"。
+/// P0-6：用内置公钥验证 manifest 的 minisign 签名。
+///
+/// - `manifest_bytes`：manifest 文件的原始字节（验签对象是文件本身）；
+/// - `sig_file_text`：`.minisig` 文件全文（第 2 行是 base64 签名 blob）。
+///
+/// 未签名、格式错误、公钥不匹配、数据被篡改 → 全部 Err。
+pub fn verify_manifest_signature(
+    pubkey_b64: &str,
+    manifest_bytes: &[u8],
+    sig_file_text: &str,
+) -> Result<()> {
+    if pubkey_b64.trim().is_empty() {
+        return Err(Error::Other(
+            "更新验签公钥未配置（CLASHEDGE_UPDATE_PUBKEY）；拒绝接受未签名清单".to_string(),
+        ));
+    }
+    let pk = minisign_verify::PublicKey::from_base64(pubkey_b64.trim())
+        .map_err(|e| Error::Other(format!("内置更新公钥非法：{}", e)))?;
+    let signature = minisign_verify::Signature::decode(sig_file_text)
+        .map_err(|e| Error::Other(format!("签名解码失败（.minisig 格式非法）：{}", e)))?;
+    // 现代 minisign（prehashed，"ED"）直接通过；旧版非预哈希签名（"Ed"）
+    // 需要显式允许 legacy 模式。两者都验不过才算不可信。
+    match pk.verify(manifest_bytes, &signature, false) {
+        Ok(()) => Ok(()),
+        Err(minisign_verify::Error::UnexpectedAlgorithm) => pk
+            .verify(manifest_bytes, &signature, true)
+            .map_err(|_| Error::Other("更新清单签名验证失败：来源不可信，已拒绝".to_string())),
+        Err(_) => Err(Error::Other(
+            "更新清单签名验证失败：来源不可信，已拒绝".to_string(),
+        )),
+    }
+}
+
+/// 下载 `.minisig` 签名文件文本。缺失（HTTP 失败/非成功码）一律 Err——
+/// 未签名清单不可接受。
+async fn fetch_signature_text(app: &tauri::AppHandle) -> Result<String> {
+    let sig_url = format!("{}.minisig", UPDATE_ENDPOINT);
+    let resp = crate::util::fetch::get_direct_first(app, &sig_url).await?;
+    if !resp.status().is_success() {
+        return Err(Error::Other(format!(
+            "update manifest signature fetch failed: HTTP {}（未签名发布不受信任）",
+            resp.status()
+        )));
+    }
+    resp.text()
+        .await
+        .map_err(|e| Error::Other(format!("invalid update manifest signature: {}", e)))
+}
+
+/// 检查更新：下载 manifest + 签名 → 验签 → 解析比较版本。
+/// 签名无效 / 清单非法 / 网络失败一律返回 Err——不假装"已是最新"。
+/// 成功返回的 manifest 已通过信任链，可直接用于下载暂存。
 pub async fn check_for_update(app: &tauri::AppHandle) -> Result<UpdateStatus> {
+    if UPDATE_PUBLIC_KEY.trim().is_empty() {
+        return Err(Error::Other(
+            "自动更新不可用：客户端未内置更新公钥（构建配置缺失）".to_string(),
+        ));
+    }
+
     let resp = crate::util::fetch::get_direct_first(app, UPDATE_ENDPOINT).await?;
     if !resp.status().is_success() {
         return Err(Error::Other(format!(
@@ -98,9 +175,16 @@ pub async fn check_for_update(app: &tauri::AppHandle) -> Result<UpdateStatus> {
             resp.status()
         )));
     }
-    let manifest: UpdateManifest = resp
-        .json()
+    let manifest_bytes = resp
+        .bytes()
         .await
+        .map_err(|e| Error::Other(format!("update manifest read failed: {}", e)))?;
+
+    // P0-6：先验签，再解析内容——未通过信任链的 manifest 内容一律不看。
+    let sig_text = fetch_signature_text(app).await?;
+    verify_manifest_signature(UPDATE_PUBLIC_KEY, &manifest_bytes, &sig_text)?;
+
+    let manifest: UpdateManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| Error::Other(format!("invalid update manifest: {}", e)))?;
     if manifest.url.is_empty() || manifest.sha256.len() != 64 {
         return Err(Error::Other(
@@ -109,6 +193,12 @@ pub async fn check_for_update(app: &tauri::AppHandle) -> Result<UpdateStatus> {
     }
     // SSRF：manifest 的 url 也必须过禁段校验（下载时 get_direct_first 还会再验）
     crate::util::fetch::validate_url(&manifest.url).await?;
+
+    info!(
+        "Update manifest signature verified (v{}, sha256 {}...)",
+        manifest.version,
+        &manifest.sha256[..12]
+    );
 
     let current = current_version().to_string();
     if is_newer(&manifest.version, &current) {
@@ -271,5 +361,53 @@ mod tests {
     #[test]
     fn hex_encode_works() {
         assert_eq!(hex_encode(&[0xde, 0xad]), "dead");
+    }
+
+    // ---- P0-6 签名信任链 ----
+
+    /// 官方 minisign 测试向量（jedisct1/minisign 与 minisign-verify crate
+    /// 同源的公开测试密钥对，仅用于证明验签实现正确）。
+    const TEST_PUBKEY: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+    /// 现代 minisign 默认（prehashed，"ED"）签名，对象为 b"test"
+    const TEST_SIG_PREHASHED: &str = "untrusted comment: signature from minisign secret key\nRUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\ntrusted comment: timestamp:1556193335\tfile:test\ny/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==\n";
+    /// 旧版非预哈希（"Ed"）签名，对象为 b"test"
+    const TEST_SIG_LEGACY: &str = "untrusted comment: signature from minisign secret key\nRWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73YiIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=\ntrusted comment: timestamp:1555779966\tfile:test\nQtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA==\n";
+    const TEST_MESSAGE: &[u8] = b"test";
+
+    #[test]
+    fn valid_signature_accepted() {
+        verify_manifest_signature(TEST_PUBKEY, TEST_MESSAGE, TEST_SIG_PREHASHED)
+            .expect("prehashed minisign signature must verify");
+        verify_manifest_signature(TEST_PUBKEY, TEST_MESSAGE, TEST_SIG_LEGACY)
+            .expect("legacy minisign signature must verify via fallback");
+    }
+
+    #[test]
+    fn tampered_manifest_rejected() {
+        assert!(verify_manifest_signature(TEST_PUBKEY, b"Test", TEST_SIG_PREHASHED).is_err());
+        assert!(verify_manifest_signature(TEST_PUBKEY, b"Test", TEST_SIG_LEGACY).is_err());
+    }
+
+    #[test]
+    fn wrong_key_rejected() {
+        // 同源密钥对的另一把公钥（minisign README 示例）
+        let other_key = "RWTSM+4HvQhTm9D4BpOT5d6cN0zW8KsvX8lbSFSbE9WxWpS2mEXWLmuO";
+        assert!(verify_manifest_signature(other_key, TEST_MESSAGE, TEST_SIG_PREHASHED).is_err());
+    }
+
+    #[test]
+    fn unsigned_and_malformed_rejected() {
+        // 未配置公钥 → 拒绝（不降级）
+        assert!(verify_manifest_signature("", TEST_MESSAGE, TEST_SIG_PREHASHED).is_err());
+        assert!(verify_manifest_signature("   ", TEST_MESSAGE, TEST_SIG_PREHASHED).is_err());
+        // 空 / 单行 / 垃圾签名 → 拒绝
+        assert!(verify_manifest_signature(TEST_PUBKEY, TEST_MESSAGE, "").is_err());
+        assert!(
+            verify_manifest_signature(TEST_PUBKEY, TEST_MESSAGE, "untrusted comment only\n")
+                .is_err()
+        );
+        // 篡改过的签名行（base64 合法但内容不对）→ 拒绝
+        let forged = "untrusted comment: forged\nRUQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\ntrusted comment: x\ny/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==\n".to_string();
+        assert!(verify_manifest_signature(TEST_PUBKEY, TEST_MESSAGE, &forged).is_err());
     }
 }

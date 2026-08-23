@@ -50,6 +50,10 @@ pub struct AppState {
     /// 用它做按 PID 精确清杀，取代旧的「按进程名 taskkill」——后者会误杀
     /// 用户自己在跑的其他 mihomo 实例。0 = 本会话从未启动过子进程。
     pub core_pid_cache: std::sync::atomic::AtomicU32,
+    /// P0-6：本会话最近一次通过 minisign 验签的更新清单。
+    /// `download_update` 只允许下载这份清单指向的包——WebView 传入的
+    /// version/url/hash 不参与任何决策。
+    pub verified_update: std::sync::Mutex<Option<crate::update::UpdateManifest>>,
 }
 
 impl AppState {
@@ -61,6 +65,7 @@ impl AppState {
             original_system_proxy: std::sync::Mutex::new(None),
             log_stream: std::sync::Mutex::new(None),
             core_pid_cache: std::sync::atomic::AtomicU32::new(0),
+            verified_update: std::sync::Mutex::new(None),
         }
     }
 }
@@ -168,11 +173,11 @@ pub fn run() {
             // 窗口属性与原先 tauri.conf.json app.windows[0] 保持一致。
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-            .title("ClashEdge")
-            // 默认尺寸 832×554（紧凑基准 756×504 上浮 10%）；
-            // 高于前端窄窗阈值 749，侧栏文字正常展示。
-            .inner_size(832.0, 554.0)
-            .min_inner_size(560.0, 400.0)
+                    .title("ClashEdge")
+                    // 默认尺寸 832×554（紧凑基准 756×504 上浮 10%）；
+                    // 高于前端窄窗阈值 749，侧栏文字正常展示。
+                    .inner_size(832.0, 554.0)
+                    .min_inner_size(560.0, 400.0)
                     .background_color(tauri::window::Color(0x10, 0x12, 0x14, 0xff))
                     .decorations(false)
                     .resizable(true)
@@ -279,11 +284,23 @@ pub fn run() {
                             crate::core::runtime::apply_system_proxy(&app_handle, true).await
                         {
                             error!("Failed to restore system proxy: {}", e);
+                            // P0-3：恢复失败不得让 UI 继续把 system-proxy 当作 ON；
+                            // 配置落回实际状态并推送事件刷新前端。
+                            crate::core::runtime::mark_system_proxy_failed(
+                                &app_handle,
+                                &e.to_string(),
+                            )
+                            .await;
                         }
                     } else if sys_proxy_intent && !started {
                         // 内核没起来但配置里仍想开系统代理：保持关闭，否则会指向死端口。
-                        // 配置里的意图保留为 true，内核后续手动启动时再开。
+                        // P0-3：配置意图同步落回 false，UI 显示真实状态（OFF）。
                         warn!("System proxy stays OFF: core failed to start (config intent=true)");
+                        crate::core::runtime::mark_system_proxy_failed(
+                            &app_handle,
+                            "core failed to start",
+                        )
+                        .await;
                     }
                 });
             }
