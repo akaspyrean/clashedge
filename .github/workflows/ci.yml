@@ -1,9 +1,15 @@
 # CI — Rust unit tests + frontend typecheck & build on every push/PR.
 # Keeps main green and catches regressions before release.
+#
+# 注意：push 仅限分支触发（branches: ["**"]）——tag push 不重复跑 CI，
+# 发版时的 fmt/clippy/test 由 release.yml 自带，避免同一 commit 三个 action。
 
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: ["**"]
+  pull_request:
 
 jobs:
   test:
