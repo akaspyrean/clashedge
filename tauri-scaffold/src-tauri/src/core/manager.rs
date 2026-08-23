@@ -50,6 +50,39 @@ const MAX_CRASHES_IN_WINDOW: usize = 3;
 /// （避免把「长期正常服务后的一次偶发崩溃」也算进熔断窗口）
 const STABLE_RUN_DURATION: Duration = Duration::from_secs(300); // 5 分钟
 
+/// P0-4：端口健康探测（TCP connect）超时
+const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const MIXED_PORT_PROBE_TIMEOUT: Duration = PORT_PROBE_TIMEOUT;
+
+/// P0-4：TCP 探测 `(host, port)`，超时或拒绝都视为监听失败
+async fn probe_tcp<A: tokio::net::ToSocketAddrs>(addr: A, timeout: Duration) -> Result<()> {
+    tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
+        .await
+        .map_err(|_| Error::Other("port probe timed out".to_string()))?
+        .map_err(|e| Error::Other(format!("port not listening: {}", e)))?;
+    Ok(())
+}
+
+/// P0-4：TCP 探测 "host:port" 字符串地址
+async fn probe_str_addr(addr: &str) -> Result<()> {
+    match tokio::time::timeout(PORT_PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(Error::Other(format!("{} not listening: {}", addr, e))),
+        Err(_) => Err(Error::Other(format!("{} probe timed out", addr))),
+    }
+}
+
+/// P0-4：把 mihomo `dns.listen` 归一化为可探测的 "127.0.0.1:<port>"。
+/// 兼容 ":1053" / "0.0.0.0:1053" / "127.0.0.1:1053" 三种写法。
+fn normalize_dns_listen(listen: &str) -> String {
+    let normalized = listen.replacen("0.0.0.0:", "127.0.0.1:", 1);
+    if normalized.starts_with(':') {
+        format!("127.0.0.1{}", normalized)
+    } else {
+        normalized
+    }
+}
+
 /// Core 状态枚举
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -691,11 +724,22 @@ impl CoreManager {
                                             "System proxy restored after auto-restart ({})",
                                             addr
                                         ),
-                                        Err(e) => error!(
-                                            "Failed to restore system proxy after \
-                                             auto-restart: {}",
-                                            e
-                                        ),
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to restore system proxy after \
+                                                 auto-restart: {}",
+                                                e
+                                            );
+                                            // P0-3：恢复失败不允许 UI 继续把系统代理当作 ON。
+                                            // 尽力退回 journal 记录的用户原始代理状态；无论
+                                            // 成败，配置意图都改回 false（= Windows 实际），
+                                            // 并推送事件刷新前端，杜绝三态分裂。
+                                            Self::give_up_system_proxy_after_restore_failure(
+                                                &app_handle,
+                                                &data_dir,
+                                                &e,
+                                            );
+                                        }
                                     }
                                 }
                                 info!("mihomo auto-restarted successfully");
@@ -728,6 +772,66 @@ impl CoreManager {
                 }
             }
         });
+    }
+
+    /// P0-3：自愈重启后系统代理恢复失败的收尾。
+    ///
+    /// 前提：崩溃处理已把注册表代理关闭（Windows 实际 = OFF），但配置意图仍
+    /// 为 true。此时绝不能让 UI 继续把系统代理当作 ON——
+    /// 1. 尽力把 Windows 退回 journal 记录的用户原始代理状态（成功则清 journal）；
+    /// 2. 配置意图改回 false 并持久化（配置 = Windows 实际状态）；
+    /// 3. 推送 system-proxy-changed 事件，前端据此刷新开关显示真实失败状态。
+    fn give_up_system_proxy_after_restore_failure(
+        app_handle: &AppHandle,
+        data_dir: &std::path::Path,
+        err: &Error,
+    ) {
+        if let Some(journal) = crate::proxy::journal::read_journal(data_dir) {
+            match journal.original.filter(|o| o.enabled) {
+                Some(orig) => {
+                    match crate::proxy::system_proxy::set_system_proxy(
+                        true,
+                        &orig.address,
+                        &orig.bypass_list,
+                    ) {
+                        Ok(()) => {
+                            info!(
+                                "Restored user's original system proxy ({}) after failed \
+                                 self-restore",
+                                orig.address
+                            );
+                            crate::proxy::journal::clear_journal(data_dir);
+                        }
+                        Err(e) => warn!(
+                            "Failed to restore user's original proxy; keeping recovery \
+                             journal for next startup: {}",
+                            e
+                        ),
+                    }
+                }
+                None => {
+                    // 用户原本没有启用系统代理：注册表已关，journal 完成使命
+                    crate::proxy::journal::clear_journal(data_dir);
+                }
+            }
+        }
+
+        {
+            let state = app_handle.state::<crate::AppState>();
+            let mut cfg_mgr = state.config_manager.lock().unwrap();
+            let mut cfg = cfg_mgr.get_config();
+            cfg.general.system_proxy = false;
+            if let Err(e) = cfg_mgr.set_config(cfg) {
+                error!(
+                    "Failed to persist system_proxy=false after restore failure: {}",
+                    e
+                );
+            }
+        }
+        let _ = app_handle.emit(
+            "system-proxy-changed",
+            serde_json::json!({ "enable": false, "error": err.to_string() }),
+        );
     }
 
     /// 停止 mihomo 进程
@@ -764,8 +868,76 @@ impl CoreManager {
         self.start().await
     }
 
+    /// P0-4：热重载后的真实运行状态校验。PUT /configs 返回 200 不代表新配置
+    /// 真正生效（mihomo 可能静默跳过非法字段/监听失败），必须核对：
+    /// 1. `/version` 可达（控制器活着）；
+    /// 2. GET /configs 的 mixed-port 与期望一致（关键字段已应用）；
+    /// 3. configured mixed-port 实际 TCP 可连接；
+    /// 4. dns.enable=true 时对应 listen 端口可连接。
+    ///
+    /// 任何一项失败都返回 Err，由调用方回滚或回退重启。
+    pub async fn verify_runtime_applied(&self) -> Result<()> {
+        // 1. /version 可访问
+        let url = self.api_url(&["version"], None)?;
+        let resp = self
+            .api_client
+            .get(url)
+            .headers(self.api_headers())
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::Other(format!(
+                "post-reload check: controller /version returned {}",
+                resp.status()
+            )));
+        }
+
+        // 2. GET /configs 核对关键字段（mixed-port）
+        let expected_port = self.config.read().general.mixed_port;
+        let cfg_url = self.api_url(&["configs"], None)?;
+        let resp = self
+            .api_client
+            .get(cfg_url)
+            .headers(self.api_headers())
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::Other(format!(
+                "post-reload check: GET /configs returned {}",
+                resp.status()
+            )));
+        }
+        let live: serde_json::Value = resp.json().await.map_err(|e| {
+            Error::Other(format!(
+                "post-reload check: GET /configs decode failed: {}",
+                e
+            ))
+        })?;
+        match live.get("mixed-port").and_then(|v| v.as_u64()) {
+            Some(p) if p == u64::from(expected_port) => {}
+            other => {
+                return Err(Error::Other(format!(
+                    "post-reload check: live mixed-port is {:?}, expected {}",
+                    other, expected_port
+                )));
+            }
+        }
+
+        // 3. configured mixed-port 实际监听（TCP 可连接）
+        probe_tcp(("127.0.0.1", expected_port), MIXED_PORT_PROBE_TIMEOUT).await?;
+
+        // 4. DNS enable=true 时 listen 端口正常（mihomo DNS 监听 TCP/UDP 双栈，
+        //    TCP 可连接即视为监听成功）
+        let dns = self.config.read().dns.clone();
+        if dns.enable && !dns.listen.is_empty() {
+            probe_str_addr(&normalize_dns_listen(&dns.listen)).await?;
+        }
+        Ok(())
+    }
+
     /// 重载配置：重新生成 runtime-config.yaml；运行中用 REST 热重载，
-    /// REST 失败或未运行时回退整进程重启。
+    /// 热重载后必须通过健康检查（P0-4）；REST 失败、校验失败或未运行时
+    /// 回退整进程重启。
     pub async fn reload_config(&self) -> Result<()> {
         let config = self.config();
         self.write_runtime_config(&config)?;
@@ -783,12 +955,24 @@ impl CoreManager {
                 .await;
             match resp {
                 Ok(resp) if resp.status().is_success() => {
-                    info!("Runtime config hot-reloaded via PUT /configs");
-                    // 版本缓存失效，重取
-                    if let Ok(v) = self.version().await {
-                        *self.version_cache.lock().unwrap() = Some(v);
+                    // P0-4：HTTP 200 不够——健康检查通过才算 reload 成功；
+                    // 失败则回退整进程重启（start() 自带就绪 + bind 冲突检测）。
+                    match self.verify_runtime_applied().await {
+                        Ok(()) => {
+                            info!("Runtime config hot-reloaded via PUT /configs (health OK)");
+                            // 版本缓存失效，重取
+                            if let Ok(v) = self.version().await {
+                                *self.version_cache.lock().unwrap() = Some(v);
+                            }
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Hot-reload health check failed ({}); falling back to restart",
+                                e
+                            );
+                        }
                     }
-                    return Ok(());
                 }
                 Ok(resp) => {
                     warn!(
@@ -1370,5 +1554,14 @@ mod tests {
             "base kept: {}",
             s
         );
+    }
+
+    // P0-4：dns.listen 归一化（探测地址必须可连接）
+    #[test]
+    fn test_normalize_dns_listen() {
+        assert_eq!(normalize_dns_listen("127.0.0.1:1053"), "127.0.0.1:1053");
+        assert_eq!(normalize_dns_listen("0.0.0.0:1053"), "127.0.0.1:1053");
+        assert_eq!(normalize_dns_listen(":1053"), "127.0.0.1:1053");
+        assert_eq!(normalize_dns_listen("[::]:1053"), "[::]:1053");
     }
 }

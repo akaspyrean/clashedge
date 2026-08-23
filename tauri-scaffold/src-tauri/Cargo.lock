@@ -556,6 +556,7 @@ dependencies = [
  "directories",
  "image",
  "log",
+ "minisign-verify",
  "once_cell",
  "parking_lot",
  "rand 0.8.7",

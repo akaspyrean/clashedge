@@ -295,8 +295,12 @@ pub fn build_runtime_config(
     //    一旦订阅提供节点，step 5 会注入真实节点名，自动优选恢复生成。
     let mut has_auto_group = false;
     for group in groups.iter_mut() {
-        let Some(gmap) = group.as_mapping_mut() else { continue };
-        let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else { continue };
+        let Some(gmap) = group.as_mapping_mut() else {
+            continue;
+        };
+        let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
         if gname == "自动优选" {
             let is_empty = gmap
                 .get("proxies")
@@ -309,18 +313,20 @@ pub fn build_runtime_config(
         }
     }
     if has_auto_group {
-        groups.retain(|g| {
-            g.get("name").and_then(|n| n.as_str()) != Some("自动优选")
-        });
+        groups.retain(|g| g.get("name").and_then(|n| n.as_str()) != Some("自动优选"));
         for group in groups.iter_mut() {
-            let Some(gmap) = group.as_mapping_mut() else { continue };
+            let Some(gmap) = group.as_mapping_mut() else {
+                continue;
+            };
             // 从引用列表剔除自动优选
             if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
                 plist.retain(|v| v.as_str() != Some("自动优选"));
             }
             // 人工优选为空时补 DIRECT：MATCH 兜底规则会把全部流量引向
             // 扶梯出行 → 叶子组，DIRECT 占位让无订阅状态保持直连可用。
-            let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else { continue };
+            let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
             if gname == "人工优选" {
                 let is_empty = gmap
                     .get("proxies")

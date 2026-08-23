@@ -26,6 +26,80 @@ use crate::util::paths::sanitize_profile_name;
 /// mihomo 合法代理模式（官方模板仅这三值；script 是 Clash Premium 遗留）
 const VALID_MODES: &[&str] = &["rule", "global", "direct"];
 
+/// P0-2：mixed-port TCP 探测超时
+const PORT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// mixed-port 是否真实可连接（TCP 握手成功）
+pub(crate) async fn port_alive(port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            PORT_PROBE_TIMEOUT,
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// P0-2：确认 mihomo 正在运行且 mixed-port 真实可连接。
+///
+/// 开启系统代理前必须调用——绝不能让 Windows 指向无人监听的代理端口（死代理）。
+/// 核心未运行或端口不可连时，按方案优先级先尝试自动启动一次核心；
+/// 启动失败或启动后端口仍不可连，返回明确错误（调用方拒绝开启系统代理）。
+pub(crate) async fn ensure_core_serving(app: &AppHandle) -> Result<()> {
+    let state = app.state::<crate::AppState>();
+    let port = {
+        state
+            .config_manager
+            .lock()
+            .unwrap()
+            .get_config()
+            .general
+            .mixed_port
+    };
+
+    // 已运行且端口可连 → 直接通过；否则自动启动/重启一次（P0-2 方案 1）。
+    // start()/restart() 内部含就绪探测与 bind 冲突检测，失败会返回 Err。
+    let ensured = {
+        let guard = state.core_manager.lock().await;
+        match guard.as_ref() {
+            Some(core) if core.status() == crate::core::manager::CoreStatus::Running => {
+                if port_alive(port).await {
+                    Ok(())
+                } else {
+                    warn!(
+                        "Core status=running but mixed-port {} not accepting; restarting",
+                        port
+                    );
+                    core.restart().await
+                }
+            }
+            Some(core) => {
+                warn!(
+                    "System proxy requested but core not running ({}); starting",
+                    core.status()
+                );
+                core.start().await
+            }
+            None => Err(Error::Other("core manager unavailable".to_string())),
+        }
+    };
+    if let Err(e) = ensured {
+        return Err(Error::Other(format!(
+            "拒绝开启系统代理：内核未运行且自动启动失败（{}）",
+            e
+        )));
+    }
+
+    // 终局校验：端口必须真实可连接，否则视为失败
+    if !port_alive(port).await {
+        return Err(Error::Other(format!(
+            "拒绝开启系统代理：mihomo 运行中但端口 {} 无监听",
+            port
+        )));
+    }
+    Ok(())
+}
 /// 系统代理绕过列表（ProxyOverride）：本机/局域网直连。
 /// 必须显式列出 127.0.0.1 / localhost / *.tauri.localhost：
 /// - 系统代理开启时，WebView2 的前端资源与 IPC 走 tauri.localhost / 127.0.0.1；
@@ -43,6 +117,30 @@ pub(crate) fn default_bypass() -> Vec<String> {
         "localhost".to_string(),
         "*.tauri.localhost".to_string(),
     ]
+}
+
+/// P0-3：系统代理开启/恢复失败后，把配置意图落回 Windows 实际状态（false）
+/// 并推送事件——不允许 UI 在注册表实际关闭时继续把开关显示为 ON。
+pub(crate) async fn mark_system_proxy_failed(app: &AppHandle, reason: &str) {
+    let state = app.state::<crate::AppState>();
+    {
+        let mut cfg_mgr = state.config_manager.lock().unwrap();
+        let mut cfg = cfg_mgr.get_config();
+        if cfg.general.system_proxy {
+            cfg.general.system_proxy = false;
+            if let Err(e) = cfg_mgr.set_config(cfg) {
+                error!(
+                    "Failed to persist system_proxy=false after failure ({}): {}",
+                    reason, e
+                );
+                return;
+            }
+        }
+    }
+    let _ = app.emit(
+        "system-proxy-changed",
+        serde_json::json!({ "enable": false, "error": reason }),
+    );
 }
 
 /// 应用代理模式：校验 → 持久化 → 同步运行时 → PATCH 运行中核心 → 失败回滚。
@@ -154,6 +252,14 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
 /// 应用系统代理：持久化用户意图 → 写 Windows 注册表（真实生效）→ 失败回滚。
 pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
+
+    // P0-2：开启前必须确认 Core Running 且 mixed-port 实际 TCP 可连接；
+    // 不满足时先尝试自动启动核心，仍失败则拒绝开启并返回明确错误——
+    // 绝不能让 Windows 指向无人监听的代理端口。此校验在任何持久化之前，
+    // 失败时不留下任何半套状态。
+    if enable {
+        ensure_core_serving(app).await?;
+    }
 
     // C9 系统代理开启前密钥兜底：若当前配置仍是占位/空/旧遗留密钥，立即轮换。
     // 系统代理开启后，本机所有流量（含局域网可到达路径）都可能触达本地控制器，

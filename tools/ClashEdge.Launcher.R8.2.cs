@@ -194,7 +194,7 @@ internal static class ClashEdgeLauncher
         return "\"" + value.Replace("\\\"", "\\\\\"") + "\"";
     }
 
-    // --- Portable Updater apply (0.8.10 Phase 3) ------------------------------
+    // --- Portable Updater apply (1.0 Release Gate P0-6/P0-7) ------------------
 
     /// 从 pending.json 提取简单字符串字段（避免引入 JSON 依赖；C# 5 / 最小引用）
     private static string ExtractJsonField(string json, string field)
@@ -223,9 +223,154 @@ internal static class ClashEdgeLauncher
         }
     }
 
+    // 更新事务 journal 状态机（P0-7 断电恢复）：
+    //
+    //   pending     已发现暂存更新，尚未校验
+    //   verified    ZIP SHA256 复验通过、解压结构校验通过
+    //   old_renamed 旧 App/ 已改名保留（此刻起任何中断都必须恢复或完成）
+    //   new_ready   新 App/ 复制完整且含 ClashEdge.exe
+    //   committed   备份已删除，更新完成
+    //
+    // 启动器每次启动先检查未完成 transaction：
+    //   - pending / verified          → 尚未动过 App/，直接清暂存即可；
+    //   - old_renamed / new_ready     → 新 App/ 完整则收尾提交，否则回滚到备份；
+    //   - committed                   → 只清理。
+    // 恢复到确定可运行状态后再启动 ClashEdge。
+    // 硬性约束：Data/ 目录永远不被更新过程替换或删除（journal 与暂存区除外）。
+
+    private static string UpdateJournalPath(string root)
+    {
+        return Path.Combine(root, "Data", "update-journal.json");
+    }
+
+    /// 原子写 journal（写临时文件后替换），记录当前 transaction 阶段。
+    private static void WriteUpdateJournal(string root, string state)
+    {
+        try
+        {
+            string path = UpdateJournalPath(root);
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp,
+                "{\n  \"state\": \"" + state + "\",\n  \"time\": \""
+                + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\"\n}\n");
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(tmp, path);
+        }
+        catch { } // journal 写失败不阻断主流程：恢复逻辑对缺失 journal 是安全的
+    }
+
+    private static void ClearUpdateJournal(string root)
+    {
+        try { File.Delete(UpdateJournalPath(root)); } catch { }
+    }
+
+    private static string ReadUpdateJournalState(string root)
+    {
+        try
+        {
+            var json = File.ReadAllText(UpdateJournalPath(root));
+            return ExtractJsonField(json, "state") ?? "";
+        }
+        catch { return ""; }
+    }
+
+    /// App/ 是否处于可运行状态（含内层主程序）
+    private static bool AppDirValid(string root)
+    {
+        return File.Exists(Path.Combine(root, "App", "ClashEdge", "ClashEdge.exe"));
+    }
+
+    /// 最新的 App.old-* 备份目录（不存在返回 null）
+    private static string NewestBackupDir(string root)
+    {
+        string appRoot = Path.Combine(root, "App");
+        string backup = null;
+        long best = -1;
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(root, "App.old-*"))
+            {
+                long ticks;
+                var suffix = dir.Substring(dir.LastIndexOf('-') + 1);
+                if (!long.TryParse(suffix, out ticks)) continue;
+                if (ticks > best) { best = ticks; backup = dir; }
+            }
+        }
+        catch { }
+        return backup;
+    }
+
+    /// P0-7：启动自愈——上次更新中断（断电 / kill 启动器）时，
+    /// 先把便携包恢复到确定可运行的状态，再继续正常启动流程。
+    private static void RecoverInterruptedUpdate(string root, bool silent)
+    {
+        string state = ReadUpdateJournalState(root);
+        if (string.IsNullOrEmpty(state)) return;
+
+        string appRoot = Path.Combine(root, "App");
+        string staging = Path.Combine(root, "Data", "update-staging");
+        string backup = NewestBackupDir(root);
+
+        try
+        {
+            if (state == "old_renamed" || state == "new_ready")
+            {
+                if (AppDirValid(root))
+                {
+                    if (state == "new_ready")
+                    {
+                        // 新 App 完整：收尾提交（删备份）
+                        if (backup != null) try { Directory.Delete(backup, true); } catch { }
+                    }
+                    // old_renamed 却已存在有效 App：视为已完成，只清理
+                }
+                else if (backup != null)
+                {
+                    // 回滚：删掉半成品新 App，把备份改回 App/
+                    if (Directory.Exists(appRoot))
+                        try { Directory.Delete(appRoot, true); } catch { }
+                    Directory.Move(backup, appRoot);
+                    if (!silent)
+                        MessageBox.Show(
+                            "检测到上次更新未完成，已自动恢复到更新前的版本。",
+                            "更新恢复", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                // 无备份且 App 无效：无物可恢复，正常启动会给出明确报错
+            }
+            // pending / verified / committed：App 未被动过或已提交，无需处理
+
+            try { Directory.Delete(staging, true); } catch { }
+            // 自更新残留的启动器副本（rename 技巧留下的 .old-* 文件）
+            try
+            {
+                foreach (var f in Directory.GetFiles(root, "ClashEdge.exe.old-*"))
+                    File.Delete(f);
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                var logPath = Path.Combine(root, "Data", "launcher-error.log");
+                Directory.CreateDirectory(Path.GetDirectoryName(logPath));
+                File.AppendAllText(logPath,
+                    "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                    + "] update recovery failed (state=" + state + "): " + ex.Message
+                    + Environment.NewLine);
+            }
+            catch { }
+            return; // 保留 journal，下次启动再试
+        }
+
+        ClearUpdateJournal(root);
+    }
+
     /// 应用暂存更新：Data/update-staging/pending.json 存在时，
     /// 复验 ZIP 哈希 → 解压 → 结构校验（必须含 ClashEdge.exe）→
     /// 替换 App/ClashEdge（旧目录先改名保留，失败即回滚）→ 清理暂存。
+    /// 全程维护更新事务 journal（P0-7），任意时刻断电都可由下次启动恢复。
     /// 任何失败都不阻断正常启动——保留旧版本继续运行，仅清理无效暂存。
     private static void ApplyPendingUpdate(string root, bool silent)
     {
@@ -236,6 +381,7 @@ internal static class ClashEdgeLauncher
         {
             var pendingPath = Path.Combine(staging, "pending.json");
             if (!File.Exists(pendingPath)) return;
+            WriteUpdateJournal(root, "pending");
 
             var json = File.ReadAllText(pendingPath);
             string zipPath = ExtractJsonField(json, "zip_path");
@@ -245,6 +391,7 @@ internal static class ClashEdgeLauncher
                 || !File.Exists(zipPath))
             {
                 Directory.Delete(staging, true);
+                ClearUpdateJournal(root);
                 return;
             }
 
@@ -277,6 +424,8 @@ internal static class ClashEdgeLauncher
                 throw new InvalidOperationException(
                     "Staged update does not contain App/ClashEdge/ClashEdge.exe");
 
+            WriteUpdateJournal(root, "verified");
+
             // 启动器自更新：ZIP 根若带新版 ClashEdge.exe 且内容不同，
             // 用 rename 技巧换掉正在运行的自身（Windows 允许重命名运行中的映像）
             try
@@ -295,10 +444,11 @@ internal static class ClashEdgeLauncher
             catch { } // 自更新失败不阻断 App/ 更新
 
             // 完整便携布局替换：以 appRoot 为新根，替换根下的 App/；
-            // Data/ 在根级、不在包内，天然不受影响。
+            // Data/ 在根级、不在包内，天然不受影响（硬性约束）。
             string rootApp = Path.Combine(root, "App");
             string backup = rootApp + ".old-" + DateTime.Now.Ticks;
             Directory.Move(rootApp, backup);
+            WriteUpdateJournal(root, "old_renamed");
             try
             {
                 CopyMissing(Path.Combine(appRoot, "App"), rootApp);
@@ -308,10 +458,16 @@ internal static class ClashEdgeLauncher
                 // 回滚：新内容复制失败 → 恢复旧 App/
                 try { if (Directory.Exists(rootApp)) Directory.Delete(rootApp, true); } catch { }
                 Directory.Move(backup, rootApp);
+                ClearUpdateJournal(root);
                 throw;
             }
+            if (!AppDirValid(root))
+                throw new InvalidOperationException("New App/ failed post-copy validation");
+            WriteUpdateJournal(root, "new_ready");
             try { Directory.Delete(backup, true); } catch { }
+            WriteUpdateJournal(root, "committed");
             Directory.Delete(staging, true);
+            ClearUpdateJournal(root);
 
             if (!silent)
                 MessageBox.Show("ClashEdge 已更新到 " + version + "。", "更新完成",
@@ -319,8 +475,9 @@ internal static class ClashEdgeLauncher
         }
         catch (Exception ex)
         {
-            // 更新失败绝不阻断启动：清理暂存，继续用当前版本
+            // 更新失败绝不阻断启动：清理暂存与 journal，继续用当前版本
             try { Directory.Delete(staging, true); } catch { }
+            ClearUpdateJournal(root);
             if (!silent)
                 MessageBox.Show("更新应用失败，已保留当前版本。\n\n" + ex.Message,
                     "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -342,7 +499,10 @@ internal static class ClashEdgeLauncher
             CopyMissing(Path.Combine(root, "App", "DefaultData"), data);
             Directory.CreateDirectory(data);
             EnsureDataJunction(Path.Combine(appDirectory, "data"), data);
-            // 0.8.10 Portable Updater：拉起内层前应用已验签的暂存更新
+            // 1.0 Release Gate P0-7：先检查上次更新是否中断（断电 / kill 启动器），
+            // 恢复到确定可运行状态后再应用新暂存更新，最后才拉起内层。
+            RecoverInterruptedUpdate(root, silent);
+            // Portable Updater：拉起内层前应用已验签的暂存更新
             ApplyPendingUpdate(root, silent);
             var home = Path.Combine(data, "Home");
             Directory.CreateDirectory(home);
