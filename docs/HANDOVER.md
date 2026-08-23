@@ -37,7 +37,7 @@
 │   └── archive/           #   归档：R8.3 修订说明（Electron 时代，已不适用）
 ├── release/               # 打包产物（不入库，gitignore）
 │   ├── portable-out/      #   便携目录
-│   └── ClashEdge-portable-<ver>-win64.zip(.sha256)
+│   └── ClashEdge-portable-win64.zip(.sha256)  # 稳定名，不带版本号（与更新链 ZIP_ASSET 一致）
 ├── README.md              # 项目总览与构建/打包指南
 └── .gitignore
 ```

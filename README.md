@@ -183,7 +183,7 @@ flowchart LR
 从 [Releases](../../releases) 下载：
 
 ```text
-ClashEdge-portable-<version>-win64.zip
+ClashEdge-portable-win64.zip
 ```
 
 解压后运行：

@@ -7,7 +7,7 @@
 #
 #   Output:
 #     <repo>/release/portable-out/                        assembled portable directory
-#     <repo>/release/ClashEdge-portable-<ver>-win64.zip   single-file distributable archive
+#     <repo>/release/ClashEdge-portable-win64.zip         single-file distributable archive (stable name)
 #
 #   Output structure (replicates the reference package):
 #     <out>/ClashEdge.exe                 C# launcher (sets CLASH_EDGE_DATA_DIR + envs, spawns inner app)
@@ -219,12 +219,11 @@ if (Test-Path $ScanScript) {
 # 6. Single-file distributable archive.
 # Top-level folder "ClashEdge/": extracting the zip yields a ClashEdge directory
 # (matching the user's expectation of a clean folder, not scattered root files).
-# tauri.conf.json is JSON5 now (contains comments); PowerShell 5.1 ConvertFrom-Json
-# cannot parse it, so extract the version field with a regex instead.
-$confRaw = Get-Content (Join-Path $scaff "src-tauri\tauri.conf.json") -Encoding UTF8 -Raw
-$verMatch = [regex]::Match($confRaw, '"version"\s*:\s*"([^"]+)"')
-if (-not $verMatch.Success) { throw "Cannot extract version from tauri.conf.json" }
-$zip = Join-Path $releaseDir ("ClashEdge-portable-{0}-win64.zip" -f $verMatch.Groups[1].Value)
+#
+# 稳定文件名：不带版本号——与 tools/make_update_manifest.py 的 ZIP_ASSET
+# ("ClashEdge-portable-win64.zip") 保持一致，Portable Updater 按固定名下载；
+# 版本信息以 portable-manifest.json 与应用「设置→关于」为准。
+$zip = Join-Path $releaseDir "ClashEdge-portable-win64.zip"
 Write-Host ""
 Write-Host "==> Compressing $out -> $zip ..."
 # Compress-Archive -Path <dir> embeds the directory itself as the zip root entry.
