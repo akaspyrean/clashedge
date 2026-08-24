@@ -323,18 +323,93 @@ pub async fn export_config(app: AppHandle, state: State<'_, crate::AppState>) ->
 
 /// 从 YAML 导入配置并使其生效：解析 → 校验 → 落盘 → 重建运行时 → 重载核心
 /// （P0-4：全程事务，任一步失败回滚到操作前状态并返回 Err）。
+///
+/// 导入语义修正（"导入配置不起效"）：build_runtime_config 中激活 Profile 的
+/// `proxies` 优先于 AppConfig.extra 的 `proxies`——若用户此前激活过任何
+/// 订阅 Profile，导入的完整 mihomo 配置节点会被旧订阅静默遮蔽，界面无任何
+/// 变化。因此当导入 YAML 自带非空顶层 `proxies` 且未显式携带 `profile:` 键时，
+/// 视为用户显式更换节点来源，重置激活 Profile 为内置 DIRECT，让导入节点生效。
 #[command]
 pub async fn import_config(
     app: AppHandle,
     state: State<'_, crate::AppState>,
     yaml: String,
 ) -> Result<()> {
-    let new_config = {
+    let mut new_config = {
         let config_guard = state.config_manager.lock().unwrap();
         config_guard.prepare_import(yaml)?
     };
+    if import_supplies_nodes(&new_config) {
+        info!(
+            "Import carries its own proxies; resetting active profile '{}' to builtin DIRECT \
+             so imported nodes take effect",
+            new_config.general.profile
+        );
+        // 空 profile → read_active_profile 返回 None → build_runtime_config
+        // 走 extra.proxies 分支；下次启动 init/merge_rules 会归一为 "DIRECT"。
+        new_config.general.profile = String::new();
+    }
     commit_config_transaction(&app, &state, new_config).await?;
     crate::core::runtime::refresh_tray(&app).await
+}
+
+/// 判断导入配置是否自带生效节点来源：
+/// - 顶层 `proxies` 非空列表 → true；
+/// - 显式携带 `profile:` 键 → false（尊重导入配置自身的 Profile 指向，
+///   例如 ClashEdge 导出的完整状态），由该 Profile 提供节点。
+fn import_supplies_nodes(config: &Config) -> bool {
+    if !config.general.profile.is_empty() {
+        return false;
+    }
+    config
+        .extra
+        .get("proxies")
+        .and_then(|v| v.as_sequence())
+        .is_some_and(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_extra(extra_yaml: &str) -> Config {
+        let mut config = Config::default();
+        let value: serde_yaml::Value = serde_yaml::from_str(extra_yaml).unwrap();
+        if let serde_yaml::Value::Mapping(map) = value {
+            for (k, v) in map {
+                config.extra.insert(k, v);
+            }
+        }
+        config
+    }
+
+    /// 导入配置自带非空顶层 proxies 且无 profile 键 → 视为节点来源，
+    /// 应重置激活 Profile 让导入节点生效（"导入配置不起效"修复）。
+    #[test]
+    fn import_supplies_nodes_true_for_bare_proxies() {
+        let config = config_with_extra(
+            "proxies:\n  - name: N1\n    type: ss\n    server: 1.1.1.1\n    port: 8388\n",
+        );
+        assert!(import_supplies_nodes(&config));
+    }
+
+    #[test]
+    fn import_supplies_nodes_respects_explicit_profile_key() {
+        let mut config = config_with_extra(
+            "proxies:\n  - name: N1\n    type: ss\n    server: 1.1.1.1\n    port: 8388\n",
+        );
+        config.general.profile = "MySub".to_string();
+        assert!(!import_supplies_nodes(&config));
+    }
+
+    #[test]
+    fn import_supplies_nodes_false_for_empty_or_missing_proxies() {
+        // 空 proxies 列表：无生效节点，不触发 Profile 重置
+        let config = config_with_extra("proxies: []\n");
+        assert!(!import_supplies_nodes(&config));
+        // 无 proxies 键
+        assert!(!import_supplies_nodes(&Config::default()));
+    }
 }
 
 /// 重建运行时配置并对运行中的核心生效（热重载，失败回退整进程重启）。

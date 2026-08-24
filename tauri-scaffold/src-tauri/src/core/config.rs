@@ -224,9 +224,13 @@ pub fn build_runtime_config(
         }
         _ => serde_yaml::Mapping::new(),
     };
+    // 空 `proxies:` 列表视为"未提供"：Some([]) 会遮蔽 AppConfig.extra 里
+    // 用户通过「导入配置」显式带入的节点，导致导入后运行时拿零节点
+    // （全部直连），表现为"导入配置不起效"。
     let profile_proxies = profile_map
         .get("proxies")
         .and_then(|v| v.as_sequence())
+        .filter(|s| !s.is_empty())
         .cloned();
 
     // 4) 订阅仅提供代理节点：profile 顶层键只透传白名单（`proxies`），
@@ -253,7 +257,19 @@ pub fn build_runtime_config(
     //    自动优选（url-test）只注入真实代理节点——DIRECT 不是代理节点，注入它会让
     //    url-test 把直连当作零延迟最优节点永久霸占自动组，所有真实节点拿不到流量。
     let mut groups = app.proxy_groups.clone();
-    if let Some(proxies) = &profile_proxies {
+    // 有效节点来源：激活 Profile 的 `proxies` 优先，其次「导入配置」带入的
+    // AppConfig.extra.proxies（用户显式导入完整 mihomo 配置）。
+    // 旧实现 extra.proxies 分支只写顶层 proxies、不做叶子组注入——节点存在于
+    // 配置但人工优选仍为 [DIRECT]、自动优选被零节点兜底删除，所有流量直连，
+    // 表现为"导入配置不起效"。现统一走同一注入路径。
+    let effective_proxies = profile_proxies.or_else(|| {
+        app.extra
+            .get("proxies")
+            .and_then(|v| v.as_sequence())
+            .filter(|s| !s.is_empty())
+            .cloned()
+    });
+    if let Some(proxies) = &effective_proxies {
         let node_names: Vec<String> = proxies
             .iter()
             .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
@@ -282,8 +298,6 @@ pub fn build_runtime_config(
             }
         }
         put!("proxies", serde_yaml::to_value(proxies)?);
-    } else if let Some(p) = app.extra.get("proxies") {
-        put!("proxies", p.clone());
     }
 
     // 6) 零节点兜底：mihomo（v1.19.x）拒绝 proxies 为空的代理组
@@ -751,6 +765,125 @@ proxies:
             map.get("proxies").unwrap().as_sequence().map(|s| s.len()),
             Some(1)
         );
+    }
+
+    /// 导入配置的节点（AppConfig.extra.proxies）必须注入内置叶子组：
+    /// 旧实现只写顶层 proxies、不注入叶子组，人工优选保持 [DIRECT]、
+    /// 自动优选被零节点兜底删除，所有流量直连（"导入配置不起效"）。
+    #[test]
+    fn build_runtime_config_imported_extra_proxies_inject_into_leaf_groups() {
+        let mut app = Config::default();
+        let nodes: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Imported
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+"#,
+        )
+        .unwrap();
+        let proxies = nodes.get("proxies").unwrap().clone();
+        app.extra.insert("proxies".into(), proxies);
+
+        // 无激活 Profile（read_active_profile → None）的典型导入场景
+        let runtime = build_runtime_config(&app, None).unwrap();
+        assert_eq!(
+            runtime
+                .as_mapping()
+                .unwrap()
+                .get("proxies")
+                .unwrap()
+                .as_sequence()
+                .map(|s| s.len()),
+            Some(1),
+            "imported proxies must reach runtime"
+        );
+
+        // 叶子组注入导入节点名，自动优选恢复生成
+        let groups = runtime.as_mapping().unwrap().get("proxy-groups").unwrap();
+        let manual = groups
+            .get("人工优选")
+            .or_else(|| {
+                groups.as_sequence().and_then(|s| {
+                    s.iter()
+                        .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("人工优选"))
+                })
+            })
+            .unwrap();
+        let names: Vec<&str> = manual
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(names, vec!["Imported"]);
+    }
+
+    /// 激活 Profile 带空 `proxies:` 列表时不得遮蔽导入节点（Some([]) 曾使
+    /// effective 节点来源判空失败，运行时拿零节点、全部直连）。
+    #[test]
+    fn build_runtime_config_empty_profile_proxies_fall_back_to_extra() {
+        let mut app = Config::default();
+        let nodes: serde_yaml::Value = serde_yaml::from_str(
+            "proxies:\n  - name: Imported\n    type: ss\n    server: 1.1.1.1\n    port: 8388\n    cipher: aes-128-gcm\n    password: x\n",
+        )
+        .unwrap();
+        app.extra
+            .insert("proxies".into(), nodes.get("proxies").unwrap().clone());
+
+        let runtime = build_runtime_config(&app, Some("proxies: []\n")).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        assert_eq!(
+            map.get("proxies").unwrap().as_sequence().map(|s| s.len()),
+            Some(1),
+            "empty profile proxies must not shadow imported nodes"
+        );
+        let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
+        assert!(
+            groups
+                .iter()
+                .any(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选")),
+            "auto group must be restored when imported nodes exist"
+        );
+    }
+
+    /// 激活 Profile 提供真实节点时仍优先于 extra.proxies（订阅为主来源）。
+    #[test]
+    fn build_runtime_config_profile_proxies_still_win_over_extra() {
+        let mut app = Config::default();
+        let nodes: serde_yaml::Value = serde_yaml::from_str(
+            "proxies:\n  - name: Imported\n    type: ss\n    server: 1.1.1.1\n    port: 8388\n    cipher: aes-128-gcm\n    password: x\n",
+        )
+        .unwrap();
+        app.extra
+            .insert("proxies".into(), nodes.get("proxies").unwrap().clone());
+
+        let profile = r#"
+proxies:
+  - name: FromProfile
+    type: ss
+    server: 2.2.2.2
+    port: 8388
+    cipher: aes-128-gcm
+    password: y
+"#;
+        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let names: Vec<String> = runtime
+            .as_mapping()
+            .unwrap()
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
+            .collect();
+        assert_eq!(names, vec!["FromProfile"]);
     }
 
     #[test]
