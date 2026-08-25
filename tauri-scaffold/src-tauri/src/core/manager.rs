@@ -20,8 +20,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use parking_lot::RwLock;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::process::Child;
@@ -29,6 +27,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::model::Config;
 use crate::core::config::build_runtime_config;
+use crate::core::controller::{api_url, authorization_headers, ControllerClient};
+use crate::core::health::{normalize_dns_listen, parse_bind_error, probe_str_addr, probe_tcp};
 use crate::util::error::{Error, Result};
 use crate::util::paths::sanitize_profile_name;
 
@@ -50,42 +50,8 @@ const MAX_CRASHES_IN_WINDOW: usize = 3;
 /// （避免把「长期正常服务后的一次偶发崩溃」也算进熔断窗口）
 const STABLE_RUN_DURATION: Duration = Duration::from_secs(300); // 5 分钟
 
-/// P0-4：端口健康探测（TCP connect）超时
-const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-const MIXED_PORT_PROBE_TIMEOUT: Duration = PORT_PROBE_TIMEOUT;
-
-/// P2：连接列表单次返回给 WebView 的上限。连接数极大时由后端裁剪，
-/// 只送前 N 条，让 IPC / JSON parse / JS memory 降到常量级（见 get_connections）。
-const MAX_CONNECTIONS_RETURNED: usize = 500;
-
-/// P0-4：TCP 探测 `(host, port)`，超时或拒绝都视为监听失败
-async fn probe_tcp<A: tokio::net::ToSocketAddrs>(addr: A, timeout: Duration) -> Result<()> {
-    tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
-        .await
-        .map_err(|_| Error::Other("port probe timed out".to_string()))?
-        .map_err(|e| Error::Other(format!("port not listening: {}", e)))?;
-    Ok(())
-}
-
-/// P0-4：TCP 探测 "host:port" 字符串地址
-async fn probe_str_addr(addr: &str) -> Result<()> {
-    match tokio::time::timeout(PORT_PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(Error::Other(format!("{} not listening: {}", addr, e))),
-        Err(_) => Err(Error::Other(format!("{} probe timed out", addr))),
-    }
-}
-
-/// P0-4：把 mihomo `dns.listen` 归一化为可探测的 "127.0.0.1:<port>"。
-/// 兼容 ":1053" / "0.0.0.0:1053" / "127.0.0.1:1053" 三种写法。
-fn normalize_dns_listen(listen: &str) -> String {
-    let normalized = listen.replacen("0.0.0.0:", "127.0.0.1:", 1);
-    if normalized.starts_with(':') {
-        format!("127.0.0.1{}", normalized)
-    } else {
-        normalized
-    }
-}
+/// mihomo 端口健康探测超时（probe_tcp 的默认时长，混合端口 + DNS 探测共用）
+const MIXED_PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Core 状态枚举
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -135,8 +101,9 @@ pub struct CoreManager {
     init_error: Option<String>,
     /// 数据目录（含 runtime-config.yaml / profiles / 地理数据）
     data_dir: PathBuf,
-    /// 外部控制器 HTTP 客户端
-    api_client: reqwest::Client,
+    /// 外部控制器 REST 客户端（Config + HTTP client 都封装在此，
+    /// 与进程生命周期字段解耦，见 core/controller.rs）
+    controller: ControllerClient,
     /// AppHandle（用于状态变更事件推送）
     app_handle: AppHandle,
     /// P1-7：用户主动停止标志（stop() 设为 true，start() 清除）。
@@ -187,16 +154,15 @@ impl CoreManager {
 
         Ok(CoreManager {
             child: Arc::new(Mutex::new(None)),
-            config,
+            // 共享配置 Arc 需要 clone 一份给 CoreManager 字段、一份给 ControllerClient
+            config: config.clone(),
             status: Arc::new(Mutex::new(CoreStatus::Stopped)),
             version_cache: Arc::new(Mutex::new(None)),
             mihomo_path,
             init_error,
             data_dir,
-            api_client: reqwest::Client::builder()
-                // 低危：REST 客户端统一超时，避免对控制器请求无限阻塞
-                .timeout(Duration::from_secs(10))
-                .build()?,
+            // 拆分 P2：REST 客户端（config Arc + HTTP client）收敛到 ControllerClient
+            controller: ControllerClient::new(config)?,
             app_handle,
             user_stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -442,8 +408,8 @@ impl CoreManager {
 
     /// 轮询 REST `/version` 直到就绪或超时；期间若子进程提前退出则立即报错。
     async fn wait_ready(&self) -> Result<()> {
-        let url = self.api_url(&["version"], None)?;
-        let headers = self.api_headers()?;
+        let url = self.controller.api_url(&["version"], None)?;
+        let headers = self.controller.api_headers()?;
         let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
 
         loop {
@@ -462,7 +428,8 @@ impl CoreManager {
             }
 
             match self
-                .api_client
+                .controller
+                .api_client()
                 .get(url.clone())
                 .headers(headers.clone())
                 .send()
@@ -505,7 +472,7 @@ impl CoreManager {
         let mihomo_path = self.mihomo_path.clone();
         let data_dir = self.data_dir.clone();
         let config = self.config.clone();
-        let api_client = self.api_client.clone();
+        let api_client = self.controller.api_client().clone();
         // D4：自愈重启成功后失效版本缓存（新进程版本可能已变化）
         let version_cache = self.version_cache.clone();
 
@@ -920,11 +887,12 @@ impl CoreManager {
     /// 任何一项失败都返回 Err，由调用方回滚或回退重启。
     pub async fn verify_runtime_applied(&self) -> Result<()> {
         // 1. /version 可访问
-        let url = self.api_url(&["version"], None)?;
+        let url = self.controller.api_url(&["version"], None)?;
         let resp = self
-            .api_client
+            .controller
+            .api_client()
             .get(url)
-            .headers(self.api_headers()?)
+            .headers(self.controller.api_headers()?)
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -936,11 +904,12 @@ impl CoreManager {
 
         // 2. GET /configs 核对关键字段（mixed-port）
         let expected_port = self.config.read().general.mixed_port;
-        let cfg_url = self.api_url(&["configs"], None)?;
+        let cfg_url = self.controller.api_url(&["configs"], None)?;
         let resp = self
-            .api_client
+            .controller
+            .api_client()
             .get(cfg_url)
-            .headers(self.api_headers()?)
+            .headers(self.controller.api_headers()?)
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -988,11 +957,14 @@ impl CoreManager {
         if self.is_running() {
             let yaml = std::fs::read_to_string(self.runtime_config_path())?;
             let payload = serde_json::json!({ "path": "", "payload": yaml });
-            let url = self.api_url(&["configs"], Some(&[("force", "true")]))?;
+            let url = self
+                .controller
+                .api_url(&["configs"], Some(&[("force", "true")]))?;
             let resp = self
-                .api_client
+                .controller
+                .api_client()
                 .put(url)
-                .headers(self.api_headers()?)
+                .headers(self.controller.api_headers()?)
                 .json(&payload)
                 .send()
                 .await;
@@ -1046,11 +1018,12 @@ impl CoreManager {
             if let Some(v) = self.version_cache.lock().unwrap().clone() {
                 return Ok(v);
             }
-            let url = self.api_url(&["version"], None)?;
+            let url = self.controller.api_url(&["version"], None)?;
             if let Ok(resp) = self
-                .api_client
+                .controller
+                .api_client()
                 .get(url)
-                .headers(self.api_headers()?)
+                .headers(self.controller.api_headers()?)
                 .send()
                 .await
             {
@@ -1100,164 +1073,28 @@ impl CoreManager {
         })
     }
 
-    // ---------- 外部控制器 API ----------
-
-    /// 外部控制器基础地址（确保带 http://）
-    fn api_base(&self) -> String {
-        let addr = self.config.read().proxy.external_controller.clone();
-        if addr.starts_with("http://") || addr.starts_with("https://") {
-            addr
-        } else {
-            format!("http://{}", addr)
-        }
-    }
-
-    fn api_headers(&self) -> Result<HeaderMap> {
-        let secret = self.config.read().proxy.secret.clone();
-        authorization_headers(&secret)
-    }
-
-    /// 构造控制器 URL；路径段逐段 percent-encode（组名/节点名可含空格、`/`、非 ASCII）。
-    fn api_url(&self, path: &[&str], query: Option<&[(&str, &str)]>) -> Result<Url> {
-        api_url(&self.api_base(), path, query)
-    }
+    // ---------- 外部控制器 API（P2 拆分：逻辑在 core/controller.rs，这里转发） ----------
 
     /// 切换代理模式（PATCH /configs）——只作用于运行中的 mihomo；
     /// 持久化 / 回滚由编排层（apply_proxy_mode）负责。
     pub async fn set_proxy_mode(&self, mode: String) -> Result<()> {
-        let url = self.api_url(&["configs"], None)?;
-        let resp = self
-            .api_client
-            .patch(url)
-            .headers(self.api_headers()?)
-            .json(&serde_json::json!({ "mode": mode }))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            info!("Proxy mode set to {}", mode);
-            Ok(())
-        } else {
-            warn!("Failed to set proxy mode: {}", resp.status());
-            Err(Error::Other(format!(
-                "Controller returned {}",
-                resp.status()
-            )))
-        }
+        self.controller.set_proxy_mode(mode).await
     }
 
     /// 运行中应用 TUN 开关（PATCH /configs {tun:{...}}）。
     /// TUN 变更在 mihomo 中通常需要完整 tun 段；失败时调用方回退整进程重启。
     pub async fn apply_tun(&self, enable: bool) -> Result<()> {
-        let tun = self.config.read().tun.clone();
-        let mut tun_value = serde_json::to_value(&tun).unwrap_or_default();
-        if let Some(obj) = tun_value.as_object_mut() {
-            obj.insert("enable".to_string(), serde_json::Value::Bool(enable));
-        }
-        let url = self.api_url(&["configs"], None)?;
-        let resp = self
-            .api_client
-            .patch(url)
-            .headers(self.api_headers()?)
-            .json(&serde_json::json!({ "tun": tun_value }))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            info!(
-                "TUN mode {} applied to running core",
-                if enable { "enabled" } else { "disabled" }
-            );
-            Ok(())
-        } else {
-            warn!("Failed to apply TUN: {}", resp.status());
-            Err(Error::Other(format!(
-                "Controller returned {}",
-                resp.status()
-            )))
-        }
+        self.controller.apply_tun(enable).await
     }
 
     /// 获取代理组列表（GET /proxies）。
-    /// mihomo 返回的类型名是大写（Selector / URLTest / Fallback / LoadBalance / Relay），
-    /// 旧实现只认小写导致永远匹配不到真实代理组。
     pub async fn get_proxy_groups(&self) -> Result<Vec<serde_json::Value>> {
-        let url = self.api_url(&["proxies"], None)?;
-        let resp = self
-            .api_client
-            .get(url)
-            .headers(self.api_headers()?)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(Error::Other(format!(
-                "Controller returned {}",
-                resp.status()
-            )));
-        }
-
-        let json: serde_json::Value = resp.json().await?;
-        let mut groups = Vec::new();
-        if let Some(proxies) = json.get("proxies").and_then(|v| v.as_object()) {
-            for (name, value) in proxies {
-                let group_type = value
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                // 真实 mihomo 代理组类型（大小写不敏感，兼容小写旧写法）
-                if ["Selector", "URLTest", "Fallback", "LoadBalance", "Relay"]
-                    .iter()
-                    .any(|t| t.eq_ignore_ascii_case(&group_type))
-                {
-                    let now = value
-                        .get("now")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let all = value
-                        .get("all")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    groups.push(serde_json::json!({
-                        "name": name,
-                        "type": group_type,
-                        "now": now,
-                        "all": all,
-                    }));
-                }
-            }
-        }
-        Ok(groups)
+        self.controller.get_proxy_groups().await
     }
 
     /// 选择代理组中的某个代理（PUT /proxies/{group}，组名 URL 编码）
     pub async fn select_proxy_group(&self, group: String, proxy: String) -> Result<()> {
-        let url = self.api_url(&["proxies", &group], None)?;
-        let resp = self
-            .api_client
-            .put(url)
-            .headers(self.api_headers()?)
-            .json(&serde_json::json!({ "name": proxy }))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            info!("Selected {} -> {}", group, proxy);
-            Ok(())
-        } else {
-            warn!("Failed to select proxy group: {}", resp.status());
-            Err(Error::Other(format!(
-                "Controller returned {}",
-                resp.status()
-            )))
-        }
+        self.controller.select_proxy_group(group, proxy).await
     }
 
     /// 测试代理组延迟（GET /proxies/{group}/delay）
@@ -1266,216 +1103,18 @@ impl CoreManager {
         group: String,
         url: Option<String>,
     ) -> Result<Vec<serde_json::Value>> {
-        let test_url = url.unwrap_or_else(|| "http://www.gstatic.com/generate_204".to_string());
-        // C2 SSRF 防护：该 URL 会作为参数传给 mihomo 由内核去拉取（非本地 client），
-        // 同样必须通过禁段校验，防止被当作跳板探测内网。
-        crate::util::fetch::validate_url(&test_url).await?;
-        let api_url = self.api_url(
-            &["proxies", &group, "delay"],
-            Some(&[("url", test_url.as_str()), ("timeout", "5000")]),
-        )?;
-
-        let req = self
-            .api_client
-            .get(api_url)
-            .headers(self.api_headers()?)
-            .send()
-            .await?;
-
-        if req.status().is_success() {
-            let body: serde_json::Value = req.json().await.unwrap_or_default();
-            Ok(vec![serde_json::json!({
-                "group": group,
-                "delay": body.get("delay"),
-            })])
-        } else {
-            Ok(vec![serde_json::json!({
-                "group": group,
-                "delay": null,
-                "message": format!("HTTP {}", req.status()),
-            })])
-        }
+        self.controller.test_proxy_latency(group, url).await
     }
 
     /// 获取活动连接（GET /connections）
-    /// 返回压缩后的连接列表 JSON（供前端连接面板显示）。
-    ///
-    /// P2 性能：连接数极大（数千/万级）时不再把全量 JSON 交回 WebView——
-    /// 全量链路是 Mihomo JSON → Rust parse → IPC 序列化 → WebView JSON parse →
-    /// JS 内存，每一环都随连接数线性膨胀。这里 Rust 侧先压缩并统计 total，
-    /// 只把前 `MAX_CONNECTIONS_RETURNED` 条送 WebView，IPC / JSON parse /
-    /// JS memory 全部降到常量级。前端用 `total` 展示"共 N 条"，用 `truncated`
-    /// 决定是否显示截断提示。
     pub async fn get_connections(&self) -> Result<serde_json::Value> {
-        let url = self.api_url(&["connections"], None)?;
-        let resp = self
-            .api_client
-            .get(url)
-            .headers(self.api_headers()?)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(Error::Other(format!(
-                "Controller returned {}",
-                resp.status()
-            )));
-        }
-
-        let json: serde_json::Value = resp.json().await?;
-        let download_total = value_as_u64(json.get("downloadTotal"));
-        let upload_total = value_as_u64(json.get("uploadTotal"));
-
-        let mut connections = Vec::new();
-        if let Some(arr) = json.get("connections").and_then(|v| v.as_array()) {
-            for conn in arr {
-                let metadata = conn.get("metadata");
-                let host = metadata
-                    .and_then(|m| m.get("host"))
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        metadata
-                            .and_then(|m| m.get("remoteDestination"))
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())
-                    })
-                    .or_else(|| {
-                        metadata
-                            .and_then(|m| m.get("destinationIP"))
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())
-                    })
-                    .unwrap_or("")
-                    .to_string();
-
-                let network = metadata
-                    .and_then(|m| m.get("network"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("tcp")
-                    .to_string();
-
-                let conn_type = metadata
-                    .and_then(|m| m.get("type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                let rule = conn
-                    .get("rule")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let upload = value_as_u64(conn.get("upload"));
-                let download = value_as_u64(conn.get("download"));
-                let start = value_as_u64(conn.get("start"));
-                let chains = conn
-                    .get("chains")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-
-                connections.push(serde_json::json!({
-                    "id": conn.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    "host": host,
-                    "network": network,
-                    "type": conn_type,
-                    "rule": rule,
-                    "upload": upload,
-                    "download": download,
-                    "start": start,
-                    "chains": chains,
-                }));
-            }
-        }
-
-        // P2：只把前 MAX_CONNECTIONS_RETURNED 条送 WebView；total 记真实总数。
-        // 前端用 total 显示"共 N 条"，truncated 决定是否渲染截断提示。
-        let total = connections.len();
-        let truncated = total > MAX_CONNECTIONS_RETURNED;
-        connections.truncate(MAX_CONNECTIONS_RETURNED);
-
-        Ok(serde_json::json!({
-            "download_total": download_total,
-            "upload_total": upload_total,
-            "total": total,
-            "truncated": truncated,
-            "connections": connections,
-        }))
+        self.controller.get_connections().await
     }
 
     /// 关闭全部活动连接（DELETE /connections）
     pub async fn close_all_connections(&self) -> Result<()> {
-        let url = self.api_url(&["connections"], None)?;
-        let resp = self
-            .api_client
-            .delete(url)
-            .headers(self.api_headers()?)
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            info!("All connections closed");
-            Ok(())
-        } else {
-            warn!("Failed to close connections: {}", resp.status());
-            Err(Error::Other(format!(
-                "Controller returned {}",
-                resp.status()
-            )))
-        }
+        self.controller.close_all_connections().await
     }
-}
-
-/// 构造 mihomo 外部控制器 URL；路径段逐段 percent-encode
-/// （组名/节点名可含空格、`/`、非 ASCII，直接拼接会生成非法 URL）。
-fn api_url(base: &str, path: &[&str], query: Option<&[(&str, &str)]>) -> Result<Url> {
-    let mut url = Url::parse(base)
-        .map_err(|_| Error::InvalidArgument(format!("bad external-controller url: {}", base)))?;
-    {
-        let mut segs = url
-            .path_segments_mut()
-            .map_err(|_| Error::InvalidArgument("bad controller path".to_string()))?;
-        for s in path {
-            segs.push(s);
-        }
-    }
-    if let Some(q) = query {
-        let mut pairs = url.query_pairs_mut();
-        for (k, v) in q {
-            pairs.append_pair(k, v);
-        }
-    }
-    Ok(url)
-}
-
-/// 从 JSON 值取 u64（兼容整数/浮点，缺失返回 0）
-fn value_as_u64(v: Option<&serde_json::Value>) -> u64 {
-    v.and_then(|v| v.as_u64())
-        .or_else(|| v.and_then(|v| v.as_f64()).map(|f| f as u64))
-        .unwrap_or(0)
-}
-
-/// 构造外部控制器请求头：密钥非空时附带 `Authorization: Bearer <secret>`。
-///
-/// 密钥含非法 header 字符时显式报错——静默省略 Authorization 会让开启鉴权
-/// 的控制器必然返回 401，且报错被误导向「控制器不可达」，难以排查。
-/// CoreManager 与 AutoRestartChecker（自愈重启就绪探测）统一走本函数。
-pub(crate) fn authorization_headers(secret: &str) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    if !secret.is_empty() {
-        let value = HeaderValue::from_str(&format!("Bearer {}", secret)).map_err(|_| {
-            Error::Other(
-                "控制器密钥包含非法字符（不允许的 HTTP header 字符），请检查配置".to_string(),
-            )
-        })?;
-        headers.insert(AUTHORIZATION, value);
-    }
-    Ok(headers)
 }
 
 /// P1-7：自动重启后的就绪探测辅助（复用 CoreManager 的 /version + 端口健康检查）。
@@ -1545,28 +1184,6 @@ impl AutoRestartChecker {
     }
 }
 
-/// 从 mihomo 启动日志文本中提取第一个端口绑定失败（bind）行，返回可读描述。
-/// 只匹配 `level=error` 且包含 `bind` 的行（如 mixed-port / DNS 被其他进程占用），
-/// 忽略规则拉取等其他 error，避免误报。
-fn parse_bind_error(content: &str) -> Option<String> {
-    content.lines().find_map(|line| {
-        if line.contains("level=error") && line.contains("bind") {
-            let detail = line
-                .split("msg=")
-                .nth(1)
-                .unwrap_or_default()
-                .trim_matches('"')
-                .trim();
-            Some(format!(
-                "端口绑定失败：{}。请先关闭占用该端口的程序（如旧版 Clash.F.Win 仍在后台运行）后重试。",
-                detail
-            ))
-        } else {
-            None
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1576,58 +1193,5 @@ mod tests {
         assert_eq!(CoreStatus::Stopped.to_string(), "stopped");
         assert_eq!(CoreStatus::Running.to_string(), "running");
         assert_eq!(CoreStatus::Starting.to_string(), "starting");
-    }
-
-    #[test]
-    fn test_parse_bind_error_detects_port_conflict() {
-        // 正常启动日志：无 level=error+bind → None
-        let ok = "time=\"...\" level=info msg=\"RESTful API listening at: 127.0.0.1:50715\"\n";
-        assert_eq!(parse_bind_error(ok), None);
-
-        // 端口占用：应提取出端口号 + 可操作提示
-        let conflict = "time=\"...\" level=error msg=\"Start Mixed(http+socks) server error: listen tcp 127.0.0.1:7890: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.\"\n";
-        let msg = parse_bind_error(conflict).unwrap();
-        assert!(msg.contains("7890"), "should name the port: {}", msg);
-        assert!(
-            msg.contains("关闭占用该端口的程序"),
-            "actionable hint: {}",
-            msg
-        );
-
-        // 规则拉取等其他 error（不含 bind）不误报
-        let provider = "time=\"...\" level=error msg=\"[Provider] direct pull error: context deadline exceeded\"\n";
-        assert_eq!(parse_bind_error(provider), None);
-    }
-
-    #[test]
-    fn test_api_url_encodes_path_segments() {
-        // 组名含空格、斜杠、非 ASCII → 逐段编码
-        let url = api_url(
-            "http://127.0.0.1:9090",
-            &["proxies", "扶梯出行/香港"],
-            Some(&[("timeout", "5000")]),
-        )
-        .unwrap();
-        let s = url.to_string();
-        assert!(
-            s.contains("%2F"),
-            "slash in group name must be encoded: {}",
-            s
-        );
-        assert!(s.contains("timeout=5000"), "query preserved: {}", s);
-        assert!(
-            s.starts_with("http://127.0.0.1:9090/proxies/"),
-            "base kept: {}",
-            s
-        );
-    }
-
-    // P0-4：dns.listen 归一化（探测地址必须可连接）
-    #[test]
-    fn test_normalize_dns_listen() {
-        assert_eq!(normalize_dns_listen("127.0.0.1:1053"), "127.0.0.1:1053");
-        assert_eq!(normalize_dns_listen("0.0.0.0:1053"), "127.0.0.1:1053");
-        assert_eq!(normalize_dns_listen(":1053"), "127.0.0.1:1053");
-        assert_eq!(normalize_dns_listen("[::]:1053"), "[::]:1053");
     }
 }
