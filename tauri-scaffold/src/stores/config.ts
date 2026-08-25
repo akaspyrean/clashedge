@@ -29,14 +29,22 @@ export const useConfigStore = defineStore("config", {
       this.baseline = structuredClone(this.config);
       return this.config;
     },
-    /** 计算当前配置相对基线的顶层键差异（kebab-case 扁平结构，浅比较即可）。 */
+    /** 计算当前配置相对基线的顶层键差异。
+     *  顶层键含 tun/dns 等嵌套对象：structuredClone 出来的 baseline 与 config 是
+     *  两个独立对象引用，`!==` 恒为 true，会让"只改一个普通字段保存"也把 tun/dns
+     *  一并提交，重新引入旧嵌套对象覆盖托盘刚改值的回归。改为内容级比较
+     *  （JSON 序列化对 Config 这种小数据足够且语义明确）。顶层键确实变了才整体
+     *  提交该键（后端按键浅合并替换），与原契约一致。 */
     diffFromBaseline(): Partial<ClashConfig> {
       const patch: Partial<ClashConfig> = {};
       if (!this.config || !this.baseline) return patch;
       for (const key of Object.keys(this.config) as (keyof ClashConfig)[]) {
-        if (this.config[key] !== this.baseline[key]) {
-          // tun/dns 等嵌套对象：顶层键变了就整体提交该键（后端按键浅合并替换）。
-          (patch as Record<string, unknown>)[key] = this.config[key];
+        const cur = this.config[key];
+        const base = this.baseline[key];
+        const same =
+          JSON.stringify(cur) === JSON.stringify(base);
+        if (!same) {
+          (patch as Record<string, unknown>)[key] = cur;
         }
       }
       return patch;

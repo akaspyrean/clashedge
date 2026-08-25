@@ -19,6 +19,11 @@ export interface ConnectionInfo {
 export interface ConnectionsSummary {
   download_total: number;
   upload_total: number;
+  /** 连接总数（真实值，可能大于 connections.length——后端已裁剪） */
+  total: number;
+  /** 是否因连接数超过后端上限而被裁剪（前端据此显示截断提示） */
+  truncated: boolean;
+  /** 后端裁剪后的连接列表（≤ 后端 MAX_CONNECTIONS_RETURNED） */
   connections: ConnectionInfo[];
 }
 

@@ -7,7 +7,6 @@ import {
 } from "@/api/connections";
 
 const MAX_DISPLAY = 500;
-const VIRTUAL_THRESHOLD = 500;
 
 function pollIntervalFor(count: number): number {
   if (count < 200) return 2000;
@@ -17,8 +16,8 @@ function pollIntervalFor(count: number): number {
 }
 
 const connections = ref<ConnectionInfo[]>([]);
-const displayConnections = ref<ConnectionInfo[]>([]);
 const connectionCount = ref(0);
+const truncated = ref(false);
 const downloadTotal = ref(0);
 const uploadTotal = ref(0);
 let timer: number | undefined;
@@ -60,10 +59,11 @@ async function refresh() {
   try {
     const data = await connectionsApi.list();
     const all = data.connections ?? [];
-    connectionCount.value = all.length;
+    // P2：后端已裁剪到前 500 条；connectionCount 用真实总数 total 驱动
+    // 轮询间隔与截断提示，truncated 标记是否渲染截断提示。
+    connectionCount.value = data.total ?? all.length;
+    truncated.value = data.truncated ?? false;
     connections.value = all;
-    // 连接数超过阈值时只渲染前 MAX_DISPLAY 条
-    displayConnections.value = all.length > VIRTUAL_THRESHOLD ? all.slice(0, MAX_DISPLAY) : all;
     downloadTotal.value = data.download_total ?? 0;
     uploadTotal.value = data.upload_total ?? 0;
   } catch {
@@ -152,8 +152,8 @@ onUnmounted(() => {
     </div>
 
     <el-table
-      v-if="displayConnections.length > 0"
-      :data="displayConnections"
+      v-if="connections.length > 0"
+      :data="connections"
       size="small"
       max-height="65vh"
       class="connections-table"
@@ -183,11 +183,11 @@ onUnmounted(() => {
       </el-table-column>
     </el-table>
 
+    <el-empty v-else :description="$t('connections.empty')" />
+
     <div v-if="connectionCount > MAX_DISPLAY" class="truncated-notice">
       仅显示前 {{ MAX_DISPLAY }} 条连接（共 {{ connectionCount }} 条）
     </div>
-
-    <el-empty v-else :description="$t('connections.empty')" />
   </div>
 </template>
 
