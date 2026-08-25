@@ -6,7 +6,6 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { open } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { configApi, type ClashConfig } from "@/api/config";
 import { updateApi } from "@/api/update";
@@ -124,7 +123,7 @@ const lanAllowedIpsWarning = computed(() => {
   return bad.length ? `${t("general.lan_ips_invalid")}: ${bad.join(", ")}` : "";
 });
 
-// 托盘触发 geo 更新/回滚、开机自启切换时，本页对应状态要跟随刷新
+// 托盘触发 geo 更新、开机自启切换时，本页对应状态要跟随刷新
 // （后端 updater/tray 会 emit 事件；前端在此监听，保证跨入口一致）。
 let unlisteners: UnlistenFn[] = [];
 
@@ -150,7 +149,6 @@ onMounted(async () => {
   };
   unlisteners = [
     await listen("geodata-updated", onGeoChanged),
-    await listen("geodata-rolled-back", onGeoChanged),
     await listen("autostart-changed", onAutostartChanged),
   ];
 
@@ -300,16 +298,13 @@ async function onAllowLanChange(val: boolean | string | number) {
   cfg.value["allow-lan"] = true;
 }
 
-/** 导入配置：文件对话框选取 .yaml/.yml → 后端读取内容
- *  （read_import_file：校验扩展名与大小上限）→ 解析导入并生效。 */
+/** 导入配置：文件选择与读取全部收口到后端（pick_import_file：Rust 侧弹
+ *  系统对话框 + 校验扩展名与大小上限），前端不再接触任意绝对路径；
+ *  取消选择返回 null，解析导入并生效走 import_config。 */
 async function onImportConfig() {
   try {
-    const file = await open({
-      multiple: false,
-      filters: [{ name: "YAML", extensions: ["yaml", "yml"] }],
-    });
-    if (typeof file !== "string") return; // 用户取消
-    const content = await configApi.readImportFile(file);
+    const content = await configApi.pickImportFile();
+    if (content === null) return; // 用户取消
     await configApi.import(content);
     await configStore.load();
     ElMessage.success(t("advanced.import_config_done"));

@@ -46,14 +46,17 @@ pub struct ProxySubgroupInfo {
 ///
 /// # Returns
 ///
-/// `Result<Menu>` - The constructed tray menu
+/// `Result<(Menu, TrayMenuMap)>` - 构建好的托盘菜单，以及本次构建生成的
+/// 「不透明 ID → (组名, 节点名)」映射。调用方必须在 `set_menu` 成功后再
+/// 用该映射调用 `replace_tray_menu_map`——先换映射后换菜单会让窗口期内
+/// 的点击查到新映射、选错节点（A2 竞态）。
 pub fn build_tray_menu(
     app: &AppHandle,
     _core_status: &CoreStatus,
     proxies: &[ProxyGroupInfo],
     config: &Config,
     i18n: &I18n,
-) -> crate::util::error::Result<Menu<tauri::Wry>> {
+) -> crate::util::error::Result<(Menu<tauri::Wry>, crate::tray::TrayMenuMap)> {
     // --- Fixed items ---
 
     let mut items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = vec![
@@ -118,9 +121,9 @@ pub fn build_tray_menu(
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
 
     // Proxy groups (dynamic)
-    // 每次重建菜单时同步整体替换 ID → 名称 映射（见 tray/mod.rs）。
+    // 每次重建菜单时生成新的 ID → 名称 映射；映射替换由调用方在 set_menu
+    // 成功之后执行（保证窗口期内的点击落在「旧菜单 + 旧映射」的一致组合上）。
     let (group_items, id_map) = build_proxy_group_items(app, proxies)?;
-    crate::tray::replace_tray_menu_map(id_map);
     let group_refs: Vec<&dyn IsMenuItem<tauri::Wry>> =
         group_items.iter().map(|b| b.as_ref()).collect();
     items.push(Box::new(
@@ -185,7 +188,7 @@ pub fn build_tray_menu(
 
     let item_refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items.iter().map(|b| b.as_ref()).collect();
     let menu = MenuBuilder::new(app).items(&item_refs).build()?;
-    Ok(menu)
+    Ok((menu, id_map))
 }
 
 /// Build the proxy groups submenu items dynamically
@@ -341,7 +344,8 @@ pub fn build_tray_icon(
 /// and store the TrayIcon into AppState.tray. Called from main.rs setup.
 pub fn build_tray(app: &AppHandle) -> crate::util::error::Result<()> {
     let i18n = I18n::new(crate::i18n::loader::default_locale());
-    let menu = build_tray_menu(app, &CoreStatus::default(), &[], &Config::default(), &i18n)?;
+    let (menu, id_map) =
+        build_tray_menu(app, &CoreStatus::default(), &[], &Config::default(), &i18n)?;
 
     let mut builder = TrayIconBuilder::with_id("main")
         .menu(&menu)
@@ -371,6 +375,9 @@ pub fn build_tray(app: &AppHandle) -> crate::util::error::Result<()> {
     let state = app.state::<crate::AppState>();
     *state.tray.lock().unwrap() = Some(tray);
 
+    // 初始菜单已随 builder 挂载成功，此时才登记映射（A2：先 set_menu 后换映射）
+    crate::tray::replace_tray_menu_map(id_map);
+
     Ok(())
 }
 
@@ -383,9 +390,13 @@ pub fn update_tray_menu(
     config: &Config,
     i18n: &I18n,
 ) -> crate::util::error::Result<()> {
-    let menu = build_tray_menu(app, core_status, proxies, config, i18n)?;
+    let (menu, id_map) = build_tray_menu(app, core_status, proxies, config, i18n)?;
+    // A2：先 set_menu 成功，再原子替换 ID 映射。窗口期内的点击落在
+    // 「旧菜单 + 旧映射」的一致组合上；set_menu 后到换映射前极小窗口内
+    // 点击新菜单项只会查不到映射（debug 日志忽略），绝不会选错节点。
     tray.set_menu(Some(menu))
         .map_err(crate::util::error::Error::from)?;
+    crate::tray::replace_tray_menu_map(id_map);
     // 图标随系统代理状态着色（refresh_tray 每次调用都会刷新）
     tray.set_icon(Some(build_tray_icon(config)?))
         .map_err(crate::util::error::Error::from)

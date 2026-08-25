@@ -321,10 +321,11 @@ pub fn run() {
             // Config commands
             crate::commands::config::get_config,
             crate::commands::config::update_config,
+            crate::commands::config::update_config_fields,
             crate::commands::config::reset_config,
             crate::commands::config::export_config,
             crate::commands::config::import_config,
-            crate::commands::config::read_import_file,
+            crate::commands::config::pick_import_file,
             // Connections commands
             crate::commands::connections::get_connections,
             crate::commands::connections::close_all_connections,
@@ -432,6 +433,7 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
                 true,
                 &orig.address,
                 &orig.bypass_list,
+                orig.auto_config_url.as_deref(),
             ) {
                 Ok(()) => {
                     info!(
@@ -446,16 +448,20 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
                 }
             }
         }
-        _ => match crate::proxy::system_proxy::set_system_proxy(false, "", &[]) {
-            Ok(()) => {
-                info!("System proxy cleared on exit");
-                Ok(())
+        _ => {
+            // 快照存在但未启用（如用户原本只有 PAC）→ 仍写回其 AutoConfigURL
+            let pac = original.as_ref().and_then(|o| o.auto_config_url.as_deref());
+            match crate::proxy::system_proxy::set_system_proxy(false, "", &[], pac) {
+                Ok(()) => {
+                    info!("System proxy cleared on exit");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to clear system proxy on exit: {}", e);
+                    Err(e)
+                }
             }
-            Err(e) => {
-                error!("Failed to clear system proxy on exit: {}", e);
-                Err(e)
-            }
-        },
+        }
     };
 
     // 3. P1-8：干净关闭路径——无论还原结果如何，本次会话的 journal 已完成

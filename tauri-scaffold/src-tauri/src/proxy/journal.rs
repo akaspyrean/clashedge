@@ -112,6 +112,7 @@ pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
                 true,
                 &orig.address,
                 &orig.bypass_list,
+                orig.auto_config_url.as_deref(),
             ) {
                 Ok(()) => {
                     let msg = format!(
@@ -127,25 +128,41 @@ pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
                         ours, e
                     );
                     warn!("{}", msg);
-                    // 恢复失败至少要把死代理关掉，不能留着断网
-                    let _ = crate::proxy::system_proxy::set_system_proxy(false, "", &[]);
+                    // 恢复失败至少要把死代理关掉，不能留着断网；
+                    // 用户原有的 PAC（若快照有）一并写回
+                    let _ = crate::proxy::system_proxy::set_system_proxy(
+                        false,
+                        "",
+                        &[],
+                        journal
+                            .original
+                            .as_ref()
+                            .and_then(|o| o.auto_config_url.as_deref()),
+                    );
                     Some(msg)
                 }
             }
         }
-        _ => match crate::proxy::system_proxy::set_system_proxy(false, "", &[]) {
-            Ok(()) => {
-                let msg = format!(
-                    "Cleared stale proxy pointing at dead {} after abnormal exit",
-                    ours
-                );
-                info!("{}", msg);
-                Some(msg)
+        _ => {
+            // 原本未启用静态代理：清掉残留的死代理；若用户原有 PAC 则写回还原
+            let pac = journal
+                .original
+                .as_ref()
+                .and_then(|o| o.auto_config_url.as_deref());
+            match crate::proxy::system_proxy::set_system_proxy(false, "", &[], pac) {
+                Ok(()) => {
+                    let msg = format!(
+                        "Cleared stale proxy pointing at dead {} after abnormal exit",
+                        ours
+                    );
+                    info!("{}", msg);
+                    Some(msg)
+                }
+                Err(e) => {
+                    warn!("Failed to clear stale proxy after abnormal exit: {}", e);
+                    None
+                }
             }
-            Err(e) => {
-                warn!("Failed to clear stale proxy after abnormal exit: {}", e);
-                None
-            }
-        },
+        }
     }
 }

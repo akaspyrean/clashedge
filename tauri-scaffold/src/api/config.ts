@@ -82,9 +82,14 @@ export interface ClashConfig {
 export const configApi = {
   get: () => invoke<ClashConfig>("get_config"),
   update: (config: ClashConfig) => invoke<void>("update_config", { config }),
+  /** 浅合并保存：仅提交 patch 中出现的顶层键（kebab-case），其余键保持后端现值。
+   *  用于避免整包回传把用户停留期间其他入口（托盘等）修改的字段覆盖回去。 */
+  updateFields: (patch: Record<string, unknown>) =>
+    invoke<void>("update_config_fields", { patch }),
   reset: () => invoke<void>("reset_config"),
   export: () => invoke<string>("export_config"),
   import: (yaml: string) => invoke<void>("import_config", { yaml }),
-  /** 读取待导入的 YAML 文件（后端校验扩展名与 10MB 上限）。 */
-  readImportFile: (path: string) => invoke<string>("read_import_file", { path }),
+  /** 弹出系统文件对话框选取 .yaml/.yml 并读取内容（选择与校验均在后端完成，
+   *  WebView 不接触任意路径）。用户取消返回 null。 */
+  pickImportFile: () => invoke<string | null>("pick_import_file"),
 };

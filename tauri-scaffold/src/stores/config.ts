@@ -9,6 +9,9 @@ import { configApi, type ClashConfig } from "@/api/config";
 export const useConfigStore = defineStore("config", {
   state: () => ({
     config: null as ClashConfig | null,
+    /** load 成功时的基线快照：save() 只提交与它的顶层键差异，避免整包回传
+     *  覆盖用户停留设置页期间托盘等其他入口改过的字段。 */
+    baseline: null as ClashConfig | null,
   }),
   getters: {
     mixedPort: (s) => s.config?.["mixed-port"] ?? 7890,
@@ -23,20 +26,43 @@ export const useConfigStore = defineStore("config", {
   actions: {
     async load() {
       this.config = await configApi.get();
+      this.baseline = structuredClone(this.config);
       return this.config;
+    },
+    /** 计算当前配置相对基线的顶层键差异（kebab-case 扁平结构，浅比较即可）。 */
+    diffFromBaseline(): Partial<ClashConfig> {
+      const patch: Partial<ClashConfig> = {};
+      if (!this.config || !this.baseline) return patch;
+      for (const key of Object.keys(this.config) as (keyof ClashConfig)[]) {
+        if (this.config[key] !== this.baseline[key]) {
+          // tun/dns 等嵌套对象：顶层键变了就整体提交该键（后端按键浅合并替换）。
+          (patch as Record<string, unknown>)[key] = this.config[key];
+        }
+      }
+      return patch;
     },
     async save() {
       // 失败时由调用方捕获处理；此处不修改内存状态。
       if (!this.config) return;
-      await configApi.update(this.config);
+      const patch = this.diffFromBaseline();
+      if (Object.keys(patch).length === 0) return;
+      await configApi.updateFields(patch);
+      // 成功后重新 load 刷新内存与基线（后端可能还有校验修正）。
+      await this.load();
     },
-    /** 就地修改部分字段后整体保存。
-     *  先调后端 update_config，成功后再改内存，失败时抛错且内存不变（避免假保存）。 */
+    /** 就地修改部分字段后仅提交这些顶层键（update_config_fields 浅合并）。
+     *  先调后端，成功后再改内存与基线，失败时抛错且内存不变（避免假保存）。 */
     async patch(partial: Partial<ClashConfig>) {
       if (!this.config) return;
+      await configApi.updateFields(partial);
       const next = { ...this.config, ...partial };
-      await configApi.update(next);
       this.config = next;
+      if (this.baseline) {
+        const base: Record<string, unknown> = this.baseline;
+        for (const key of Object.keys(partial)) {
+          base[key] = structuredClone(next[key as keyof ClashConfig]);
+        }
+      }
     },
     async reset() {
       // 失败时抛错，由调用方处理并恢复内存状态。

@@ -27,8 +27,9 @@ export const useCoreStore = defineStore("core", {
         await coreApi.start();
       } finally {
         this.starting = false;
+        // 无论成败都刷新真实状态，避免失败时界面滞留旧值。
+        await this.refresh().catch(() => {});
       }
-      await this.refresh();
     },
     async stop() {
       this.stopping = true;
@@ -36,16 +37,22 @@ export const useCoreStore = defineStore("core", {
         await coreApi.stop();
       } finally {
         this.stopping = false;
+        await this.refresh().catch(() => {});
       }
-      await this.refresh();
     },
     async restart() {
-      await coreApi.restart();
-      await this.refresh();
+      try {
+        await coreApi.restart();
+      } finally {
+        await this.refresh().catch(() => {});
+      }
     },
     async reload() {
-      await coreApi.reloadConfig();
-      await this.refresh();
+      try {
+        await coreApi.reloadConfig();
+      } finally {
+        await this.refresh().catch(() => {});
+      }
     },
   },
 });

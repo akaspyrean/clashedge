@@ -13,9 +13,9 @@ use std::sync::{Mutex, OnceLock};
 /// `proxy_group_{group}_{proxy}`），事件侧再用 `rsplitn(2, '_')` 反解；
 /// 名称含 `_` 时解析歧义会选错节点，中文/空格也会进 ID。
 /// 现在菜单构建时按顺序分配稳定序号 ID（`proxy-item-0001`），
-/// 真实名称只存这里；refresh_tray 每次 update_tray_menu 都整体重建菜单并
-/// 原子替换整张映射，单实例应用内安全。
-type TrayMenuMap = HashMap<String, (String, String)>;
+/// 真实名称只存这里；refresh_tray 每次 update_tray_menu 都整体重建菜单，
+/// 且映射替换严格发生在 set_menu 成功之后（保证窗口期点击语义一致）。
+pub type TrayMenuMap = HashMap<String, (String, String)>;
 
 static TRAY_MENU_MAP: OnceLock<Mutex<TrayMenuMap>> = OnceLock::new();
 

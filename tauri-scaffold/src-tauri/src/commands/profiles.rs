@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tauri::{command, AppHandle, Manager};
+use tauri::{command, AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
 use crate::util::atomic::atomic_write;
@@ -343,10 +343,13 @@ pub async fn delete_profile(app: AppHandle, name: String) -> Result<()> {
     std::fs::remove_file(file_path)?;
 
     // 若删除的是激活中的 Profile，激活标记不能指向已不存在的文件：
-    // 重置回内置预设 DIRECT 并重载核心（失败仅记录，不阻塞删除）。
+    // 重置回内置预设 DIRECT 并重载核心；失败必须上报（文件已删但激活态
+    // 仍指向它，UI 与运行时配置会不一致），不能静默吞掉。
     let was_active = active_profile(&app) == name;
     if was_active {
-        let _ = crate::core::runtime::activate_profile(&app, "DIRECT").await;
+        crate::core::runtime::activate_profile(&app, "DIRECT")
+            .await
+            .map_err(|e| Error::Other(format!("配置文件已删除但激活状态重置失败：{}", e)))?;
     }
 
     Ok(())
@@ -377,10 +380,19 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
             cfg_mgr.set_config(cfg)?;
         }
         // 运行中的核心需要重载才能加载新文件名；失败回退原逻辑（重命名不因此失败）
-        let core_guard = state.core_manager.lock().await;
-        if let Some(core) = core_guard.as_ref() {
-            let _ = core.reload_config().await;
+        {
+            let core_guard = state.core_manager.lock().await;
+            if let Some(core) = core_guard.as_ref() {
+                let _ = core.reload_config().await;
+            }
         }
+        // 与其他激活路径对齐：刷新托盘菜单勾选态，并通知前端刷新代理组
+        //（profile-activated 的监听方会重新拉取 /proxies）。
+        crate::core::runtime::refresh_tray(&app).await?;
+        let _ = app.emit(
+            "profile-activated",
+            serde_json::json!({ "profile": new_name }),
+        );
     }
 
     Ok(())

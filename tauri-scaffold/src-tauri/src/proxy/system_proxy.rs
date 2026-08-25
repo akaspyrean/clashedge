@@ -3,9 +3,11 @@
 //! 通过 Windows 注册表直接配置系统代理（HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings）。
 //!
 //! 语义（与 Clash 系客户端一致，参考 clash-verge / clash-nyanpasu）：
-//! - 启用：写 ProxyServer = 127.0.0.1:<mixed-port>、ProxyOverride = 绕过列表、ProxyEnable = 1；
+//! - 启用：写 ProxyServer = 127.0.0.1:<mixed-port>、ProxyOverride = 绕过列表、ProxyEnable = 1，
+//!   并删除 AutoConfigURL（禁用用户原有 PAC，避免双重代理冲突）；
 //! - 禁用：**仅置 ProxyEnable = 0**，不删除 ProxyServer / ProxyOverride ——
-//!   用户若原有自己的代理值，不会被我们清掉；退出还原按启动快照处理（见 main.rs）。
+//!   用户若原有自己的代理值，不会被我们清掉；快照中的原 AutoConfigURL 由调用方
+//!   传入写回还原；退出还原按启动快照处理（见 main.rs）。
 //! - 不做 netsh winhttp：那需要管理员权限，且改的是机器级 WinHTTP 代理，
 //!   与应用级系统代理无关（原实现的非致命调用容易失败并制造假象）。
 //! - UWP 回环豁免在 proxy/loopback.rs，此处不重复实现。
@@ -27,9 +29,6 @@ pub struct SystemProxyConfig {
     /// PAC 脚本地址（AutoConfigURL；快照/还原语义下保留原值不覆盖）
     #[serde(default)]
     pub auto_config_url: Option<String>,
-    /// 是否启用 UWP 回环豁免（保留字段，实际逻辑在 proxy/loopback.rs）
-    #[serde(default)]
-    pub enable_loopback: bool,
 }
 
 const KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
@@ -71,13 +70,24 @@ fn notify_wininet_changed() {
 
 /// 启用或禁用系统代理。
 ///
-/// - `enabled == true`：写 ProxyServer / ProxyOverride / ProxyEnable=1；
-/// - `enabled == false`：仅置 ProxyEnable=0，保留用户原有 ProxyServer / ProxyOverride，
-///   避免销毁用户自己配置的代理（退出时的完整还原见 main.rs 快照）。
-pub fn set_system_proxy(enabled: bool, address: &str, bypass_list: &[String]) -> Result<()> {
+/// - `enabled == true`：写 ProxyServer / ProxyOverride / ProxyEnable=1，并删除
+///   AutoConfigURL（接管期间禁用用户原有 PAC，避免静态代理与 PAC 双重代理冲突；
+///   原值已随启动快照 / journal 保留）；
+/// - `enabled == false`：仅置 ProxyEnable=0，保留用户原有 ProxyServer / ProxyOverride；
+///   若调用方持有快照中的原 AutoConfigURL（`auto_config_url`），写回以还原用户
+///   原有 PAC。退出时的完整还原见 main.rs 快照。
+pub fn set_system_proxy(
+    enabled: bool,
+    address: &str,
+    bypass_list: &[String],
+    auto_config_url: Option<&str>,
+) -> Result<()> {
     let key = open_key()?;
 
     if enabled {
+        // 先删 AutoConfigURL：PAC 与静态代理并存时 WinINet 行为不确定，
+        // 接管期间必须保证只有我们的静态代理生效。
+        let _ = key.delete_value("AutoConfigURL");
         key.set_value("ProxyServer", &address)
             .map_err(|e| Error::Other(format!("Failed to set ProxyServer: {}", e)))?;
         let bypass_str = bypass_list.join(",");
@@ -88,6 +98,11 @@ pub fn set_system_proxy(enabled: bool, address: &str, bypass_list: &[String]) ->
     } else {
         key.set_value("ProxyEnable", &0u32)
             .map_err(|e| Error::Other(format!("Failed to clear ProxyEnable: {}", e)))?;
+        // 快照里有原 PAC → 写回还原；没有则不动注册表里可能存在的其他值。
+        if let Some(url) = auto_config_url {
+            key.set_value("AutoConfigURL", &url)
+                .map_err(|e| Error::Other(format!("Failed to restore AutoConfigURL: {}", e)))?;
+        }
     }
 
     // 注册表写入成功后通知 WinINet，让系统代理立即生效（而非等缓存过期）。
@@ -121,7 +136,6 @@ pub fn get_system_proxy() -> Result<SystemProxyConfig> {
         address,
         bypass_list,
         auto_config_url,
-        enable_loopback: false,
     })
 }
 
@@ -135,8 +149,7 @@ mod tests {
             enabled: true,
             address: "127.0.0.1:7890".to_string(),
             bypass_list: vec!["<local>".to_string(), "192.168.0.0/16".to_string()],
-            auto_config_url: None,
-            enable_loopback: true,
+            auto_config_url: Some("http://127.0.0.1:1080/pac".to_string()),
         };
 
         let serialized = serde_json::to_string(&config).unwrap();
@@ -145,8 +158,34 @@ mod tests {
         assert!(deserialized.enabled);
         assert_eq!(deserialized.address, "127.0.0.1:7890");
         assert!(deserialized.bypass_list.contains(&"<local>".to_string()));
-        assert!(deserialized.auto_config_url.is_none());
-        assert!(deserialized.enable_loopback);
+        assert_eq!(
+            deserialized.auto_config_url.as_deref(),
+            Some("http://127.0.0.1:1080/pac")
+        );
+    }
+
+    #[test]
+    fn test_legacy_journal_json_with_enable_loopback_still_deserializes() {
+        // 旧版本 journal 里存有已移除的 enable_loopback 字段：
+        // serde 默认忽略未知字段，旧 JSON 必须继续可反序列化。
+        let legacy = r#"{
+            "enabled": false,
+            "address": "",
+            "bypass-list": [],
+            "auto-config-url": null,
+            "enable_loopback": true
+        }"#;
+        let config: SystemProxyConfig = serde_json::from_str(legacy).unwrap();
+        assert!(!config.enabled);
+        assert!(config.auto_config_url.is_none());
+    }
+
+    #[test]
+    fn test_missing_auto_config_url_defaults_to_none() {
+        // 旧快照没有 auto-config-url 键 → #[serde(default)] 容错为 None
+        let legacy = r#"{ "enabled": true, "address": "1.2.3.4:8080", "bypass-list": ["a"] }"#;
+        let config: SystemProxyConfig = serde_json::from_str(legacy).unwrap();
+        assert!(config.auto_config_url.is_none());
     }
 
     #[test]
