@@ -6,9 +6,19 @@ import {
   type ConnectionInfo,
 } from "@/api/connections";
 
-const POLL_INTERVAL = 2000;
+const MAX_DISPLAY = 500;
+const VIRTUAL_THRESHOLD = 500;
+
+function pollIntervalFor(count: number): number {
+  if (count < 200) return 2000;
+  if (count < 1000) return 3000;
+  if (count < 5000) return 5000;
+  return 8000;
+}
 
 const connections = ref<ConnectionInfo[]>([]);
+const displayConnections = ref<ConnectionInfo[]>([]);
+const connectionCount = ref(0);
 const downloadTotal = ref(0);
 const uploadTotal = ref(0);
 let timer: number | undefined;
@@ -49,13 +59,18 @@ async function refresh() {
   inFlight = true;
   try {
     const data = await connectionsApi.list();
-    connections.value = data.connections ?? [];
+    const all = data.connections ?? [];
+    connectionCount.value = all.length;
+    connections.value = all;
+    // 连接数超过阈值时只渲染前 MAX_DISPLAY 条
+    displayConnections.value = all.length > VIRTUAL_THRESHOLD ? all.slice(0, MAX_DISPLAY) : all;
     downloadTotal.value = data.download_total ?? 0;
     uploadTotal.value = data.upload_total ?? 0;
   } catch {
-    // 拉取失败静默处理，下个周期自动重试。
   } finally {
     inFlight = false;
+    // 根据新连接数动态调整下一轮轮询间隔
+    restartPolling();
   }
 }
 
@@ -74,9 +89,18 @@ async function onCloseAll() {
 
 function startPolling() {
   if (timer !== undefined) return;
+  const interval = pollIntervalFor(connectionCount.value);
   timer = window.setInterval(() => {
     void refresh();
-  }, POLL_INTERVAL);
+  }, interval);
+}
+
+function restartPolling() {
+  if (timer !== undefined) {
+    window.clearInterval(timer);
+    timer = undefined;
+  }
+  startPolling();
 }
 
 function stopPolling() {
@@ -113,6 +137,7 @@ onUnmounted(() => {
     <div class="page-head">
       <h2 class="page-title">{{ $t("connections.title") }}</h2>
       <div class="page-head-right">
+        <span class="conn-count" v-if="connectionCount > 0">{{ connectionCount }}</span>
         <span class="totals">
           {{ $t("connections.total_download") }}
           <b>{{ formatBytes(downloadTotal) }}</b>
@@ -127,11 +152,13 @@ onUnmounted(() => {
     </div>
 
     <el-table
-      v-if="connections.length > 0"
-      :data="connections"
+      v-if="displayConnections.length > 0"
+      :data="displayConnections"
       size="small"
+      max-height="65vh"
       class="connections-table"
     >
+      <el-table-column type="index" width="50" />
       <el-table-column
         prop="host"
         :label="$t('connections.host')"
@@ -155,6 +182,10 @@ onUnmounted(() => {
         <template #default="{ row }">{{ formatStart(row.start) }}</template>
       </el-table-column>
     </el-table>
+
+    <div v-if="connectionCount > MAX_DISPLAY" class="truncated-notice">
+      仅显示前 {{ MAX_DISPLAY }} 条连接（共 {{ connectionCount }} 条）
+    </div>
 
     <el-empty v-else :description="$t('connections.empty')" />
   </div>
@@ -180,6 +211,15 @@ onUnmounted(() => {
   gap: 16px;
 }
 
+.conn-count {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  background: var(--bg-soft);
+  padding: 2px 10px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
 .totals {
   font-size: 13px;
   color: var(--text-tertiary);
@@ -194,6 +234,17 @@ onUnmounted(() => {
 .totals-sep {
   margin: 0 10px;
   color: var(--border-subtle);
+}
+
+.truncated-notice {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--card-border);
+  border-top: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
 }
 
 .connections-table {
