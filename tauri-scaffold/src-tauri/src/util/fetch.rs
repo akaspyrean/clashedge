@@ -401,7 +401,7 @@ async fn send_and_follow(
         warn!(
             "Following redirect {} -> {}",
             redact_url_for_log(&current_url),
-            redact_url_for_log(&next_url.to_string())
+            redact_url_for_log(next_url.as_str())
         );
         current_url = next_url.to_string();
     }
