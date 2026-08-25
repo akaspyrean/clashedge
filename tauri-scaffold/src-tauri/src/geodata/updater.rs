@@ -103,6 +103,14 @@ async fn update_geodata_inner(app_handle: &tauri::AppHandle) -> Result<()> {
 
         info!("Downloaded {} ({} bytes)", name, downloaded);
 
+        // 内容完整性验证：拒绝 HTML 错误页和明显过小的损坏文件。
+        // GeoIP.dat/GeoSite.dat 是二进制格式，不应包含 HTML 标记。
+        if let Err(e) = validate_geodata_content(&temp_path, name, downloaded) {
+            warn!("Content validation failed for {}: {}", name, e);
+            let _ = std::fs::remove_file(&temp_path);
+            continue;
+        }
+
         // 原子替换：先备份现有文件，再重命名临时文件为最终文件
         // Step 1: 将现有文件重命名为备份（如果存在）
         let had_backup = if final_path.exists() {
@@ -152,6 +160,36 @@ async fn update_geodata_inner(app_handle: &tauri::AppHandle) -> Result<()> {
 /// 生成备份路径：`geoip.dat` -> `geoip.backup`
 fn backup_path(path: &Path) -> std::path::PathBuf {
     path.with_extension("backup")
+}
+
+/// GeoData 内容完整性验证：拒绝 HTML 错误页、过小损坏文件。
+/// GeoIP.dat/GeoSite.dat 是二进制格式（mmdb/protobuf），不应含 HTML 标记。
+fn validate_geodata_content(path: &Path, name: &str, size: usize) -> anyhow::Result<()> {
+    const MIN_GEODATA_SIZE: usize = 100_000;
+    if size < MIN_GEODATA_SIZE {
+        return Err(anyhow::anyhow!(
+            "{} downloaded file too small ({} bytes, minimum {}); likely an error page",
+            name,
+            size,
+            MIN_GEODATA_SIZE
+        ));
+    }
+    let mut buf = vec![0u8; 1024];
+    let mut file = std::fs::File::open(path)?;
+    use std::io::Read;
+    let n = file.read(&mut buf)?;
+    let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    let head_lower = head.to_ascii_lowercase();
+    for marker in ["<html", "<!doctype", "<head", "<title"] {
+        if head_lower.contains(marker) {
+            return Err(anyhow::anyhow!(
+                "{} downloaded content looks like HTML (found '{}'); rejecting",
+                name,
+                marker
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 从 URL 列表下载文件，逐个尝试直到成功。
