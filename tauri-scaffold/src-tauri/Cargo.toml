@@ -9,10 +9,6 @@ edition = "2021"
 name = "ClashEdge"
 path = "src/main.rs"
 
-[lib]
-name = "clash_edge_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
 [build-dependencies]
 # config-json5：tauri.conf.json 按 JSON5 解析，允许在配置里写注释（见 tauri.conf.json 顶部安全说明）。
 tauri-build = { version = "2", features = ["config-json5"] }

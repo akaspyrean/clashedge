@@ -297,7 +297,7 @@ fn build_proxy_group_items(
 pub fn build_tray_icon(
     config: &Config,
 ) -> crate::util::error::Result<tauri::image::Image<'static>> {
-    let bytes = include_bytes!("../../icons/32x32.png");
+    let bytes = include_bytes!("../../icons/cat-32x32.png");
     let img = image::load_from_memory(bytes)
         .map_err(|e| crate::util::error::Error::Other(format!("tray icon decode failed: {}", e)))?
         .to_rgba8();
