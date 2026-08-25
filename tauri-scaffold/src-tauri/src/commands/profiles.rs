@@ -301,8 +301,12 @@ pub async fn create_profile(app: AppHandle, name: String, content: Option<String
         return Err(Error::InvalidArgument("Profile already exists".to_string()));
     }
 
-    // 空内容走内置模板（带默认 DNS/端口等，且 proxies/groups/rules 为空时
-    // build_runtime_config 会自动回退内置骨架，不会产生无法启动的空配置）。
+    // 非空内容需通过统一校验（与网络导入同一标准：大小/节点数/字段长度/协议）
+    if let Some(ref c) = content {
+        validate_subscription_content(c)?;
+    }
+
+    // 空内容走内置模板
     let yaml = content.unwrap_or_else(|| {
         r#"
 mixed-port: 7890
@@ -425,8 +429,8 @@ pub async fn update_profile_content(app: AppHandle, name: String, content: Strin
         return Err(Error::NotFound("Profile not found".to_string()));
     }
 
-    // 校验是合法 YAML
-    serde_yaml::from_str::<serde_yaml::Value>(&content)?;
+    // 统一校验（与网络导入同一标准）
+    validate_subscription_content(&content)?;
 
     atomic_write(&file_path, content.as_bytes())?;
     Ok(())
@@ -441,8 +445,8 @@ pub async fn import_profile(app: AppHandle, name: String, content: String) -> Re
         return Err(Error::InvalidArgument("Profile already exists".to_string()));
     }
 
-    // 校验是合法 YAML
-    serde_yaml::from_str::<serde_yaml::Value>(&content)?;
+    // 统一校验（与网络导入同一标准）
+    validate_subscription_content(&content)?;
 
     atomic_write(&file_path, content.as_bytes())?;
     Ok(())
