@@ -54,7 +54,6 @@ tray:
   close_all: "关闭全部"
   more: "更多"
   dev_tools: "切换开发者工具"
-  move_to_monitor: "移动主面板到最近显示器"
   restart: "重启"
   force_quit: "强制退出"
   quit: "退出"
@@ -222,7 +221,6 @@ connections:
   empty: "暂无连接"
   total_download: "下载总量"
   total_upload: "上传总量"
-  placeholder: "连接列表需通过 Mihomo 外部控制器接口获取，尚未接入。"
 
 logs:
   title: "日志"

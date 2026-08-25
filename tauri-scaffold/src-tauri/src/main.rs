@@ -50,10 +50,13 @@ pub struct AppState {
     /// 用它做按 PID 精确清杀，取代旧的「按进程名 taskkill」——后者会误杀
     /// 用户自己在跑的其他 mihomo 实例。0 = 本会话从未启动过子进程。
     pub core_pid_cache: std::sync::atomic::AtomicU32,
-    /// P0-6：本会话最近一次通过 minisign 验签的更新清单。
+    /// P0-6：本会话最近一次通过 minisign 验签的更新清单（附验签时刻）。
     /// `download_update` 只允许下载这份清单指向的包——WebView 传入的
-    /// version/url/hash 不参与任何决策。
-    pub verified_update: std::sync::Mutex<Option<crate::update::UpdateManifest>>,
+    /// version/url/hash 不参与任何决策。带 TTL：距检查超过
+    /// `VERIFIED_UPDATE_TTL` 后缓存失效，必须重新 check_update，
+    /// 防止用陈旧清单下载已被撤回/替换的版本。
+    pub verified_update:
+        std::sync::Mutex<Option<(crate::update::UpdateManifest, std::time::Instant)>>,
 }
 
 impl AppState {
@@ -302,6 +305,17 @@ pub fn run() {
                         )
                         .await;
                     }
+                });
+            }
+
+            // D6：启动时一次性订阅静默刷新——延迟 60s（给核心启动与网络就绪
+            // 留时间）后执行一次即结束：无常驻定时器、无循环、不占驻留内存。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    crate::commands::profiles::auto_refresh_stale_subscriptions(&app_handle).await;
+                    info!("Startup subscription auto-refresh finished");
                 });
             }
 

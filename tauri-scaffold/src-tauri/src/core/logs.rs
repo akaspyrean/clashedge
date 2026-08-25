@@ -39,14 +39,18 @@ pub fn spawn_log_stream(
         };
         let url = format!("{}/logs", base);
         let client = reqwest::Client::new();
+        let mut down = false;
+        // 与 CoreManager 同源构造 Authorization 头；非法密钥字符显式上报
+        // （log-error 事件 + warn），不再静默省略导致 401 被误读为控制器不可达。
         let mut headers = reqwest::header::HeaderMap::new();
-        if !secret.is_empty() {
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", secret)) {
-                headers.insert(reqwest::header::AUTHORIZATION, v);
+        match crate::core::manager::authorization_headers(&secret) {
+            Ok(h) => headers = h,
+            Err(e) => {
+                tracing::warn!("Invalid controller secret for log stream: {}", e);
+                emit_error(&app, &mut down, &e.to_string());
             }
         }
 
-        let mut down = false;
         loop {
             match client.get(&url).headers(headers.clone()).send().await {
                 Ok(resp) if resp.status().is_success() => {

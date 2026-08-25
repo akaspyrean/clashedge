@@ -54,7 +54,6 @@ tray:
   close_all: "Close All"
   more: "More"
   dev_tools: "Toggle Developer Tools"
-  move_to_monitor: "Move Main Panel to Nearest Monitor"
   restart: "Restart"
   force_quit: "Force Quit"
   quit: "Quit"
@@ -222,7 +221,6 @@ connections:
   empty: "No connections"
   total_download: "Total Download"
   total_upload: "Total Upload"
-  placeholder: "Connection list requires the Mihomo external-controller API; not wired yet."
 
 logs:
   title: "Logs"

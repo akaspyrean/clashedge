@@ -142,7 +142,8 @@ foreach ($sc in $sidecars) {
     $actual = (Get-FileHash $sc.src -Algorithm SHA256).Hash
     if (Test-Path $shaFile) {
         $expected = (Get-Content $shaFile -Raw).Trim()
-        if ($actual -ne $expected) {
+        # Case-insensitive compare, matching release.yml's OrdinalIgnoreCase validation.
+        if (-not [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw ("SHA256 mismatch for {0}:`n  expected ({1}): {2}`n  actual:            {3}`n" +
                    "The sidecar binary has changed. Update the .sha256 file:") -f `
                 $sc.dst, (Split-Path -Leaf $shaFile), $expected, $actual

@@ -18,6 +18,9 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
+    # 去重：push.branches ["**"] 已覆盖同仓分支；同仓 PR 只跑 push 侧，
+    # fork PR（push 触发不了）仍由 pull_request 事件运行。
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     steps:
       # B2：所有 action 固定到官方 commit SHA，防止 tag 劫持。
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

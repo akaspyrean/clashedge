@@ -121,8 +121,9 @@ pub struct CoreManager {
     config: Arc<RwLock<Config>>,
     /// 当前状态
     status: Arc<Mutex<CoreStatus>>,
-    /// 已获取的版本缓存（运行期间不再反复 `-v` 子进程）
-    version_cache: Mutex<Option<String>>,
+    /// 已获取的版本缓存（运行期间不再反复 `-v` 子进程）。
+    /// Arc 供 watcher 任务共享：自愈重启成功后必须失效（新进程版本可能不同）。
+    version_cache: Arc<Mutex<Option<String>>>,
     /// mihomo 二进制路径
     mihomo_path: PathBuf,
     /// 初始化时 mihomo 缺失的可操作提示（Some 时 start() 直接以 Error 状态呈现，
@@ -181,7 +182,7 @@ impl CoreManager {
             child: Arc::new(Mutex::new(None)),
             config,
             status: Arc::new(Mutex::new(CoreStatus::Stopped)),
-            version_cache: Mutex::new(None),
+            version_cache: Arc::new(Mutex::new(None)),
             mihomo_path,
             init_error,
             data_dir,
@@ -433,7 +434,7 @@ impl CoreManager {
     /// 轮询 REST `/version` 直到就绪或超时；期间若子进程提前退出则立即报错。
     async fn wait_ready(&self) -> Result<()> {
         let url = self.api_url(&["version"], None)?;
-        let headers = self.api_headers();
+        let headers = self.api_headers()?;
         let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
 
         loop {
@@ -496,6 +497,8 @@ impl CoreManager {
         let data_dir = self.data_dir.clone();
         let config = self.config.clone();
         let api_client = self.api_client.clone();
+        // D4：自愈重启成功后失效版本缓存（新进程版本可能已变化）
+        let version_cache = self.version_cache.clone();
 
         // P0-6：generation 是否仍然有效（不一致说明有新的 start/stop 接管）
         let gen_valid = |g: &Arc<std::sync::atomic::AtomicU64>, expected: u64| -> bool {
@@ -744,6 +747,9 @@ impl CoreManager {
                                     }
                                 }
                                 info!("mihomo auto-restarted successfully");
+                                // 版本缓存失效：新进程的 /version 可能与旧缓存不同，
+                                // 与热重载路径对齐，下次 version() 重新获取。
+                                *version_cache.lock().unwrap() = None;
                                 // 继续监视新进程（同一 generation、同一 watcher）
                                 continue;
                             }
@@ -907,7 +913,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .get(url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -923,7 +929,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .get(cfg_url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -974,7 +980,7 @@ impl CoreManager {
             let resp = self
                 .api_client
                 .put(url)
-                .headers(self.api_headers())
+                .headers(self.api_headers()?)
                 .json(&payload)
                 .send()
                 .await;
@@ -1032,7 +1038,7 @@ impl CoreManager {
             if let Ok(resp) = self
                 .api_client
                 .get(url)
-                .headers(self.api_headers())
+                .headers(self.api_headers()?)
                 .send()
                 .await
             {
@@ -1094,15 +1100,9 @@ impl CoreManager {
         }
     }
 
-    fn api_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
+    fn api_headers(&self) -> Result<HeaderMap> {
         let secret = self.config.read().proxy.secret.clone();
-        if !secret.is_empty() {
-            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", secret)) {
-                headers.insert(AUTHORIZATION, v);
-            }
-        }
-        headers
+        authorization_headers(&secret)
     }
 
     /// 构造控制器 URL；路径段逐段 percent-encode（组名/节点名可含空格、`/`、非 ASCII）。
@@ -1117,7 +1117,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .patch(url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .json(&serde_json::json!({ "mode": mode }))
             .send()
             .await?;
@@ -1146,7 +1146,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .patch(url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .json(&serde_json::json!({ "tun": tun_value }))
             .send()
             .await?;
@@ -1174,7 +1174,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .get(url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .send()
             .await?;
 
@@ -1231,7 +1231,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .put(url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .json(&serde_json::json!({ "name": proxy }))
             .send()
             .await?;
@@ -1266,7 +1266,7 @@ impl CoreManager {
         let req = self
             .api_client
             .get(api_url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .send()
             .await?;
 
@@ -1292,7 +1292,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .get(url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .send()
             .await?;
 
@@ -1387,7 +1387,7 @@ impl CoreManager {
         let resp = self
             .api_client
             .delete(url)
-            .headers(self.api_headers())
+            .headers(self.api_headers()?)
             .send()
             .await?;
 
@@ -1433,6 +1433,24 @@ fn value_as_u64(v: Option<&serde_json::Value>) -> u64 {
         .unwrap_or(0)
 }
 
+/// 构造外部控制器请求头：密钥非空时附带 `Authorization: Bearer <secret>`。
+///
+/// 密钥含非法 header 字符时显式报错——静默省略 Authorization 会让开启鉴权
+/// 的控制器必然返回 401，且报错被误导向「控制器不可达」，难以排查。
+/// CoreManager 与 AutoRestartChecker（自愈重启就绪探测）统一走本函数。
+pub(crate) fn authorization_headers(secret: &str) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    if !secret.is_empty() {
+        let value = HeaderValue::from_str(&format!("Bearer {}", secret)).map_err(|_| {
+            Error::Other(
+                "控制器密钥包含非法字符（不允许的 HTTP header 字符），请检查配置".to_string(),
+            )
+        })?;
+        headers.insert(AUTHORIZATION, value);
+    }
+    Ok(headers)
+}
+
 /// P1-7：自动重启后的就绪探测辅助（复用 CoreManager 的 /version + 端口健康检查）。
 /// 不直接用 CoreManager 方法（避免借走 self 跨 await 与 watcher 任务所有权冲突），
 /// 只取必要的 Arc 字段。
@@ -1453,12 +1471,8 @@ impl AutoRestartChecker {
         };
         let url = api_url(&base, &["version"], None)?;
         let secret = self.config.read().proxy.secret.clone();
-        let mut headers = HeaderMap::new();
-        if !secret.is_empty() {
-            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", secret)) {
-                headers.insert(AUTHORIZATION, v);
-            }
-        }
+        // 与 CoreManager::api_headers 同源：非法密钥字符显式报错，不静默省略
+        let headers = authorization_headers(&secret)?;
         let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
         loop {
             let exited = self

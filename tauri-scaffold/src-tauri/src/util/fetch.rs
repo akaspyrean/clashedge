@@ -146,29 +146,41 @@ fn parse_host_ip(host: &str) -> Option<IpAddr> {
         .ok()
 }
 
-/// 禁段 IP 判定：回环 / 私网 / 链路本地 / 未指定。
+/// 禁段 IP 判定：回环 / 私网 / 链路本地 / 未指定 / 广播 / 多播 / CGNAT。
 /// 当前工具链的 `IpAddr` 上没有 `is_private`/`is_link_local`，按 V4/V6 分别判定；
 /// IPv6 私网等价物为唯一本地地址（fc00::/7）、链路本地为 fe80::/10。
 /// IPv4-mapped（::ffff:a.b.c.d）必须按内嵌 V4 判定，否则可经
 /// `http://[::ffff:127.0.0.1]:9090/` 绕过回环/私网封锁。
 fn is_denied_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
-        }
+        IpAddr::V4(v4) => is_denied_v4(v4),
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
-                return v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified();
+                return is_denied_v4(v4);
             }
             v6.is_loopback()
                 || v6.is_unique_local()
                 || v6.is_unicast_link_local()
                 || v6.is_unspecified()
+                // IPv6 多播 ff00::/8
+                || v6.is_multicast()
         }
     }
+}
+
+/// IPv4 禁段判定（含 IPv4-mapped 复用）：
+/// 回环 / 私网 / 链路本地 / 未指定 / 受限广播 255.255.255.255 /
+/// 多播 224.0.0.0/4 / CGNAT 100.64.0.0/10（RFC 6598，运营商级 NAT 段，
+/// 不在 `is_private` 覆盖范围内，需单独判定）。
+fn is_denied_v4(v4: std::net::Ipv4Addr) -> bool {
+    let o = v4.octets();
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.is_multicast()
+        || (o[0] == 100 && (o[1] & 0b1100_0000) == 0b0100_0000)
 }
 
 /// 手动重定向策略：**不自动跟随**，返回重定向信息让调用方做完整异步校验
@@ -454,6 +466,73 @@ mod tests {
         assert!(
             validate_url_sync("http://[::ffff:8.8.8.8]/x").is_ok(),
             "IPv4-mapped public address must be allowed"
+        );
+    }
+
+    /// SSRF：CGNAT 100.64.0.0/10、广播 255.255.255.255、IPv4 多播 224.0.0.0/4
+    /// 一律拒绝；段边界外的相邻地址必须放行（防误伤公网）。
+    #[test]
+    fn validate_url_rejects_cgnat_broadcast_and_multicast() {
+        for url in [
+            // CGNAT 段内 + 两个边界
+            "http://100.64.0.0/x",
+            "http://100.64.0.1/x",
+            "http://100.127.255.254/x",
+            "http://100.127.255.255/x",
+            // IPv4 受限广播
+            "http://255.255.255.255/x",
+            // 多播段边界：224.0.0.0（下界）与 239.255.255.255（上界）
+            "http://224.0.0.0/x",
+            "http://224.0.0.1/x",
+            "http://239.255.255.255/x",
+            // IPv4-mapped 形式的多播同样拒绝
+            "http://[::ffff:224.0.0.1]/x",
+            "http://[::ffff:100.64.0.1]/x",
+        ] {
+            assert!(
+                validate_url_sync(url).is_err(),
+                "must reject blocked address: {}",
+                url
+            );
+        }
+        for url in [
+            // CGNAT 下界前一个 / 上界后一个：属公网，必须放行
+            "http://100.63.255.255/x",
+            "http://100.128.0.0/x",
+            // 多播上界之后（223.x 为公网）与 240.x（保留但非多播/非本应用禁段）
+            "http://223.255.255.255/x",
+            "http://8.8.8.8/x",
+        ] {
+            assert!(
+                validate_url_sync(url).is_ok(),
+                "must allow public address: {}",
+                url
+            );
+        }
+    }
+
+    /// SSRF：IPv6 多播 ff00::/8 一律拒绝；边界外单播放行。
+    #[test]
+    fn validate_url_rejects_ipv6_multicast() {
+        for url in [
+            "http://[ff00::1]/x",
+            "http://[ff01::1]/x",
+            "http://[ff02::1]/x",                                 // 所有节点多播
+            "http://[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]/x", // ff 上界附近
+        ] {
+            assert!(
+                validate_url_sync(url).is_err(),
+                "must reject IPv6 multicast: {}",
+                url
+            );
+        }
+        assert!(
+            validate_url_sync("http://[fe80::1]/x").is_err(),
+            "link-local must still be rejected"
+        );
+        assert!(
+            validate_url_sync("http://[2606:4700:4700::1111]/x").is_ok(),
+            "public IPv6 unicast must be allowed"
         );
     }
 

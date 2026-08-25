@@ -12,7 +12,8 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  # 发布流程不可中断：中途取消会留下半发布状态（draft/资产不全/签名不一致）。
+  cancel-in-progress: false
 
 env:
   # P0-5：全流程唯一 ZIP 文件名（与 tools/build-portable.ps1、
