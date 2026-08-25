@@ -260,12 +260,10 @@ pub fn run() {
                     let mut attempt: u32 = 0;
                     let mut started = false;
                     loop {
-                        let core_guard = state.core_manager.get();
-                        let ok = match core_guard.as_ref() {
+                        let ok = match state.core_manager.get() {
                             Some(core) => core.start().await.is_ok(),
                             None => false,
                         };
-                        drop(core_guard);
                         if ok {
                             started = true;
                             break;
