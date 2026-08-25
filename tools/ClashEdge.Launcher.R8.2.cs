@@ -37,16 +37,10 @@ internal static class ClashEdgeLauncher
         out int lpBytesReturned,
         IntPtr lpOverlapped);
 
-    /// 解析目录联接（junction）的替代名称，形如 \??\C:\real\path。
-    /// 不是挂载点联接、打开失败或解析失败时返回 null。
     private static string GetJunctionTarget(string path)
     {
-        // 以零访问权打开 reparse point 本身（FILE_FLAG_OPEN_REPARSE_POINT
-        // 阻止内核穿透到目标；零访问权避免对目标目录的任何权限要求）。
         IntPtr handle = CreateFile(path, 0, 7, IntPtr.Zero, 3,
-            0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS */
-                | 0x00200000 /* FILE_FLAG_OPEN_REPARSE_POINT */,
-            IntPtr.Zero);
+            0x02000000 | 0x00200000, IntPtr.Zero);
         if (handle.ToInt64() == -1) return null;
         try
         {
@@ -55,10 +49,6 @@ internal static class ClashEdgeLauncher
             if (!DeviceIoControl(handle, FsctlGetReparsePoint, IntPtr.Zero, 0,
                     buffer, buffer.Length, out returned, IntPtr.Zero))
                 return null;
-
-            // REPARSE_DATA_BUFFER：Tag(4) DataLength(2) Reserved(2)
-            // MountPoint：SubstituteNameOffset(2) SubstituteNameLength(2)
-            //             PrintNameOffset(2) PrintNameLength(2) PathBuffer...
             uint tag = BitConverter.ToUInt32(buffer, 0);
             if (tag != IoReparseTagMountPoint) return null;
             ushort substituteOffset = BitConverter.ToUInt16(buffer, 8);
@@ -67,13 +57,9 @@ internal static class ClashEdgeLauncher
             if (start + substituteLength > returned) return null;
             return Encoding.Unicode.GetString(buffer, start, substituteLength);
         }
-        finally
-        {
-            CloseHandle(handle);
-        }
+        finally { CloseHandle(handle); }
     }
 
-    /// 规范化联接目标路径用于比对：剥离 \??\ / \\?\ 前缀并取完整路径。
     private static string NormalizeJunctionPath(string path)
     {
         if (path == null) return null;
@@ -83,9 +69,6 @@ internal static class ClashEdgeLauncher
         catch { return path.TrimEnd(Path.DirectorySeparatorChar); }
     }
 
-    /// P1-6：校验已存在的联接真实指向便携根下的 Data 目录。
-    /// 目标不符或解析失败时抛异常终止启动——防止 junction 被篡改后
-    /// 应用把用户数据写到任意位置（如系统目录或其他盘）。
     private static void ValidateJunctionTarget(string appDataDirectory, string portableDataDirectory)
     {
         string actual = NormalizeJunctionPath(GetJunctionTarget(appDataDirectory));
@@ -94,10 +77,9 @@ internal static class ClashEdgeLauncher
         if (!match)
         {
             throw new InvalidOperationException(
-                "数据目录联接校验失败（App\\ClashEdge\\data 未指向本便携包的 Data 目录）。" +
-                "\n预期目标: " + (expected ?? "<未知>") +
-                "\n实际目标: " + (actual ?? "<解析失败>") +
-                "\n为防数据写入错误位置已拒绝启动。请删除 App\\ClashEdge\\data 后重新运行，或重新解压完整便携包。");
+                "数据目录联接校验失败。\n预期: " + (expected ?? "<未知>") +
+                "\n实际: " + (actual ?? "<解析失败>") +
+                "\n请删除 App\\ClashEdge\\data 后重新运行。");
         }
     }
 
@@ -115,16 +97,12 @@ internal static class ClashEdgeLauncher
         }
     }
 
-    /// 判断路径是否存在（含损坏的联接——损坏的 reparse point 上 Directory.Exists
-    /// 会返回 false，但路径仍被 mklink 占用，必须先删掉才能重建）。
     private static bool PathExists(string path)
     {
         try { File.GetAttributes(path); return true; }
         catch { return false; }
     }
 
-    /// 把真实目录的内容并入目标（不覆盖目标已有文件），然后整体删除源目录。
-    /// 用于把"手动/残留创建的真实 data 目录"收编进 Data/ 后重建联接。
     private static void MoveContents(string sourceDir, string destinationDir)
     {
         Directory.CreateDirectory(destinationDir);
@@ -133,11 +111,10 @@ internal static class ClashEdgeLauncher
             var target = file.Replace(sourceDir, destinationDir);
             Directory.CreateDirectory(Path.GetDirectoryName(target));
             if (File.Exists(target))
-                File.Delete(file); // 目标已有同名文件，丢弃残留副本
+                File.Delete(file);
             else
                 File.Move(file, target);
         }
-        // 删除迁移后遗留的空目录
         foreach (var dir in Directory.GetDirectories(sourceDir, "*", SearchOption.AllDirectories)
                      .OrderByDescending(d => d.Length))
         {
@@ -146,11 +123,6 @@ internal static class ClashEdgeLauncher
         }
     }
 
-    /// 确保 App/ClashEdge/data 是指向便携根 Data/ 的有效联接。四种情况：
-    /// 1. 已是联接且目标正确 → 校验通过，直接返回（P1-6）；
-    /// 2. 是联接但目标不符 / 解析失败 → 报错退出（防篡改）；
-    /// 3. 是真实目录（手动创建或旧版本残留）→ 内容并入 Data/ 后删除并重建联接；
-    /// 4. 是损坏的联接（目标不存在）→ 删除后重建。
     private static void EnsureDataJunction(string appDataDirectory, string portableDataDirectory)
     {
         if (PathExists(appDataDirectory))
@@ -158,18 +130,15 @@ internal static class ClashEdgeLauncher
             var attrs = File.GetAttributes(appDataDirectory);
             if ((attrs & FileAttributes.ReparsePoint) != 0)
             {
-                // 有效联接（目标存在）必须校验其真实目标；损坏联接
-                // Directory.Exists == false，走删除重建。
                 if (Directory.Exists(appDataDirectory))
                 {
                     ValidateJunctionTarget(appDataDirectory, portableDataDirectory);
                     return;
                 }
-                File.Delete(appDataDirectory); // 只删联接本身，不递归目标
+                File.Delete(appDataDirectory);
             }
             else
             {
-                // 真实目录残留：并入 Data/ 后删除，重建联接。
                 MoveContents(appDataDirectory, portableDataDirectory);
                 Directory.Delete(appDataDirectory, true);
             }
@@ -194,9 +163,58 @@ internal static class ClashEdgeLauncher
         return "\"" + value.Replace("\\\"", "\\\\\"") + "\"";
     }
 
-    // --- Portable Updater apply (1.0 Release Gate P0-6/P0-7) ------------------
+    // --- Portable Updater (P0: transaction-safe断电恢复) ---------------------
+    //
+    // 状态机：
+    //   pending     暂存区有 pending.json，尚未校验
+    //   verified    ZIP SHA256 复验通过、解压结构校验通过
+    //   swapping    新 App 已复制到 App.new-xxx 并验证完整，
+    //               journal 已持久化——下一步是原子目录交换
+    //   committed   交换完成、备份已删除
+    //
+    // 恢复语义：
+    //   pending / verified / committed → App 未被动过或已完成，清暂存即可
+    //   swapping → App 有效则交换已完成（删备份）；App 无效则从备份恢复
+    //
+    // 硬约束：
+    //   - journal 必须在破坏性操作之前持久化（写失败即中止）
+    //   - 进入 swapping 后任何错误必须保证：完成新版或恢复旧版
+    //   - Data/ 永远不被更新过程替换
 
-    /// 从 pending.json 提取简单字符串字段（避免引入 JSON 依赖；C# 5 / 最小引用）
+    private static string UpdateJournalPath(string root)
+    {
+        return Path.Combine(root, "Data", "update-journal.json");
+    }
+
+    /// 原子写 journal。写失败必须抛出——进入 swapping 后 journal 是恢复链
+    /// 的唯一依据，不能 catch{} 静默吞掉。
+    private static void WriteUpdateJournal(string root, string state)
+    {
+        string path = UpdateJournalPath(root);
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        string tmp = path + ".tmp";
+        File.WriteAllText(tmp,
+            "{\n  \"state\": \"" + state + "\",\n  \"time\": \""
+            + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\"\n}\n");
+        if (File.Exists(path)) File.Delete(path);
+        File.Move(tmp, path);
+    }
+
+    private static void ClearUpdateJournal(string root)
+    {
+        try { File.Delete(UpdateJournalPath(root)); } catch { }
+    }
+
+    private static string ReadUpdateJournalState(string root)
+    {
+        try
+        {
+            var json = File.ReadAllText(UpdateJournalPath(root));
+            return ExtractJsonField(json, "state") ?? "";
+        }
+        catch { return ""; }
+    }
+
     private static string ExtractJsonField(string json, string field)
     {
         var key = "\"" + field + "\"";
@@ -223,68 +241,15 @@ internal static class ClashEdgeLauncher
         }
     }
 
-    // 更新事务 journal 状态机（P0-7 断电恢复）：
-    //
-    //   pending     已发现暂存更新，尚未校验
-    //   verified    ZIP SHA256 复验通过、解压结构校验通过
-    //   old_renamed 旧 App/ 已改名保留（此刻起任何中断都必须恢复或完成）
-    //   new_ready   新 App/ 复制完整且含 ClashEdge.exe
-    //   committed   备份已删除，更新完成
-    //
-    // 启动器每次启动先检查未完成 transaction：
-    //   - pending / verified          → 尚未动过 App/，直接清暂存即可；
-    //   - old_renamed / new_ready     → 新 App/ 完整则收尾提交，否则回滚到备份；
-    //   - committed                   → 只清理。
-    // 恢复到确定可运行状态后再启动 ClashEdge。
-    // 硬性约束：Data/ 目录永远不被更新过程替换或删除（journal 与暂存区除外）。
-
-    private static string UpdateJournalPath(string root)
-    {
-        return Path.Combine(root, "Data", "update-journal.json");
-    }
-
-    /// 原子写 journal（写临时文件后替换），记录当前 transaction 阶段。
-    private static void WriteUpdateJournal(string root, string state)
-    {
-        try
-        {
-            string path = UpdateJournalPath(root);
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            string tmp = path + ".tmp";
-            File.WriteAllText(tmp,
-                "{\n  \"state\": \"" + state + "\",\n  \"time\": \""
-                + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\"\n}\n");
-            if (File.Exists(path)) File.Delete(path);
-            File.Move(tmp, path);
-        }
-        catch { } // journal 写失败不阻断主流程：恢复逻辑对缺失 journal 是安全的
-    }
-
-    private static void ClearUpdateJournal(string root)
-    {
-        try { File.Delete(UpdateJournalPath(root)); } catch { }
-    }
-
-    private static string ReadUpdateJournalState(string root)
-    {
-        try
-        {
-            var json = File.ReadAllText(UpdateJournalPath(root));
-            return ExtractJsonField(json, "state") ?? "";
-        }
-        catch { return ""; }
-    }
-
-    /// App/ 是否处于可运行状态（含内层主程序）
+    /// App/ 是否可运行（含内层主程序）
     private static bool AppDirValid(string root)
     {
         return File.Exists(Path.Combine(root, "App", "ClashEdge", "ClashEdge.exe"));
     }
 
-    /// 最新的 App.old-* 备份目录（不存在返回 null）
+    /// 最新的 App.old-* 备份目录
     private static string NewestBackupDir(string root)
     {
-        string appRoot = Path.Combine(root, "App");
         string backup = null;
         long best = -1;
         try
@@ -301,8 +266,27 @@ internal static class ClashEdgeLauncher
         return backup;
     }
 
-    /// P0-7：启动自愈——上次更新中断（断电 / kill 启动器）时，
-    /// 先把便携包恢复到确定可运行的状态，再继续正常启动流程。
+    /// 残留的 App.new-* 临时目录
+    private static string NewestTempAppDir(string root)
+    {
+        string temp = null;
+        long best = -1;
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(root, "App.new-*"))
+            {
+                long ticks;
+                var suffix = dir.Substring(dir.LastIndexOf('-') + 1);
+                if (!long.TryParse(suffix, out ticks)) continue;
+                if (ticks > best) { best = ticks; temp = dir; }
+            }
+        }
+        catch { }
+        return temp;
+    }
+
+    /// P0：启动自愈——上次更新中断时先恢复到确定可运行状态。
+    /// 必须在检查 ClashEdge.exe 是否存在之前执行（App/ 可能被改名走）。
     private static void RecoverInterruptedUpdate(string root, bool silent)
     {
         string state = ReadUpdateJournalState(root);
@@ -311,37 +295,34 @@ internal static class ClashEdgeLauncher
         string appRoot = Path.Combine(root, "App");
         string staging = Path.Combine(root, "Data", "update-staging");
         string backup = NewestBackupDir(root);
+        string tempApp = NewestTempAppDir(root);
 
         try
         {
-            if (state == "old_renamed" || state == "new_ready")
+            if (state == "swapping")
             {
                 if (AppDirValid(root))
                 {
-                    if (state == "new_ready")
-                    {
-                        // 新 App 完整：收尾提交（删备份）
-                        if (backup != null) try { Directory.Delete(backup, true); } catch { }
-                    }
-                    // old_renamed 却已存在有效 App：视为已完成，只清理
+                    // 交换已完成（或未开始——App 是旧版或新版都 valid）
+                    if (backup != null) try { Directory.Delete(backup, true); } catch { }
+                    if (tempApp != null) try { Directory.Delete(tempApp, true); } catch { }
                 }
                 else if (backup != null)
                 {
-                    // 回滚：删掉半成品新 App，把备份改回 App/
+                    // 交换中断：旧 App 已改名，新 App 未就位 → 从备份恢复
                     if (Directory.Exists(appRoot))
                         try { Directory.Delete(appRoot, true); } catch { }
                     Directory.Move(backup, appRoot);
+                    if (tempApp != null) try { Directory.Delete(tempApp, true); } catch { }
                     if (!silent)
-                        MessageBox.Show(
-                            "检测到上次更新未完成，已自动恢复到更新前的版本。",
+                        MessageBox.Show("检测到上次更新未完成，已自动恢复到更新前的版本。",
                             "更新恢复", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
-                // 无备份且 App 无效：无物可恢复，正常启动会给出明确报错
+                // 无备份且 App 无效：无物可恢复，后续 File.Exists 会给出明确报错
             }
-            // pending / verified / committed：App 未被动过或已提交，无需处理
+            // pending / verified / committed：App 未被动过或已完成，无需处理
 
             try { Directory.Delete(staging, true); } catch { }
-            // 自更新残留的启动器副本（rename 技巧留下的 .old-* 文件）
             try
             {
                 foreach (var f in Directory.GetFiles(root, "ClashEdge.exe.old-*"))
@@ -367,11 +348,10 @@ internal static class ClashEdgeLauncher
         ClearUpdateJournal(root);
     }
 
-    /// 应用暂存更新：Data/update-staging/pending.json 存在时，
-    /// 复验 ZIP 哈希 → 解压 → 结构校验（必须含 ClashEdge.exe）→
-    /// 替换 App/ClashEdge（旧目录先改名保留，失败即回滚）→ 清理暂存。
-    /// 全程维护更新事务 journal（P0-7），任意时刻断电都可由下次启动恢复。
-    /// 任何失败都不阻断正常启动——保留旧版本继续运行，仅清理无效暂存。
+    /// 应用暂存更新。事务结构（P0 修正）：
+    ///   复验 → 解压 → 复制到 App.new-xxx → 验证 → 写 durable journal(swapping)
+    ///   → 原子交换(旧→backup, new→App) → 验证 → journal(committed) → 删备份
+    ///   → Launcher 自更新（最后）→ 清暂存
     private static void ApplyPendingUpdate(string root, bool silent)
     {
         string staging;
@@ -395,17 +375,15 @@ internal static class ClashEdgeLauncher
                 return;
             }
 
-            // 复验哈希（下载端已验一次；应用前不信任暂存区状态）
             string actualSha = Sha256OfFile(zipPath);
             if (!string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("SHA256 mismatch on staged update");
 
-            // 解压到临时目录
             var extracted = Path.Combine(staging, "extracted");
             if (Directory.Exists(extracted)) Directory.Delete(extracted, true);
             System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, extracted);
 
-            // 定位应用根：ZIP 根直接是应用，或带一层顶层目录
+            // 定位应用根
             string appRoot = null;
             if (File.Exists(Path.Combine(extracted, "App", "ClashEdge", "ClashEdge.exe")))
                 appRoot = extracted;
@@ -426,8 +404,54 @@ internal static class ClashEdgeLauncher
 
             WriteUpdateJournal(root, "verified");
 
-            // 启动器自更新：ZIP 根若带新版 ClashEdge.exe 且内容不同，
-            // 用 rename 技巧换掉正在运行的自身（Windows 允许重命名运行中的映像）
+            // 复制到独立临时目录（不在 App/ 内逐文件复制——消除半成品风险）
+            string txid = DateTime.Now.Ticks.ToString();
+            string tempApp = Path.Combine(root, "App.new-" + txid);
+            string backup = Path.Combine(root, "App.old-" + txid);
+            string rootApp = Path.Combine(root, "App");
+
+            CopyMissing(Path.Combine(appRoot, "App"), tempApp);
+            if (!File.Exists(Path.Combine(tempApp, "ClashEdge", "ClashEdge.exe")))
+            {
+                try { Directory.Delete(tempApp, true); } catch { }
+                throw new InvalidOperationException("New App/ failed pre-swap validation");
+            }
+
+            // 关键：durable journal 必须在破坏性交换之前写入。
+            // 写失败 → 中止（删除临时目录），不触碰旧 App/。
+            try { WriteUpdateJournal(root, "swapping"); }
+            catch (Exception ex)
+            {
+                try { Directory.Delete(tempApp, true); } catch { }
+                throw new InvalidOperationException("Cannot persist update journal; aborting before swap: " + ex.Message, ex);
+            }
+
+            // 原子交换：旧 App → backup，新 App → App/
+            Directory.Move(rootApp, backup);
+            try
+            {
+                Directory.Move(tempApp, rootApp);
+            }
+            catch
+            {
+                // 新 App 移入失败：恢复旧 App
+                try { if (Directory.Exists(rootApp)) Directory.Delete(rootApp, true); } catch { }
+                try { Directory.Move(backup, rootApp); } catch { }
+                ClearUpdateJournal(root);
+                throw;
+            }
+            if (!AppDirValid(root))
+            {
+                try { Directory.Delete(rootApp, true); } catch { }
+                try { Directory.Move(backup, rootApp); } catch { }
+                ClearUpdateJournal(root);
+                throw new InvalidOperationException("New App/ failed post-swap validation");
+            }
+
+            WriteUpdateJournal(root, "committed");
+            try { Directory.Delete(backup, true); } catch { }
+
+            // Launcher 自更新放在 App commit 之后（避免混合版本状态）
             try
             {
                 string newLauncher = Path.Combine(appRoot, "ClashEdge.exe");
@@ -436,36 +460,13 @@ internal static class ClashEdgeLauncher
                     && !string.Equals(Sha256OfFile(newLauncher), Sha256OfFile(selfExe),
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    var selfOld = selfExe + ".old-" + DateTime.Now.Ticks;
+                    var selfOld = selfExe + ".old-" + txid;
                     File.Move(selfExe, selfOld);
                     File.Copy(newLauncher, selfExe, true);
                 }
             }
-            catch { } // 自更新失败不阻断 App/ 更新
+            catch { }
 
-            // 完整便携布局替换：以 appRoot 为新根，替换根下的 App/；
-            // Data/ 在根级、不在包内，天然不受影响（硬性约束）。
-            string rootApp = Path.Combine(root, "App");
-            string backup = rootApp + ".old-" + DateTime.Now.Ticks;
-            Directory.Move(rootApp, backup);
-            WriteUpdateJournal(root, "old_renamed");
-            try
-            {
-                CopyMissing(Path.Combine(appRoot, "App"), rootApp);
-            }
-            catch
-            {
-                // 回滚：新内容复制失败 → 恢复旧 App/
-                try { if (Directory.Exists(rootApp)) Directory.Delete(rootApp, true); } catch { }
-                Directory.Move(backup, rootApp);
-                ClearUpdateJournal(root);
-                throw;
-            }
-            if (!AppDirValid(root))
-                throw new InvalidOperationException("New App/ failed post-copy validation");
-            WriteUpdateJournal(root, "new_ready");
-            try { Directory.Delete(backup, true); } catch { }
-            WriteUpdateJournal(root, "committed");
             Directory.Delete(staging, true);
             ClearUpdateJournal(root);
 
@@ -475,22 +476,142 @@ internal static class ClashEdgeLauncher
         }
         catch (Exception ex)
         {
-            // 更新失败绝不阻断启动：清理暂存与 journal，继续用当前版本
-            try { Directory.Delete(staging, true); } catch { }
-            ClearUpdateJournal(root);
+            // 进入 swapping 后不清 journal——让下次启动恢复
+            string state = ReadUpdateJournalState(root);
+            if (state != "swapping")
+            {
+                try { Directory.Delete(staging, true); } catch { }
+                ClearUpdateJournal(root);
+            }
             if (!silent)
                 MessageBox.Show("更新应用失败，已保留当前版本。\n\n" + ex.Message,
                     "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
+    // --- 故障注入测试 ---------------------------------------------------------
+    // 模拟每个 kill 点的恢复行为，验证不会出现混合/缺失状态。
+    // 由 ClashEdge.exe --test-recovery 触发运行。
+
+    private static string TestCreateRoot(string tag)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "clashedge-launcher-test-" + tag + "-" + DateTime.Now.Ticks);
+        Directory.CreateDirectory(dir);
+        Directory.CreateDirectory(Path.Combine(dir, "Data"));
+        var exePath = Path.Combine(dir, "App", "ClashEdge", "ClashEdge.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(exePath));
+        File.WriteAllText(exePath, "dummy");
+        return dir;
+    }
+
+    private static int RunRecoveryTests()
+    {
+        int total = 0;
+
+        // 1. pending 状态
+        {
+            var root = TestCreateRoot("pending");
+            Directory.CreateDirectory(Path.Combine(root, "Data", "update-staging"));
+            File.WriteAllText(Path.Combine(root, "Data", "update-staging", "pending.json"), "{}");
+            WriteUpdateJournal(root, "pending");
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". pending: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". pending cleaned: " + (!Directory.Exists(Path.Combine(root, "Data", "update-staging")) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". pending journal: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // 2. verified 状态
+        {
+            var root = TestCreateRoot("verified");
+            WriteUpdateJournal(root, "verified");
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". verified: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". verified journal: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // 3. swapping + App 有效 + 备份存在
+        {
+            var root = TestCreateRoot("swapping-valid");
+            var backup = Path.Combine(root, "App.old-" + DateTime.Now.Ticks);
+            Directory.CreateDirectory(backup);
+            File.WriteAllText(Path.Combine(backup, "ClashEdge", "ClashEdge.exe"), "old");
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(backup, "ClashEdge", "ClashEdge.exe")));
+            WriteUpdateJournal(root, "swapping");
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". swapping-valid: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". swapping backup: " + (!Directory.Exists(backup) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". swapping journal: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // 4. swapping + App 无效 + 备份存在
+        {
+            var root = TestCreateRoot("swapping-invalid");
+            Directory.Delete(Path.Combine(root, "App"), true);
+            var backup = Path.Combine(root, "App.old-" + DateTime.Now.Ticks);
+            var oldExe = Path.Combine(backup, "ClashEdge", "ClashEdge.exe");
+            Directory.CreateDirectory(Path.GetDirectoryName(oldExe));
+            File.WriteAllText(oldExe, "restored");
+            WriteUpdateJournal(root, "swapping");
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". swapping-invalid app: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". swapping-invalid journal: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // 5. swapping + App 有效 + 无备份
+        {
+            var root = TestCreateRoot("swapping-nobackup");
+            WriteUpdateJournal(root, "swapping");
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". swapping-nobackup: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". swapping-nobackup journal: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // 6. committed 状态
+        {
+            var root = TestCreateRoot("committed");
+            WriteUpdateJournal(root, "committed");
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". committed: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". committed journal: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // 7. 无 journal 不崩溃
+        {
+            var root = TestCreateRoot("nojournal");
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". nojournal: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        Console.WriteLine("\n" + total + " assertions passed.");
+        return 0;
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
+        // 故障注入测试模式
+        if (args.Any(a => a == "--test-recovery"))
+        {
+            try { return RunRecoveryTests(); }
+            catch (Exception ex) { Console.WriteLine("TEST ERROR: " + ex.Message); return 1; }
+        }
+
         bool silent = args.Any(a => a == "--clash-edge-autostart");
         try
         {
             var root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+
+            // P0：先恢复中断的更新——App/ 可能被改名走，ClashEdge.exe 可能不存在。
+            // 必须在检查 executable 存在性之前执行，否则 old_renamed 状态下会直接报错退出。
+            RecoverInterruptedUpdate(root, silent);
+
             var appDirectory = Path.Combine(root, "App", "ClashEdge");
             var executable = Path.Combine(appDirectory, "ClashEdge.exe");
             if (!File.Exists(executable)) throw new FileNotFoundException("找不到 ClashEdge 主程序。请完整解压后再启动。", executable);
@@ -499,11 +620,10 @@ internal static class ClashEdgeLauncher
             CopyMissing(Path.Combine(root, "App", "DefaultData"), data);
             Directory.CreateDirectory(data);
             EnsureDataJunction(Path.Combine(appDirectory, "data"), data);
-            // 1.0 Release Gate P0-7：先检查上次更新是否中断（断电 / kill 启动器），
-            // 恢复到确定可运行状态后再应用新暂存更新，最后才拉起内层。
-            RecoverInterruptedUpdate(root, silent);
-            // Portable Updater：拉起内层前应用已验签的暂存更新
+
+            // 恢复完成后应用新暂存更新
             ApplyPendingUpdate(root, silent);
+
             var home = Path.Combine(data, "Home");
             Directory.CreateDirectory(home);
             var forwarded = string.Join(" ", args.Select(Quote));
@@ -522,7 +642,6 @@ internal static class ClashEdgeLauncher
         }
         catch (Exception error)
         {
-            // 开机自启阶段不能弹框（会卡死登录），改为写日志文件静默失败。
             if (silent)
             {
                 try

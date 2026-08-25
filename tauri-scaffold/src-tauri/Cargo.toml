@@ -27,7 +27,6 @@ tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
 
 # devtools：Tauri 2 在 debug 构建自动启用 Web Inspector，release 构建
 # 不需要该 feature——所有 open_devtools() 调用均用 #[cfg(debug_assertions)]
