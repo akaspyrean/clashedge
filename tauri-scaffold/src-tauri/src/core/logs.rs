@@ -43,7 +43,7 @@ pub fn spawn_log_stream(
         // 与 CoreManager 同源构造 Authorization 头；非法密钥字符显式上报
         // （log-error 事件 + warn），不再静默省略导致 401 被误读为控制器不可达。
         let mut headers = reqwest::header::HeaderMap::new();
-        match crate::core::manager::authorization_headers(&secret) {
+        match crate::core::controller::authorization_headers(&secret) {
             Ok(h) => headers = h,
             Err(e) => {
                 tracing::warn!("Invalid controller secret for log stream: {}", e);
