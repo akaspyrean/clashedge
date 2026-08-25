@@ -244,7 +244,7 @@ pub async fn get_direct_first_streaming(app: &AppHandle, url: &str) -> Result<re
 /// 直连尝试的整个重定向链强制直连；代理兜底的整条链固定走本地代理。
 /// 旧实现重定向跳重建 client 时未继承 no_proxy/proxy，会回落到
 /// 系统代理/环境变量，导致同一链路前后两跳走不同网络路径。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum FetchRoute {
     Direct,
     LocalProxy,
@@ -303,14 +303,19 @@ async fn get_direct_first_with_timeout(
         redact_url_for_log(url),
         proxy_url
     );
+    // P2：proxy 模式下 reqwest 的 resolve() 不生效（P1-5 确认）——proxy 收到
+    // 原始域名后自己解析，留下 DNS rebinding TOCTOU 窗口。把 URL host 替换为
+    // 已校验 IP 后（pin_url_host_to_ip），proxy 直接连 IP 不再解析域名，
+    // 彻底关闭该窗口。
+    let pinned_url = pin_url_host_to_ip(url, &resolved)?;
     let proxied = apply_route(
-        build_client_with_resolved(url, &resolved, total_timeout)?,
+        build_client_with_resolved(&pinned_url, &resolved, total_timeout)?,
         FetchRoute::LocalProxy,
         &proxy_url,
     )?
     .redirect(no_redirect_policy())
     .build()?;
-    send_and_follow(&proxied, url, FetchRoute::LocalProxy, &proxy_url).await
+    send_and_follow(&proxied, &pinned_url, FetchRoute::LocalProxy, &proxy_url).await
 }
 
 /// 从 URL 提取主机名与已校验地址，构建带 `resolve()` 钉定的 ClientBuilder。
@@ -338,6 +343,45 @@ fn build_client_with_resolved(
     Ok(builder)
 }
 
+/// P2：把 URL 的 host 替换为已校验 IP 列表的第一个地址。
+///
+/// P1-5 已确认：reqwest 的 `resolve()` 在 `.proxy(Proxy::all(..))` 模式下
+/// **不生效**——proxy（mihomo）收到的是原始域名，随后自己解析。这留下
+/// DNS rebinding TOCTOU 窗口：`validate_url` 校验时域名是公网 IP（通过），
+/// 直连失败后走 local proxy fallback，proxy 重新解析时域名已被攻击者改为
+/// 127.0.0.1 → mihomo 连回本机（SSRF）。
+///
+/// 修复：把 URL host 替换成已校验 IP 后，proxy 收到的是 IP 而非域名，
+/// 直接连 IP，不再解析域名，彻底关闭 DNS rebinding 窗口。
+///
+/// 权衡：HTTPS 下 reqwest 用 IP 做 SNI，严格校验 SNI 的服务器可能拒绝。
+/// 这是「安全（SSRF 防护）优先于兼容性」的取舍；订阅/geodata 下载目标
+/// 多为 CDN，通常不严格校验 SNI。
+///
+/// `resolved` 为空时原样返回（不改写）。
+fn pin_url_host_to_ip(url: &str, resolved: &[SocketAddr]) -> Result<String> {
+    let Some(first) = resolved.first() else {
+        return Ok(url.to_string());
+    };
+    let ip = first.ip();
+    // IPv6 host 需方括号形式；IPv4 直接字符串
+    let host = match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{}]", v6),
+    };
+    let port = first.port();
+    let mut parsed =
+        Url::parse(url).map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
+    parsed
+        .set_host(Some(&host))
+        .map_err(|e| Error::Other(format!("Failed to pin URL host to IP: {}", e)))?;
+    // set_port 错误类型为 ()，无 _err 可格式化
+    parsed
+        .set_port(Some(port))
+        .map_err(|()| Error::Other("Failed to pin URL port".to_string()))?;
+    Ok(parsed.to_string())
+}
+
 /// 发送请求并手动处理重定向：每跳做完整异步 SSRF 校验（含 DNS）后
 /// 用钉定连接跟随，避免自动重定向的同步回调无法做 DNS 校验。
 /// P1-4：重定向跳重建 client 时通过 `apply_route` 保持与首跳相同的
@@ -350,18 +394,25 @@ async fn send_and_follow(
 ) -> Result<reqwest::Response> {
     let mut current_url = start_url.to_string();
     for _hop in 0..=MAX_REDIRECTS {
-        // 每跳（含首跳）都校验：首跳已由调用方校验，重定向到的新 URL 需要新校验
+        // 每跳（含首跳）都校验：首跳已由调用方校验并（proxy 下）pin 好，
+        // 重定向到的新 URL 需要新校验。
         let resolved = if _hop == 0 {
-            // 首跳：调用方已校验过，直接复用。但 build_client_with_resolved 已钉定，
-            // 这里 client 是已构建好的，直接发送即可。
             Vec::new()
         } else {
             validate_url(&current_url).await?
         };
-        // 对于重定向跳，需要用新 URL 的已验地址重新构建请求；
+        // P2：proxy 模式下 resolve() 不生效，重定向到的新主机也必须 pin 成
+        // 已校验 IP——否则 proxy 对重定向目标自己解析，仍存在 DNS rebinding
+        // 窗口。首跳 start_url 已由调用方 pin 好（get_direct_first proxy 路径）。
+        let req_url = if route == FetchRoute::LocalProxy && !resolved.is_empty() {
+            pin_url_host_to_ip(&current_url, &resolved)?
+        } else {
+            current_url.clone()
+        };
+        // 对于重定向跳，需要用新 URL 的已验地址重新构建请求（req_url 已 pin）；
         // 但 client 是共享的（已钉定首跳主机）。重定向到新主机名时，
-        // 我们用 client.get(new_url) 发送——reqwest 会对新主机重新解析。
-        // 为关闭 TOCTOU，重定向到新主机时改用独立钉定 client。
+        // 我们用独立钉定 client 发送。为关闭 TOCTOU，重定向到新主机时
+        // 改用独立钉定 client。
         let req_client = if _hop == 0 {
             // 首跳：client 已由调用方钉定
             client.clone()
@@ -369,7 +420,7 @@ async fn send_and_follow(
             client.clone()
         } else {
             apply_route(
-                build_client_with_resolved(&current_url, &resolved, None)?,
+                build_client_with_resolved(&req_url, &resolved, None)?,
                 route,
                 proxy_url,
             )?
@@ -378,7 +429,7 @@ async fn send_and_follow(
         };
 
         let resp = req_client
-            .get(&current_url)
+            .get(&req_url)
             .header(USER_AGENT, user_agent())
             .send()
             .await?;
@@ -582,5 +633,120 @@ mod tests {
         assert_eq!(abs.as_str(), "https://example.com/a/c");
         let abs = parsed_join("https://example.com/", "https://other.com/x").unwrap();
         assert_eq!(abs.as_str(), "https://other.com/x");
+    }
+
+    // --- P1-5/P2：SSRF local-proxy fallback 修复验证 -------------------------
+    //
+    // 审计担忧：reqwest 的 `resolve()`（DNS pinning）在 `.proxy(Proxy::all(...))`
+    // 模式下不生效——proxy 收到的是原始域名而非已校验 IP。这意味着：
+    //   1. validate_url 校验 evil.com → 返回公网 IP（通过）
+    //   2. direct 失败 → 触发 local proxy fallback
+    //   3. proxy（mihomo）重新解析 evil.com → DNS rebinding 返回 127.0.0.1
+    //   4. mihomo 连 127.0.0.1（SSRF 成功）
+    //
+    // P2 修复：`pin_url_host_to_ip` 把 URL host 替换为已校验 IP，proxy 收到
+    // IP 而非域名，直接连 IP、不再解析域名，彻底关闭 DNS rebinding 窗口。
+    // 下面两个测试验证修复生效：proxy 收到的是 IP，而非域名。
+
+    /// 单元测试：pin_url_host_to_ip 把域名 host 替换为已校验 IP（IPv4），
+    /// 保留路径/query/port。
+    #[test]
+    fn pin_url_host_to_ip_replaces_domain_with_ip_v4() {
+        let resolved = vec![SocketAddr::new(
+            std::net::Ipv4Addr::new(203, 0, 113, 1).into(),
+            8080,
+        )];
+        let pinned =
+            pin_url_host_to_ip("http://evil.example:8080/path?token=secret", &resolved).unwrap();
+        assert_eq!(pinned, "http://203.0.113.1:8080/path?token=secret");
+    }
+
+    /// 单元测试：pin_url_host_to_ip 处理 IPv6（方括号形式）。
+    #[test]
+    fn pin_url_host_to_ip_replaces_domain_with_ip_v6() {
+        let resolved = vec![SocketAddr::new(
+            "2606:4700:4700::1111"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .into(),
+            443,
+        )];
+        let pinned = pin_url_host_to_ip("https://evil6.example/x", &resolved).unwrap();
+        // url crate 对 scheme 默认端口（https=443）不显式输出，符合预期
+        assert_eq!(pinned, "https://[2606:4700:4700::1111]/x");
+    }
+
+    /// 单元测试：resolved 为空时原样返回（不改写）。
+    #[test]
+    fn pin_url_host_to_ip_returns_original_when_empty() {
+        let pinned = pin_url_host_to_ip("https://example.com/x", &[]).unwrap();
+        assert_eq!(pinned, "https://example.com/x");
+    }
+
+    /// integration：proxy 模式下，发送的请求必须带已校验 IP（而非域名），
+    /// 证明 DNS rebinding 窗口已关闭。
+    #[tokio::test]
+    async fn proxy_mode_sends_pinned_ip_not_domain() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        // 起一个本地 HTTP proxy，记录收到的请求
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let received_req: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let req_clone = received_req.clone();
+
+        let proxy_task = tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = conn.read(&mut buf).await;
+            let req_text = String::from_utf8_lossy(&buf).to_string();
+            *req_clone.lock().await = Some(req_text);
+            let _ = conn
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        });
+
+        let url = "http://myhost.test:80/";
+        let resolved = vec![SocketAddr::new(
+            std::net::Ipv4Addr::new(203, 0, 113, 1).into(),
+            80,
+        )];
+        // 与 get_direct_first_with_timeout proxy 路径一致：先 pin URL。
+        let pinned_url = pin_url_host_to_ip(url, &resolved).unwrap();
+        let builder =
+            build_client_with_resolved(&pinned_url, &resolved, Some(Duration::from_secs(5)))
+                .unwrap();
+        let proxy_url = format!("http://127.0.0.1:{}", proxy_port);
+        let client = apply_route(builder, FetchRoute::LocalProxy, &proxy_url)
+            .unwrap()
+            .redirect(no_redirect_policy())
+            .build()
+            .unwrap();
+
+        let _ = client
+            .get(&pinned_url)
+            .header(USER_AGENT, user_agent())
+            .send()
+            .await;
+
+        let _ = tokio::time::timeout(Duration::from_secs(2), proxy_task).await;
+
+        let seen = received_req.lock().await.clone();
+        assert!(seen.is_some(), "proxy should have received a request");
+        let req_text = seen.unwrap();
+        let first_line = req_text.lines().next().unwrap_or("");
+        // P2 修复断言：请求目标必须是 IP（203.0.113.1），而非域名 myhost.test。
+        assert!(
+            first_line.contains("203.0.113.1"),
+            "proxy request target must be the pinned IP, got: {}",
+            first_line
+        );
+        assert!(
+            !first_line.contains("myhost.test"),
+            "proxy request target must NOT be the original domain, got: {}",
+            first_line
+        );
     }
 }

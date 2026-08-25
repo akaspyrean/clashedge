@@ -54,6 +54,10 @@ const STABLE_RUN_DURATION: Duration = Duration::from_secs(300); // 5 分钟
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const MIXED_PORT_PROBE_TIMEOUT: Duration = PORT_PROBE_TIMEOUT;
 
+/// P2：连接列表单次返回给 WebView 的上限。连接数极大时由后端裁剪，
+/// 只送前 N 条，让 IPC / JSON parse / JS memory 降到常量级（见 get_connections）。
+const MAX_CONNECTIONS_RETURNED: usize = 500;
+
 /// P0-4：TCP 探测 `(host, port)`，超时或拒绝都视为监听失败
 async fn probe_tcp<A: tokio::net::ToSocketAddrs>(addr: A, timeout: Duration) -> Result<()> {
     tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
@@ -1294,7 +1298,14 @@ impl CoreManager {
     }
 
     /// 获取活动连接（GET /connections）
-    /// 返回压缩后的连接列表 JSON（供前端连接面板显示）
+    /// 返回压缩后的连接列表 JSON（供前端连接面板显示）。
+    ///
+    /// P2 性能：连接数极大（数千/万级）时不再把全量 JSON 交回 WebView——
+    /// 全量链路是 Mihomo JSON → Rust parse → IPC 序列化 → WebView JSON parse →
+    /// JS 内存，每一环都随连接数线性膨胀。这里 Rust 侧先压缩并统计 total，
+    /// 只把前 `MAX_CONNECTIONS_RETURNED` 条送 WebView，IPC / JSON parse /
+    /// JS memory 全部降到常量级。前端用 `total` 展示"共 N 条"，用 `truncated`
+    /// 决定是否显示截断提示。
     pub async fn get_connections(&self) -> Result<serde_json::Value> {
         let url = self.api_url(&["connections"], None)?;
         let resp = self
@@ -1382,9 +1393,17 @@ impl CoreManager {
             }
         }
 
+        // P2：只把前 MAX_CONNECTIONS_RETURNED 条送 WebView；total 记真实总数。
+        // 前端用 total 显示"共 N 条"，truncated 决定是否渲染截断提示。
+        let total = connections.len();
+        let truncated = total > MAX_CONNECTIONS_RETURNED;
+        connections.truncate(MAX_CONNECTIONS_RETURNED);
+
         Ok(serde_json::json!({
             "download_total": download_total,
             "upload_total": upload_total,
+            "total": total,
+            "truncated": truncated,
             "connections": connections,
         }))
     }
