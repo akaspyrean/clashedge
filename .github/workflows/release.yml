@@ -22,7 +22,14 @@ env:
   ZIP_NAME: ClashEdge-portable-win64.zip
 
 jobs:
+  # P1-3：先跑共享 quality gate（fmt/clippy/test/audit/npm test/build）。
+  # 任一失败立即中止 release——避免发布"质量门没过"的版本。这是 Release
+  # 与 CI 共用同一套检查的关键：本地不经 main CI 直接打 tag 时也会被卡住。
+  quality:
+    uses: ./.github/workflows/quality-gate.yml
+
   build:
+    needs: quality
     runs-on: windows-latest
 
     steps:
@@ -91,6 +98,7 @@ jobs:
           Write-Host "Signing secrets present."
 
       # B1：创建 draft release 是外部副作用，仅允许 v* tag 触发。
+      # 放在 quality gate 之后：quality 失败时不会留下空 draft。
       - name: Create draft release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -111,10 +119,6 @@ jobs:
         working-directory: tauri-scaffold
         run: npm ci
 
-      - name: Run Rust unit tests
-        working-directory: tauri-scaffold/src-tauri
-        run: cargo test
-
       # P0-6：把内置验签公钥注入客户端构建（update/mod.rs 编译期读取）。
       - name: Tauri release build (--no-bundle)
         working-directory: tauri-scaffold
@@ -124,6 +128,19 @@ jobs:
 
       - name: Assemble portable package + SHA256
         run: .\tools\build-portable.ps1
+
+      # P1-2：Launcher 故障注入测试纳入 Release CI。Launcher 已由上一步编译到
+      # release/portable-out/ClashEdge.exe，在此立即跑 --test-recovery 验证
+      # 5 个 kill 点（pending/verified/swapping/committed/nojournal）恢复行为，
+      # 任一失败立即中止 release，避免发布"恢复逻辑有 bug"的版本。
+      - name: Launcher recovery fault-injection test
+        shell: pwsh
+        run: |
+          $launcher = ".\release\portable-out\ClashEdge.exe"
+          if (-not (Test-Path $launcher)) { throw "Launcher not found: $launcher" }
+          & $launcher --test-recovery
+          if ($LASTEXITCODE -ne 0) { throw "Launcher recovery tests failed (exit $LASTEXITCODE)" }
+          Write-Host "Launcher recovery tests passed."
 
       - name: Generate Portable Updater manifest
         shell: pwsh

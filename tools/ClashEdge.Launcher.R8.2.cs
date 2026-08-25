@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -241,6 +242,69 @@ internal static class ClashEdgeLauncher
         }
     }
 
+    // --- 安全解压（P1：zip bomb 防御）-------------------------------------
+    // 下载侧已限制 ZIP ≤ 300 MB（update::MAX_UPDATE_BYTES），但
+    // ZipFile.ExtractToDirectory 不限制解压后总大小、entry 数量、单 entry 大小，
+    // 也不拦截 entry 名路径穿越（../ 或绝对路径）。微软官方明确建议处理不完全
+    // 可信 archive 时手动枚举 entry 并限制。ZIP 已经过签名 manifest + SHA256
+    // 验签，这是 defense in depth：即便签名链被攻破或 staging 文件被替换，
+    // 也不会因解压耗尽磁盘 / 覆盖系统文件。
+    private const int MaxZipEntries = 10000;
+    private const long MaxZipTotalUncompressed = 2L * 1024 * 1024 * 1024; // 2 GB
+    private const long MaxZipSingleEntry = 1L * 1024 * 1024 * 1024;      // 1 GB
+
+    private static void SafeExtractToDirectory(string zipPath, string destDir)
+    {
+        Directory.CreateDirectory(destDir);
+        string destRoot = Path.GetFullPath(destDir);
+        if (!destRoot.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            destRoot += Path.DirectorySeparatorChar;
+
+        long totalUncompressed = 0;
+        int entryCount = 0;
+
+        using (var archive = System.IO.Compression.ZipFile.OpenRead(zipPath))
+        {
+            foreach (var entry in archive.Entries)
+            {
+                entryCount++;
+                if (entryCount > MaxZipEntries)
+                    throw new InvalidOperationException(
+                        "ZIP entry count exceeds limit (" + MaxZipEntries + ")");
+
+                long entrySize = entry.Length;
+                if (entrySize > MaxZipSingleEntry)
+                    throw new InvalidOperationException(
+                        "ZIP entry '" + entry.FullName + "' exceeds single-entry size limit");
+                totalUncompressed += entrySize;
+                if (totalUncompressed > MaxZipTotalUncompressed)
+                    throw new InvalidOperationException(
+                        "ZIP uncompressed total size exceeds limit");
+
+                // 路径穿越防御：解析 entry 目标绝对路径，必须在 destRoot 之下。
+                // 空 entry 名（目录占位）跳过；含 `..` 或盘符根的 entry 拒绝。
+                string entryName = entry.FullName;
+                if (string.IsNullOrEmpty(entryName)) continue;
+                // 标准化分隔符后再判断相对路径穿越
+                string normName = entryName.Replace('/', Path.DirectorySeparatorChar);
+                string destPath = Path.GetFullPath(Path.Combine(destDir, normName));
+                if (!destPath.StartsWith(destRoot, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "ZIP entry '" + entry.FullName + "' escapes destination directory");
+
+                // 目录 entry（以分隔符结尾）：创建目录跳过文件写入
+                if (normName.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                {
+                    Directory.CreateDirectory(destPath);
+                    continue;
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(destPath));
+
+                entry.ExtractToFile(destPath, overwrite: true);
+            }
+        }
+    }
+
     /// App/ 是否可运行（含内层主程序）
     private static bool AppDirValid(string root)
     {
@@ -381,7 +445,7 @@ internal static class ClashEdgeLauncher
 
             var extracted = Path.Combine(staging, "extracted");
             if (Directory.Exists(extracted)) Directory.Delete(extracted, true);
-            System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, extracted);
+            SafeExtractToDirectory(zipPath, extracted);
 
             // 定位应用根
             string appRoot = null;
@@ -535,11 +599,13 @@ internal static class ClashEdgeLauncher
         {
             var root = TestCreateRoot("swapping-valid");
             var backup = Path.Combine(root, "App.old-" + DateTime.Now.Ticks);
-            Directory.CreateDirectory(backup);
-            File.WriteAllText(Path.Combine(backup, "ClashEdge", "ClashEdge.exe"), "old");
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(backup, "ClashEdge", "ClashEdge.exe")));
+            var backupExe = Path.Combine(backup, "ClashEdge", "ClashEdge.exe");
+            // P1-2：必须先创建目录再写文件（旧实现顺序反了：先 WriteAllText
+            // 再 CreateDirectory，DirectoryNotFoundException 让测试 6 在 CI 上恒失败）。
+            Directory.CreateDirectory(Path.GetDirectoryName(backupExe));
+            File.WriteAllText(backupExe, "old");
             WriteUpdateJournal(root, "swapping");
-            RecoverInterruptedUpdate(root, true);
+            RecoverInterruptedUpdate(root, silent: true);
             Console.WriteLine(++total + ". swapping-valid: " + (AppDirValid(root) ? "PASS" : "FAIL"));
             Console.WriteLine(++total + ". swapping backup: " + (!Directory.Exists(backup) ? "PASS" : "FAIL"));
             Console.WriteLine(++total + ". swapping journal: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
