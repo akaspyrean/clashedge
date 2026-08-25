@@ -1,4 +1,4 @@
-// src-tauri/src/commands/tray.rs
+﻿// src-tauri/src/commands/tray.rs
 //! 托盘命令：获取/更新托盘菜单状态
 
 use crate::util::error::Result;
@@ -6,7 +6,7 @@ use tauri::{command, State};
 
 #[command]
 pub async fn get_tray_menu_state(state: State<'_, crate::AppState>) -> Result<serde_json::Value> {
-    let core_guard = state.core_manager.lock().await;
+    let core_guard = state.core_manager.get();
     if let Some(core) = core_guard.as_ref() {
         // Return core status and basic tray state
         Ok(serde_json::json!({

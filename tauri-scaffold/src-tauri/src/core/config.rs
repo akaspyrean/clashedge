@@ -108,9 +108,9 @@ pub(crate) fn merge_rules(config: Config) -> Config {
 /// 3. 激活 Profile 只提供节点：应用始终采用内置组骨架（GLOBAL + 5 组）与内置规则链，
 ///    订阅节点名强制注入叶子组（人工优选只含真实节点 / 自动优选含 DIRECT 兜底）；订阅自带的 proxy-groups/rules 不采用；
 /// 4. rule-providers：AppConfig 内置 5 组为底，订阅同名覆盖；
-/// 5. 其余订阅键（hosts / sniffer / proxy-providers / script 等）原样透传，
-///    但 proxy-providers / rule-providers 的 `path` 统一强制限定在 `providers/` 下
-///    （C3 规范化，防止订阅任意路径写盘）。
+/// 5. 订阅顶层键采用严格白名单（仅 `proxies`），其余键（hosts / sniffer /
+///    proxy-providers / script / listeners 等）一律不透传——防止订阅改写
+///    控制器、注入 hosts/sniffer 或绕过应用分流结构。
 pub fn build_runtime_config(
     app: &Config,
     profile_content: Option<&str>,
@@ -149,11 +149,7 @@ pub fn build_runtime_config(
             .iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .filter(|s| {
-                s.parse::<std::net::IpAddr>().is_ok()
-                    || s.split_once('/')
-                        .is_some_and(|(ip, _)| ip.trim().parse::<std::net::IpAddr>().is_ok())
-            })
+            .filter(|s| s.parse::<ipnet::IpNet>().is_ok() || s.parse::<std::net::IpAddr>().is_ok())
             .collect();
         if !allowed.is_empty() {
             put!("lan-allowed-ips", serde_yaml::to_value(&allowed)?);

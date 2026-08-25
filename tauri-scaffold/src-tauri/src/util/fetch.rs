@@ -29,6 +29,31 @@ use reqwest::Url;
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
+/// 统一 URL 日志脱敏：只保留 scheme://host[:port]/path，删除 userinfo、query、fragment。
+/// 订阅 URL 的 token/key 常在 query 里，自定义 geodata URL 可能带签名参数——
+/// 一律不得进入日志。解析失败返回 "***"。
+pub fn redact_url_for_log(url: &str) -> String {
+    match Url::parse(url) {
+        Ok(parsed) => {
+            let mut out = String::new();
+            out.push_str(parsed.scheme());
+            out.push_str("://");
+            if let Some(host) = parsed.host_str() {
+                out.push_str(host);
+            }
+            if let Some(port) = parsed.port() {
+                out.push(':');
+                out.push_str(&port.to_string());
+            }
+            if !parsed.path().is_empty() && parsed.path() != "/" {
+                out.push_str(parsed.path());
+            }
+            out
+        }
+        Err(_) => "***".to_string(),
+    }
+}
+
 use crate::util::error::{Error, Result};
 
 /// 单次拉取超时（与既有订阅拉取行为一致）
@@ -259,17 +284,25 @@ async fn get_direct_first_with_timeout(
             warn!(
                 "Direct fetch got non-success status {} for {}; retrying via proxy",
                 resp.status(),
-                url
+                redact_url_for_log(url)
             );
         }
         Err(e) => {
-            warn!("Direct fetch failed for {}: {}; retrying via proxy", url, e);
+            warn!(
+                "Direct fetch failed for {}: {}; retrying via proxy",
+                redact_url_for_log(url),
+                e
+            );
         }
     }
 
     // 2. 代理兜底：应用自身 mihomo 混合端口
     let proxy_url = local_proxy_url(app);
-    info!("Fetching {} via local proxy {}", url, proxy_url);
+    info!(
+        "Fetching {} via local proxy {}",
+        redact_url_for_log(url),
+        proxy_url
+    );
     let proxied = apply_route(
         build_client_with_resolved(url, &resolved, total_timeout)?,
         FetchRoute::LocalProxy,
@@ -365,7 +398,11 @@ async fn send_and_follow(
             .ok_or_else(|| Error::Other(format!("redirect without Location: {}", resp.status())))?;
         // 相对/绝对解析：reqwest 的 Url::join 处理相对 Location
         let next_url = parsed_join(&current_url, location)?;
-        warn!("Following redirect {} -> {}", current_url, next_url);
+        warn!(
+            "Following redirect {} -> {}",
+            redact_url_for_log(&current_url),
+            redact_url_for_log(&next_url.to_string())
+        );
         current_url = next_url.to_string();
     }
     Err(Error::Other(format!(

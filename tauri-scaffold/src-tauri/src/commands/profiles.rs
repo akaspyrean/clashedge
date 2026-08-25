@@ -1,4 +1,4 @@
-// src-tauri/src/commands/profiles.rs
+﻿// src-tauri/src/commands/profiles.rs
 //! 配置文件命令：列表、新建、删除、重命名、激活、编辑、导入、导出
 //!
 //! 安全：所有 `profiles/<name>.yaml` 路径构造必须先过
@@ -381,7 +381,7 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
         }
         // 运行中的核心需要重载才能加载新文件名；失败回退原逻辑（重命名不因此失败）
         {
-            let core_guard = state.core_manager.lock().await;
+            let core_guard = state.core_manager.get();
             if let Some(core) = core_guard.as_ref() {
                 let _ = core.reload_config().await;
             }

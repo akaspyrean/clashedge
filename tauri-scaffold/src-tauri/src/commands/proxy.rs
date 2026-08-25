@@ -1,4 +1,4 @@
-// src-tauri/src/commands/proxy.rs
+﻿// src-tauri/src/commands/proxy.rs
 //! 代理命令：系统代理、TUN 模式、代理模式、延迟测试、代理组
 //!
 //! 三个开关类命令不再直接操作 CoreManager 或注册表，而是路由到统一编排层
@@ -30,7 +30,7 @@ pub async fn test_proxy_latency(
     group: String,
     url: Option<String>,
 ) -> Result<Vec<serde_json::Value>> {
-    let core_guard = state.core_manager.lock().await;
+    let core_guard = state.core_manager.get();
     if let Some(core) = core_guard.as_ref() {
         core.test_proxy_latency(group, url).await
     } else {
@@ -44,7 +44,7 @@ pub async fn test_proxy_latency(
 pub async fn get_proxy_groups(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<serde_json::Value>> {
-    let core_guard = state.core_manager.lock().await;
+    let core_guard = state.core_manager.get();
     if let Some(core) = core_guard.as_ref() {
         core.get_proxy_groups().await
     } else {
@@ -62,7 +62,7 @@ pub async fn select_proxy_group(
     {
         // 临界区内仅执行核心操作，块结束释放 guard 后再 refresh_tray
         //（tokio Mutex 不可重入，refresh_tray 内部会再次 lock）。
-        let core_guard = state.core_manager.lock().await;
+        let core_guard = state.core_manager.get();
         match core_guard.as_ref() {
             Some(core) => core.select_proxy_group(group, proxy).await?,
             None => {

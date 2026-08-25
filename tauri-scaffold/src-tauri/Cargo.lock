@@ -555,6 +555,7 @@ dependencies = [
  "base64 0.21.7",
  "directories",
  "image",
+ "ipnet",
  "log",
  "minisign-verify",
  "once_cell",
