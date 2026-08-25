@@ -153,6 +153,11 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
     }
     let state = app.state::<crate::AppState>();
 
+    // P0-2：全程持有 config_tx，串行整段事务（持久化 → PATCH → 回滚）。
+    // 与 commit_config_transaction / apply_tun / apply_system_proxy /
+    // activate_profile 互斥，避免并发入口交错覆盖。
+    let _tx = state.config_tx.lock().await;
+
     // 1. 持久化（内存 + 原子落盘）
     let old_mode = {
         let mut cfg_mgr = state.config_manager.lock().unwrap();
@@ -198,6 +203,9 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
 /// PATCH 失败（TUN 常需重启才生效）回退整进程重启；重启也失败则回滚。
 pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
+
+    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
+    let _tx = state.config_tx.lock().await;
 
     // 1. 持久化
     let old = {
@@ -253,6 +261,9 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
 pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
 
+    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
+    let _tx = state.config_tx.lock().await;
+
     // P0-2：开启前必须确认 Core Running 且 mixed-port 实际 TCP 可连接；
     // 不满足时先尝试自动启动核心，仍失败则拒绝开启并返回明确错误——
     // 绝不能让 Windows 指向无人监听的代理端口。此校验在任何持久化之前，
@@ -292,56 +303,113 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     };
     let before_change = crate::proxy::system_proxy::get_system_proxy().ok();
     let bypass = default_bypass();
-    // 开启：接管并删除用户原有 PAC（原值已随快照/journal 保留）；
-    // 关闭：写回接管前快照中的 AutoConfigURL，还原用户原有 PAC。
-    let auto_config_url = if enable {
-        None
-    } else {
-        before_change
-            .as_ref()
-            .and_then(|b| b.auto_config_url.as_deref())
+
+    // P0-1：journal 是崩溃恢复的唯一凭据，必须在改注册表之前持久化成功。
+    //   旧顺序："改注册表 → 写 journal（失败仅 warn）" —— 进程在两步之间崩溃
+    //   会留下死代理 + 无 journal，下次启动无法恢复。
+    //   新顺序（开启路径）：
+    //     1) 快照原注册表（before_change，已是开启前状态）
+    //     2) 写 journal: original=before_change, owned=true  ← 必须成功
+    //     3) 改注册表接管
+    //     4) 失败回滚：清 journal + 回滚 config
+    //   关闭路径语义变更（用户已授权）：
+    //     OFF 不再只是 ProxyEnable=0，而是"退出 ClashEdge 接管"——
+    //     读 journal.original 完整还原用户原代理（无则关闭）。这与
+    //     sync_windows_side_effects 的 OFF 分支语义一致。
+    let data_dir = crate::util::paths::get_app_data_dir(app);
+    // journal 写失败只影响**开启**路径——关闭路径不写 journal（读不到原代理时
+    // 降级为直接关闭），data_dir 解析失败不应阻塞关闭。
+    let journal_err = match (data_dir.as_ref(), enable) {
+        (Ok(dir), true) => match crate::proxy::journal::write_journal(
+            dir,
+            &crate::proxy::journal::ProxyJournal {
+                session_id: format!(
+                    "{:016x}{:016x}",
+                    rand::random::<u64>(),
+                    rand::random::<u64>()
+                ),
+                pid: std::process::id(),
+                mixed_port: address
+                    .rsplit(':')
+                    .next()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(0),
+                original: before_change.clone(),
+                owned: true,
+            },
+        ) {
+            Ok(()) => None,
+            Err(e) => Some(e),
+        },
+        (Err(e), true) => {
+            // 开启但 data_dir 解析失败 → 无法写 journal，拒绝开启（P0-1 语义）
+            Some(Error::Other(format!(
+                "Failed to resolve data dir for proxy journal: {}",
+                e
+            )))
+        }
+        _ => None,
     };
-    if let Err(e) =
-        crate::proxy::system_proxy::set_system_proxy(enable, &address, &bypass, auto_config_url)
-    {
-        // 3. 回滚
+    if let Some(e) = journal_err {
+        // journal 写不进去 → 拒绝开启系统代理（P0-1 语义变更）。
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();
         cfg.general.system_proxy = old;
         let _ = cfg_mgr.set_config(cfg);
+        error!(
+            "apply_system_proxy({}) aborted: journal write failed: {}",
+            enable, e
+        );
+        return Err(e);
+    }
+
+    // 3. 改注册表（真实接管 / 还原）
+    let reg_result = if enable {
+        // 开启：接管并删除用户原有 PAC（原值已随 journal.original 保留）
+        crate::proxy::system_proxy::set_system_proxy(true, &address, &bypass, None)
+    } else {
+        // 关闭：退出接管 → 优先读 journal.original 完整还原用户原代理
+        // （P0-1 语义变更，用户已授权）。无 journal 或 original 为 None →
+        // 退化为 ProxyEnable=0（与旧行为一致，不破坏无 journal 的边界）。
+        match data_dir
+            .as_ref()
+            .ok()
+            .and_then(|d| crate::proxy::journal::read_journal(d))
+            .and_then(|j| j.original)
+        {
+            Some(orig) if orig.enabled => crate::proxy::system_proxy::set_system_proxy(
+                true,
+                &orig.address,
+                &orig.bypass_list,
+                orig.auto_config_url.as_deref(),
+            ),
+            Some(_) => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None),
+            None => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None),
+        }
+    };
+    if let Err(e) = reg_result {
+        // 4. 回滚：注册表改失败 → 还原 config；开启路径下还要清掉刚写的 journal
+        //    （否则它会指向一个未生效的接管，下次启动可能误恢复）。
+        let mut cfg_mgr = state.config_manager.lock().unwrap();
+        let mut cfg = cfg_mgr.get_config();
+        cfg.general.system_proxy = old;
+        let _ = cfg_mgr.set_config(cfg);
+        if enable {
+            if let Ok(dir) = &data_dir {
+                crate::proxy::journal::clear_journal(dir);
+            }
+        }
         error!("apply_system_proxy({}) failed, rolled back: {}", enable, e);
         return Err(e);
     }
 
-    // 4. P1-8 Recovery Journal：
-    //    - 接管成功 → 记录"接管前"的原始代理状态（断电/强杀后的启动自愈依据）；
-    //    - 主动关闭成功 → 清除 journal（干净关闭无需恢复）。
-    match crate::util::paths::get_app_data_dir(app) {
-        Ok(data_dir) => {
-            if enable {
-                crate::proxy::journal::write_journal(
-                    &data_dir,
-                    &crate::proxy::journal::ProxyJournal {
-                        session_id: format!(
-                            "{:016x}{:016x}",
-                            rand::random::<u64>(),
-                            rand::random::<u64>()
-                        ),
-                        pid: std::process::id(),
-                        mixed_port: address
-                            .rsplit(':')
-                            .next()
-                            .and_then(|p| p.parse().ok())
-                            .unwrap_or(0),
-                        original: before_change,
-                        owned: true,
-                    },
-                );
-            } else {
-                crate::proxy::journal::clear_journal(&data_dir);
-            }
+    // 5. 收尾 journal：
+    //    - 接管成功 → journal 已在步骤 2 写好（owned=true）
+    //    - 关闭成功 → journal.original 已被还原为用户原状态，journal 失去意义，删除
+    if !enable {
+        if let Ok(dir) = &data_dir {
+            crate::proxy::journal::clear_journal(dir);
         }
-        Err(e) => warn!("Failed to resolve data dir for proxy journal: {}", e),
     }
 
     info!(
@@ -361,6 +429,9 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
 /// 会回退到内置模板。
 pub async fn activate_profile(app: &AppHandle, name: &str) -> Result<()> {
     let state = app.state::<crate::AppState>();
+
+    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
+    let _tx = state.config_tx.lock().await;
 
     // 0. 校验名称（sanitize 防路径穿越）。
     //    "DIRECT" 是内置预设（无对应文件，build_runtime_config 用内置骨架），

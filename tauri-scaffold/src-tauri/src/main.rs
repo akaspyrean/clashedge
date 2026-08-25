@@ -36,10 +36,23 @@ use tracing::{error, info, warn};
 /// 注意锁类型：
 /// - `core_manager` 初始化后稳定持有（OnceLock），只读 REST 操作并发执行，
 ///   生命周期操作（start/stop/restart/reload）走内部 lifecycle 互斥锁。
-/// - `config_manager` / `tray` 是 std Mutex（同步锁，禁止跨 `.await` 持有）
+/// - `config_manager` / `tray` 是 std Mutex（同步锁，禁止跨 `.await` 持有），
+///   只保护极短的临界区（读快照、set_config 落盘）。跨 `.await` 的运行时
+///   操作（reload / restart / Windows 副作用）会释放该锁，因此 `config_manager`
+///   **不能**串行整个配置事务——两个并发事务会交错：A 写 V2 后 await reload，
+///   B 读到 V2 写 V3，A 失败回滚到 V1 覆盖 B 的 V3。
+/// - `config_tx` 是 tokio Mutex，可跨 `.await` 持有。所有改变系统运行态的入口
+///   （update_config / update_config_fields / reset_config / import_config /
+///   apply_proxy_mode / apply_tun / apply_system_proxy / activate_profile /
+///   tray config_mixin）必须在做事之前先 `config_tx.lock().await` 并持有到
+///   事务结束，保证「UI = Config = runtime-config = Mihomo = Windows」在并发
+///   入口下也严格成立。锁的是 `()` —— 纯串行作用，不承载任何数据。
 pub struct AppState {
     pub core_manager: std::sync::OnceLock<crate::core::manager::CoreManager>,
     pub config_manager: std::sync::Mutex<ConfigManager>,
+    /// 配置/运行态事务串行锁：跨 `.await` 持有，串行所有改 Config + Mihomo +
+    /// Windows 的入口。见上文结构注释。P0-2。
+    pub config_tx: tokio::sync::Mutex<()>,
     pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
     /// 启动前的系统代理快照，用于退出时还原（None = 启动时无外部代理，退出时直接清除）
     pub original_system_proxy:
@@ -65,6 +78,7 @@ impl AppState {
         Self {
             core_manager: std::sync::OnceLock::new(),
             config_manager: std::sync::Mutex::new(ConfigManager::new()),
+            config_tx: tokio::sync::Mutex::new(()),
             tray: std::sync::Mutex::new(None),
             original_system_proxy: std::sync::Mutex::new(None),
             log_stream: std::sync::Mutex::new(None),
