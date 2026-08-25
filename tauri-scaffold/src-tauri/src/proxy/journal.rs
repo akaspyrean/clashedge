@@ -199,3 +199,111 @@ pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
     }
     restore_outcome
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// 创建一次性临时目录（测试专属，语义类似 launcher 测试的 temp root）
+    fn temp_data_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "clashedge-journal-test-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_journal() -> ProxyJournal {
+        ProxyJournal {
+            session_id: "smoke-session".to_string(),
+            pid: 4242,
+            mixed_port: 7890,
+            original: Some(SystemProxyConfig {
+                enabled: true,
+                address: "10.0.0.5:8080".to_string(),
+                bypass_list: vec!["<local>".to_string()],
+                auto_config_url: Some("http://pac.example/a.pac".to_string()),
+            }),
+            owned: true,
+        }
+    }
+
+    #[test]
+    fn write_then_read_preserves_fields() {
+        let dir = temp_data_dir("rt");
+        let j = sample_journal();
+        write_journal(&dir, &j).unwrap();
+
+        let read = read_journal(&dir).expect("journal should be readable after write");
+        assert_eq!(read.session_id, j.session_id);
+        assert_eq!(read.pid, j.pid);
+        assert_eq!(read.mixed_port, 7890);
+        assert!(read.owned);
+        let orig = read.original.expect("original preserved");
+        assert_eq!(orig.address, "10.0.0.5:8080");
+        assert_eq!(orig.bypass_list, vec!["<local>".to_string()]);
+        assert_eq!(
+            orig.auto_config_url.as_deref(),
+            Some("http://pac.example/a.pac")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_failure_is_reported_not_silently_swallowed() {
+        // P0-1 语义：journal 写失败必须返回 Err（调用方据此拒绝开启系统代理）。
+        // 用一个不存在（也不可创建）的父目录模拟磁盘故障。
+        let missing_parent = std::env::temp_dir().join(format!(
+            "clashedge-journal-no-parent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // 不创建 missing_parent，直接在其下写文件必然失败
+        let err = write_journal(&missing_parent, &sample_journal());
+        assert!(err.is_err(), "write_journal must surface failure");
+    }
+
+    #[test]
+    fn corrupt_journal_reads_as_none() {
+        let dir = temp_data_dir("corrupt");
+        std::fs::write(
+            dir.join(JOURNAL_FILE),
+            r#"{ "this is not valid json" "#.as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            read_journal(&dir).is_none(),
+            "corrupt journal must read as None"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_journal_is_ok_when_missing() {
+        let dir = temp_data_dir("clear");
+        // 不存在时 clear_journal 静默成功、不 panic
+        clear_journal(&dir);
+        assert!(!dir.join(JOURNAL_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_journal_removes_written_file() {
+        let dir = temp_data_dir("clear2");
+        write_journal(&dir, &sample_journal()).unwrap();
+        assert!(dir.join(JOURNAL_FILE).exists());
+        clear_journal(&dir);
+        assert!(!dir.join(JOURNAL_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
