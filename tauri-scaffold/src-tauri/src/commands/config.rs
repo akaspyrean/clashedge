@@ -426,6 +426,19 @@ fn import_supplies_nodes(config: &Config) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
+/// 重建运行时配置并对运行中的核心生效（热重载，失败回退整进程重启）。
+///
+/// P0-4：错误必须向上传播——旧实现把 reload 失败吞成 warn 日志后返回成功，
+/// 导致「新配置已写盘但 Mihomo 仍用旧值」的假成功。核心未运行时不报错：
+/// 文件已重写，下次启动自然加载新配置。
+async fn reload_running_core(state: &State<'_, crate::AppState>) -> Result<()> {
+    let core_guard = state.core_manager.lock().await;
+    if let Some(core) = core_guard.as_ref() {
+        core.reload_config().await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,17 +481,4 @@ mod tests {
         // 无 proxies 键
         assert!(!import_supplies_nodes(&Config::default()));
     }
-}
-
-/// 重建运行时配置并对运行中的核心生效（热重载，失败回退整进程重启）。
-///
-/// P0-4：错误必须向上传播——旧实现把 reload 失败吞成 warn 日志后返回成功，
-/// 导致「新配置已写盘但 Mihomo 仍用旧值」的假成功。核心未运行时不报错：
-/// 文件已重写，下次启动自然加载新配置。
-async fn reload_running_core(state: &State<'_, crate::AppState>) -> Result<()> {
-    let core_guard = state.core_manager.lock().await;
-    if let Some(core) = core_guard.as_ref() {
-        core.reload_config().await?;
-    }
-    Ok(())
 }
