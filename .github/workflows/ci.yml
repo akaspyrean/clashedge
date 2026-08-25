@@ -53,6 +53,18 @@ jobs:
         working-directory: tauri-scaffold/src-tauri
         run: cargo test
 
+      - name: cargo audit (known vulnerabilities)
+        # cargo-audit 检查 Cargo.lock 中已公开的依赖漏洞。
+        # 安装一次后缓存由 rust-cache 保留。
+        run: |
+          cargo install cargo-audit --locked 2>$null
+          cargo audit
+
+      - name: npm audit (high / critical)
+        # 仅高优/严重漏洞才阻断 CI；低/中警告仅记录。
+        working-directory: tauri-scaffold
+        run: npm audit --audit-level=high
+
       - name: npm run build
         working-directory: tauri-scaffold
         run: npm run build
