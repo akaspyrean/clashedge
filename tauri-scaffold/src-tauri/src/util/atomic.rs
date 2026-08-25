@@ -15,7 +15,12 @@ use crate::util::error::Result;
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 原子写入文件：先写带随机后缀的临时文件（`create_new` 排他创建），
-/// 再 rename 到目标路径（同文件系统内原子替换）。
+/// flush + `sync_all` 落盘后再 rename 到目标路径（同文件系统内原子替换）。
+///
+/// 断电安全：不 sync 直接 rename，掉电后目标位置可能出现空文件/截断内容
+/// （journal/config 空文件会让启动自愈逻辑被跳过），因此 rename 前
+/// 必须把数据刷到存储介质。（Windows 上 rename 前对文件句柄 sync 已足够，
+/// 不存在 POSIX 语义下「rename 后还需 fsync 父目录」的步骤。）
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = temp_path_for(path);
     {
@@ -24,6 +29,8 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             .create_new(true)
             .open(&tmp)?;
         file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
     }
     std::fs::rename(&tmp, path)?;
     Ok(())

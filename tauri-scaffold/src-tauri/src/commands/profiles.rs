@@ -639,8 +639,14 @@ fn commit_profile_file(temp_path: &Path, target: &Path) -> Result<()> {
 /// 重生成运行时配置并热重载核心，让新节点/规则立即生效（失败回滚）。
 #[command]
 pub async fn update_profile_subscription(app: AppHandle, name: String) -> Result<()> {
-    let profiles_dir = get_profiles_dir(&app)?;
-    let file_path = profile_path(&profiles_dir, &name)?;
+    refresh_subscription(&app, &name).await
+}
+
+/// 订阅刷新核心逻辑（供命令与启动时静默刷新共用）：重新拉取订阅内容
+/// 并事务式覆盖 profile 文件；激活中的 Profile 随后热重载生效。
+pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
+    let profiles_dir = get_profiles_dir(app)?;
+    let file_path = profile_path(&profiles_dir, name)?;
 
     if !file_path.exists() {
         return Err(Error::NotFound("Profile not found".to_string()));
@@ -673,7 +679,7 @@ pub async fn update_profile_subscription(app: AppHandle, name: String) -> Result
     // 此阶段任何失败都不触碰现有文件，原订阅保持可用。
     let temp_path = temp_path_for(&file_path);
     let header = format!("# subscribe-url: {}\n", parsed.as_str());
-    download_subscription_streaming(&app, &url, &header, &temp_path).await?;
+    download_subscription_streaming(app, &url, &header, &temp_path).await?;
 
     // 内容校验在替换前完成；失败则清理临时文件并返回 Err
     let text = match std::fs::read_to_string(&temp_path) {
@@ -698,12 +704,107 @@ pub async fn update_profile_subscription(app: AppHandle, name: String) -> Result
     commit_profile_file(&temp_path, &file_path)?;
 
     // 更新激活中的 Profile：热重载使新节点/规则生效
-    if active_profile(&app) == name {
-        crate::core::runtime::activate_profile(&app, &name).await?;
+    if active_profile(app) == name {
+        crate::core::runtime::activate_profile(app, name).await?;
     }
 
     info!("Subscription updated: {}", redact_url(&url));
     Ok(())
+}
+
+// D6：启动时一次性订阅静默刷新
+//
+/// 订阅静默刷新的过期阈值：mtime 距今超过 24h 才刷新
+const SUBSCRIPTION_REFRESH_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// 纯函数：从候选列表筛选需要静默刷新的 profile 名单（可测的阈值逻辑）。
+///
+/// - 不含 `# subscribe-url:` 头（非订阅）→ 跳过；
+/// - mtime 未知 → 跳过（调用方负责对读取失败的场景 warn，避免误刷）；
+/// - mtime 距 `now` 超过 `SUBSCRIPTION_REFRESH_AGE` → 刷新。
+fn select_stale_subscriptions(
+    candidates: Vec<(String, bool, Option<std::time::SystemTime>)>,
+    now: std::time::SystemTime,
+) -> Vec<String> {
+    candidates
+        .into_iter()
+        .filter(|(_, has_url, mtime)| {
+            *has_url
+                && mtime
+                    .map(|t| now.duration_since(t).unwrap_or_default() > SUBSCRIPTION_REFRESH_AGE)
+                    .unwrap_or(false)
+        })
+        .map(|(name, _, _)| name)
+        .collect()
+}
+
+/// 启动时一次性静默刷新过期订阅：遍历 profiles 目录，mtime 距今超过 24h
+/// 且含订阅头的 .yaml 逐个串行刷新；单个失败仅 warn 不中断其他。
+/// 无常驻定时器/循环——本函数执行完即返回，由调用方在启动流程末尾
+/// 延迟触发一次。
+pub async fn auto_refresh_stale_subscriptions(app: &AppHandle) {
+    let profiles_dir = match get_profiles_dir(app) {
+        Ok(dir) => dir,
+        Err(e) => {
+            warn!(
+                "Auto subscription refresh skipped: cannot resolve profiles dir: {}",
+                e
+            );
+            return;
+        }
+    };
+    if !profiles_dir.exists() {
+        return;
+    }
+
+    let mut candidates: Vec<(String, bool, Option<std::time::SystemTime>)> = Vec::new();
+    let entries = match std::fs::read_dir(&profiles_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            warn!(
+                "Auto subscription refresh skipped: cannot read {:?}: {}",
+                profiles_dir, e
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        // mtime 读取失败：跳过并 warn（保守处理，避免误刷）
+        let mtime = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                warn!(
+                    "Auto subscription refresh: skip '{}' (mtime unavailable: {})",
+                    name, e
+                );
+                None
+            }
+        };
+        let has_url = std::fs::read_to_string(&path)
+            .map(|c| extract_subscribe_url(&c).is_some())
+            .unwrap_or(false);
+        candidates.push((name, has_url, mtime));
+    }
+
+    let stale = select_stale_subscriptions(candidates, std::time::SystemTime::now());
+    for name in stale {
+        info!("Auto refreshing stale subscription: {}", name);
+        if let Err(e) = refresh_subscription(app, &name).await {
+            warn!("Auto subscription refresh failed for '{}': {}", name, e);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -792,5 +893,39 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
         assert!(!backup_path_for(&target).exists());
         assert!(!temp.exists());
+    }
+
+    // ---- D6：启动时一次性订阅静默刷新 ----
+
+    /// 阈值逻辑：仅「含订阅头 + mtime 超过 24h」入选；本地配置与 mtime 未知跳过
+    #[test]
+    fn select_stale_filters_by_url_and_age() {
+        let now = std::time::SystemTime::now();
+        let fresh = now - std::time::Duration::from_secs(3600); // 1h 前：新鲜
+        let stale = now - std::time::Duration::from_secs(25 * 3600); // 25h 前：过期
+        let candidates = vec![
+            ("fresh-sub".to_string(), true, Some(fresh)),
+            ("stale-sub".to_string(), true, Some(stale)),
+            ("stale-local".to_string(), false, Some(stale)), // 无订阅头
+            ("no-mtime".to_string(), true, None),            // mtime 读取失败
+        ];
+        let out = select_stale_subscriptions(candidates, now);
+        assert_eq!(out, vec!["stale-sub".to_string()]);
+    }
+
+    /// 边界：恰好 24h（等于阈值）不刷新，超过 1 秒才刷新；未来 mtime 不刷新
+    #[test]
+    fn select_stale_boundary_at_24h() {
+        let now = std::time::SystemTime::now();
+        let exact = now - SUBSCRIPTION_REFRESH_AGE;
+        let over = now - SUBSCRIPTION_REFRESH_AGE - std::time::Duration::from_secs(1);
+        let future = now + std::time::Duration::from_secs(600);
+        let candidates = vec![
+            ("exact".to_string(), true, Some(exact)),
+            ("over".to_string(), true, Some(over)),
+            ("future".to_string(), true, Some(future)),
+        ];
+        let out = select_stale_subscriptions(candidates, now);
+        assert_eq!(out, vec!["over".to_string()]);
     }
 }

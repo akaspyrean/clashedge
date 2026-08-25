@@ -95,6 +95,17 @@ async function onCheckUpdate() {
   }
 }
 
+async function onDiscardStaged() {
+  try {
+    await updateApi.discard();
+    stagedVersion.value = "";
+    // 技术债：后端 i18n yaml 归属 src-tauri（本批次不可改），暂用字面量中文
+    ElMessage.success("已丢弃已下载的更新");
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+
 const allowLanAdvancedOpen = ref<string[]>([]);
 
 /** 局域网 CIDR 白名单：输入框逗号/换行分隔文本 <-> string[]。 */
@@ -571,6 +582,9 @@ async function onUpdateGeo() {
         </div>
         <div v-if="stagedVersion" class="update-msg" style="margin-top: 8px">
           {{ $t("about.update_staged", { version: stagedVersion }) }}
+          <el-button size="small" text type="danger" @click="onDiscardStaged">
+            丢弃
+          </el-button>
         </div>
       </el-tab-pane>
     </el-tabs>

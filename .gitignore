@@ -13,8 +13,17 @@ dist-ssr/
 *.local
 
 # ---- Rust/Tauri 构建缓存 ----
-src-tauri/target/
-src-tauri/gen/
+# 实际路径在 tauri-scaffold/src-tauri/ 下，由其嵌套 .gitignore 覆盖
+
+# ---- 环境变量与构建诊断 ----
+.env
+.env.*
+*.tsbuildinfo
+coverage/
+
+# ---- Windows 系统文件 ----
+Thumbs.db
+desktop.ini
 
 # ---- 打包产物 ----
 release/

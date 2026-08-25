@@ -27,14 +27,9 @@
 ├── portable-template/     # 便携模板：侧车二进制 + 默认数据 + 规则集（供打包拷贝）
 ├── tools/                 # 构建/打包脚本与图标
 │   ├── build-portable.ps1 #   打包入口（组装便携目录 + zip + SHA256；含前置/后置校验）
-│   ├── ClashEdge.ico      #   启动器图标
-│   └── ClashEdge.Launcher.R8.2.cs  # C# 根启动器源码（build-portable.ps1 每次打包时用 csc.exe 编译为便携包根目录的 ClashEdge.exe）
+│   └── ClashEdge.Launcher.R8.2.cs  # C# 根启动器源码（build-portable.ps1 每次打包时用 csc.exe 编译为便携包根目录的 ClashEdge.exe，图标取 tauri-scaffold/src-tauri/icons/cat.ico）
 ├── docs/                  # 文档
-│   ├── HANDOVER.md        #   （本文档）
-│   ├── RELEASE_REPORT.md  #   0.8.5 稳定版发布报告
-│   ├── REFACTOR-PLAN-TAURI.md  # Tauri 2 重构实施规划
-│   ├── REPAIR_PLAN.md     #   内部修复方案（历史）
-│   └── archive/           #   归档：R8.3 修订说明（Electron 时代，已不适用）
+│   └── HANDOVER.md        #   （本文档）
 ├── release/               # 打包产物（不入库，gitignore）
 │   ├── portable-out/      #   便携目录
 │   └── ClashEdge-portable-win64.zip(.sha256)  # 稳定名，不带版本号（与更新链 ZIP_ASSET 一致）
@@ -115,7 +110,7 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
    - **`core/manager.rs`**：新增 `init_error` 字段——内核缺失不阻断应用启动（否则 UI 起不来、用户看不到原因）；`start()` 时以 `CoreStatus::Error(可操作提示)` 呈现。
    - **`util/logging.rs`**：便携模式日志写入 `<exe_dir>/Data/logs`（随包迁移），不再散落 OS 日志目录；目录不可用回退 OS 日志目录。
    - **`util/autostart.rs` + `main.rs`**：新增 `parse_launcher_path`/`paths_equal`/`repair_autostart`——便携包整体移动/改名后，启动时自动把注册表 Run 键自启路径重写为当前 exe 位置（仅便携模式）。
-   - **`tools/build-portable.ps1`**：加前置校验（4 个 sidecar 源存在、release exe 非启动器残片 >5MB）与后置断言（根 ClashEdge.exe / App/portable.dat / App/clash-edge-core.exe 等 7 项齐备、portable.dat 为空文件），失败即中止打包。
+   - **`tools/build-portable.ps1`**：加前置校验（4 个 sidecar 源存在、release exe 非启动器残片 >5MB）与后置断言（9 项齐备：根 ClashEdge.exe、App/ClashEdge/ClashEdge.exe、sidecar/mihomo-win64.exe、sidecar/go-tun2socks.exe、sidecar/EnableLoopback.exe、sidecar/wintun.dll、Data 目录、App/DefaultData 目录、Other/Help/README.md；另要求根 ClashEdge.exe 必须是小于阈值的 C# 启动器而非 Tauri 应用本体），失败即中止打包。
    - 单测：`util::paths::tests`（5 例）+ `util::autostart::tests`（7 例）；`cargo test` **34/34 通过**（此前 22/22）。
    - 已删除 `tools/ClashEdge.exe`（~8.7KB 历史 C# 启动器残片，2026-08-19）——与真实应用同名、运行即复现上述 bug，已被本版本原生便携布局取代；`.cs` 源码留档参考。
 
@@ -188,5 +183,4 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
 
 ## 9. 协作文档
 
-- 多智能体协作规则见 `.claude/CLAUDE.md`（默认并行优先，探索/测试/Review 优先并行，核心修改由单一 Agent 实施）。
 - 本文件为当前事实来源；`docs/archive/` 内文档不代表当前实现，仅追溯参考。

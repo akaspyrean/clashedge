@@ -21,7 +21,12 @@ param(
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path $Root)) { throw "Root not found: $Root" }
 
-$DevSource = "D:\900 AIWork", "D:/900 AIWork", "900 AIWork"
+# Generic leak patterns (machine-independent): drive-letter user/build paths.
+$DevSourcePatterns = @(
+    "[A-Za-z]:[\\/]Users[\\/]",
+    "[A-Za-z]:[\\/]900 AIWork",
+    "900 AIWork"
+)
 
 $TextExt = @(
     ".json", ".toml", ".cfg", ".config", ".ini", ".conf", ".yaml", ".yml",
@@ -29,7 +34,6 @@ $TextExt = @(
 )
 
 $Failures = [System.Collections.Generic.List[string]]::new()
-$Info     = [System.Collections.Generic.List[string]]::new()
 $fileCount = 0
 
 function Test-AbsolutePath([string]$line) {
@@ -47,13 +51,13 @@ Get-ChildItem -Path $Root -Recurse -Force -File | ForEach-Object {
     $f = $_
     $rel = $f.FullName.Substring($Root.Length)
 
-    # byte-level scan: build-machine paths in binary files
+    # byte-level scan over the WHOLE file (binaries up to ~34MB are acceptable):
+    # build-machine paths may sit anywhere in binary content, not just the first 4MB.
     $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
-    $asciiLen = $bytes.Length; if ($asciiLen -gt 4MB) { $asciiLen = 4MB }
-    $ascii = [System.Text.Encoding]::ASCII.GetString($bytes, 0, $asciiLen)
-    foreach ($s in $DevSource) {
-        if ($ascii.IndexOf($s, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            $Failures.Add("dev source path: $rel  (matched '$s')")
+    $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+    foreach ($p in $DevSourcePatterns) {
+        if ($ascii -match $p) {
+            $Failures.Add("dev source path: $rel  (matched '$p')")
         }
     }
 
@@ -73,9 +77,6 @@ Get-ChildItem -Path $Root -Recurse -Force -File | ForEach-Object {
 
 Write-Host ""
 Write-Host "Scanned $fileCount file(s) under $Root" -ForegroundColor Cyan
-if ($Info.Count) {
-    foreach ($i in $Info) { Write-Host "  $i" -ForegroundColor DarkGray }
-}
 if ($Failures.Count) {
     Write-Host ""
     Write-Host "ABSOLUTE-PATH LEAKS FOUND ($($Failures.Count)):" -ForegroundColor Red

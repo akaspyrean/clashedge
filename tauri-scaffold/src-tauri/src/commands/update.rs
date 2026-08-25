@@ -10,28 +10,43 @@
 
 use crate::update::{self, UpdateStatus};
 use crate::util::error::{Error, Result};
+use std::time::{Duration, Instant};
 use tauri::{command, Manager};
+
+/// 已验签更新清单缓存的有效期：超过后 `download_update` 要求重新 check_update，
+/// 避免用陈旧清单下载已被撤回/替换的版本（进程内 TTL，无需持久化）。
+const VERIFIED_UPDATE_TTL: Duration = Duration::from_secs(30 * 60);
 
 #[command]
 pub async fn check_update(app: tauri::AppHandle) -> Result<serde_json::Value> {
     let status = update::check_for_update(&app).await?;
-    // 验签成功且确有新版本 → 缓存 manifest，供 download_update 使用
+    // 验签成功且确有新版本 → 缓存 manifest + 验签时刻，供 download_update 使用
     if let UpdateStatus::Available { manifest, .. } = &status {
         let state = app.state::<crate::AppState>();
-        *state.verified_update.lock().unwrap() = Some(manifest.clone());
+        *state.verified_update.lock().unwrap() = Some((manifest.clone(), Instant::now()));
     }
     serde_json::to_value(status).map_err(|e| crate::util::error::Error::Other(e.to_string()))
 }
 
 #[command]
 pub async fn download_update(app: tauri::AppHandle) -> Result<crate::update::PendingUpdate> {
-    // 只信任本会话刚验签过的 manifest；没有则要求先执行检查
+    // 只信任本会话刚验签过的 manifest；没有或已过 TTL 则要求先执行检查
     let manifest = {
         let state = app.state::<crate::AppState>();
         let cached = state.verified_update.lock().unwrap().clone();
-        cached.ok_or_else(|| {
-            Error::Other("请先检查更新（下载只能使用已验签的更新清单）".to_string())
-        })?
+        match cached {
+            Some((m, checked_at)) if checked_at.elapsed() <= VERIFIED_UPDATE_TTL => m,
+            Some(_) => {
+                return Err(Error::Other(
+                    "已验签的更新清单已过期（距检查超过 30 分钟），请重新检查更新".to_string(),
+                ))
+            }
+            None => {
+                return Err(Error::Other(
+                    "请先检查更新（下载只能使用已验签的更新清单）".to_string(),
+                ))
+            }
+        }
     };
     // 纵深防御：缓存中的 URL 同样过禁段校验
     crate::util::fetch::validate_url(&manifest.url).await?;
