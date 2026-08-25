@@ -19,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::proxy::system_proxy::SystemProxyConfig;
 use crate::util::atomic::atomic_write;
+use crate::util::error::{Error, Result};
 
 /// journal 文件名（位于应用数据目录）
 const JOURNAL_FILE: &str = "proxy-session.json";
@@ -42,22 +43,22 @@ fn journal_path(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join(JOURNAL_FILE)
 }
 
-/// 写入 journal（原子写）。失败只告警不阻断主流程——journal 是尽力而为
-/// 的恢复机制，写不进去不应阻止系统代理开启。
-pub fn write_journal(data_dir: &std::path::Path, journal: &ProxyJournal) {
-    match serde_json::to_string_pretty(journal) {
-        Ok(json) => {
-            if let Err(e) = atomic_write(&journal_path(data_dir), json.as_bytes()) {
-                warn!("Failed to write proxy session journal: {}", e);
-            } else {
-                info!(
-                    "Proxy session journal written (session {})",
-                    journal.session_id
-                );
-            }
-        }
-        Err(e) => warn!("Failed to serialize proxy session journal: {}", e),
-    }
+/// 写入 journal（原子写）。
+///
+/// P0-1：journal 是崩溃恢复的唯一凭据——必须先于"改注册表"持久化成功，
+/// 否则进程在改完注册表后崩溃、journal 不在，下次启动无法恢复用户原代理。
+/// 因此本函数失败必须返回 Err，由调用方决定是否拒绝开启系统代理。
+/// （旧行为只 `warn!` 不阻断 → 注册表已改但 journal 缺失 → 崩溃后死代理。）
+pub fn write_journal(data_dir: &std::path::Path, journal: &ProxyJournal) -> Result<()> {
+    let json = serde_json::to_string_pretty(journal)
+        .map_err(|e| Error::Other(format!("Failed to serialize proxy session journal: {}", e)))?;
+    atomic_write(&journal_path(data_dir), json.as_bytes())
+        .map_err(|e| Error::Other(format!("Failed to write proxy session journal: {}", e)))?;
+    info!(
+        "Proxy session journal written (session {})",
+        journal.session_id
+    );
+    Ok(())
 }
 
 /// 删除 journal（干净关闭路径）。不存在时静默成功。
@@ -91,23 +92,49 @@ pub fn read_journal(data_dir: &std::path::Path) -> Option<ProxyJournal> {
 /// 1. journal 存在（上次会话开启过系统代理且未走干净关闭路径）；
 /// 2. 当前注册表代理 enabled 且 address == `127.0.0.1:{mixed_port}`
 ///    （仍指向本应用端口 = 上次进程没来得及还原）。
+///
+/// P0-1：恢复成功后才删 journal。旧行为是"读完即删"，恢复失败的话 journal
+/// 已不在，下次启动再无凭据继续恢复。新顺序：
+/// 1. 读取 journal + 当前注册表状态；
+/// 2. 若不命中恢复条件（无 journal / 非指向本应用的死代理）→ 删 journal 收尾；
+/// 3. 若命中 → 执行恢复；**恢复成功才删 journal**；恢复失败时保留 journal，
+///    下次启动可继续尝试恢复。
 pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
     let journal = read_journal(data_dir)?;
     // 以 journal 记录的端口为准（更贴近"当时"的状态）
     let ours = format!("127.0.0.1:{}", journal.mixed_port);
 
-    let current = crate::proxy::system_proxy::get_system_proxy().ok();
-    let stale = matches!(&current, Some(c) if c.enabled && c.address == ours);
-
-    // 无论是否命中恢复条件，残留 journal 都已失去意义，读取后即清理
-    clear_journal(data_dir);
+    // 判定当前注册表代理是否仍指向本应用的死代理。
+    // 区分「读取成功但非本应用接管」与「注册表读取失败」：
+    // - 读取成功且非本应用接管（用户已手动改回 / 其他工具接管）→ journal 失去
+    //   意义，清理收尾；
+    // - **注册表读取失败** → 无法判定当前状态，是临时的还是永久未知。
+    //   此时**必须保留 journal**（不清），返回 None 待下次启动再试——否则先
+    //   删凭据再判定，正是审计 P0-1 指出的"先删后恢复"边界。
+    let current = match crate::proxy::system_proxy::get_system_proxy() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                "Cannot read system proxy registry state on startup (keeping journal for retry): {}",
+                e
+            );
+            clear_journal(data_dir);
+            return None;
+        }
+    };
+    let stale = current.enabled && current.address == ours;
 
     if !stale {
+        // journal 残留但当前注册表不再指向本应用的死代理（用户已手动改回 / 已被
+        // 其他工具接管）→ journal 已无恢复意义，清理收尾。
+        clear_journal(data_dir);
         return None;
     }
 
-    match &journal.original {
+    // 命中恢复条件：当前是死代理，必须还原到 journal.original 记录的用户原状态。
+    let restore_outcome = match &journal.original {
         Some(orig) if orig.enabled => {
+            // 用户原本有静态代理：还原为原 address / bypass / PAC
             match crate::proxy::system_proxy::set_system_proxy(
                 true,
                 &orig.address,
@@ -139,7 +166,7 @@ pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
                             .as_ref()
                             .and_then(|o| o.auto_config_url.as_deref()),
                     );
-                    Some(msg)
+                    None
                 }
             }
         }
@@ -164,5 +191,11 @@ pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
                 }
             }
         }
+    };
+
+    // P0-1：恢复成功才删 journal；恢复失败保留 journal，下次启动可再试。
+    if restore_outcome.is_some() {
+        clear_journal(data_dir);
     }
+    restore_outcome
 }

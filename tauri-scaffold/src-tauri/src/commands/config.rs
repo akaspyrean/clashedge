@@ -151,11 +151,20 @@ pub async fn pick_import_file(app: AppHandle) -> Result<Option<String>> {
 /// 事务式提交配置变更：校验已完成，这里执行
 /// 「持久化 → 应用运行时（含健康检查）→ Windows 副作用 → commit；
 ///   任一步失败 → Config / runtime-config / Mihomo / Windows 全部回滚」。
+///
+/// P0-2：事务全程持有 `state.config_tx`（tokio Mutex，可跨 `.await`），
+/// 串行所有改 Config + Mihomo + Windows 的入口。`config_manager`（std Mutex）
+/// 只能保护短临界区，跨 `.await` 会释放——没有 `config_tx` 的话两个事务
+/// 可交错：A 写 V2 后 await reload，B 读到 V2 写 V3，A 失败回滚到 V1 覆盖 B。
+/// `_tx` 守卫持有到函数返回，整个事务对其他配置入口互斥。
 async fn commit_config_transaction(
     app: &AppHandle,
     state: &State<'_, crate::AppState>,
     new_config: Config,
 ) -> Result<()> {
+    // 0. P0-2：先拿全局配置事务锁，串行整段事务（跨 await 持有至函数返回）
+    let _tx = state.config_tx.lock().await;
+
     // 1. 快照旧配置（回滚基准；mixed_port 单独留存供 Windows 回滚使用）
     let old = { state.config_manager.lock().unwrap().get_config() };
     let old_port = old.general.mixed_port;
@@ -276,15 +285,12 @@ async fn sync_windows_side_effects(
         // 开启（或 mixed-port 变更后重新指向）：先保证核心真实服务新端口
         crate::core::runtime::ensure_core_serving(app).await?;
         let address = format!("127.0.0.1:{}", cfg.general.mixed_port);
-        crate::proxy::system_proxy::set_system_proxy(
-            true,
-            &address,
-            &crate::core::runtime::default_bypass(),
-            // 接管：删除用户原有 PAC（原值已随快照/journal 保留）
-            None,
-        )?;
-        // journal：接管成功 → 记录"接管前"原始状态。已有 journal 时保留其
-        // original（避免用我们自己写的代理覆盖用户真正的原始快照）。
+        // P0-1：先写 prepared journal（必须成功），再改注册表。
+        //   journal 是崩溃恢复凭据；旧顺序"改注册表 → 写 journal"在两步之间
+        //   崩溃会留下死代理 + 无 journal。新顺序保证任何时候 journal 都先于
+        //   注册表接管而存在。
+        //   已有 journal 时保留其 original（避免用我们自己写的代理覆盖用户
+        //   真正的原始快照）；无 journal 时用本次事务的 win_before 快照。
         let existing_original = crate::proxy::journal::read_journal(&data_dir)
             .and_then(|j| j.original)
             .or_else(|| win_before.cloned());
@@ -301,7 +307,14 @@ async fn sync_windows_side_effects(
                 original: existing_original,
                 owned: true,
             },
-        );
+        )?;
+        crate::proxy::system_proxy::set_system_proxy(
+            true,
+            &address,
+            &crate::core::runtime::default_bypass(),
+            // 接管：删除用户原有 PAC（原值已随 journal.original 保留）
+            None,
+        )?;
         info!("Windows system proxy synced to {}", address);
         Ok(())
     } else {
