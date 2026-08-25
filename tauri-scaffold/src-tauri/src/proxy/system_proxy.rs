@@ -38,10 +38,16 @@ const KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Sett
 /// 之后 `set_value` 会因拒绝访问（ERROR_ACCESS_DENIED / error 5）失败，
 /// 这正是"系统代理"开关报 error 5 的根因。
 fn open_key() -> Result<winreg::RegKey> {
+    open_key_at(KEY_PATH)
+        .map_err(|e| Error::Other(format!("Failed to open registry key {}: {}", KEY_PATH, e)))
+}
+
+/// 打开指定注册表键（生产路径与测试子键共用）。
+fn open_key_at(subkey: &str) -> Result<winreg::RegKey> {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
     winreg::RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags(KEY_PATH, KEY_READ | KEY_WRITE)
-        .map_err(|e| Error::Other(format!("Failed to open registry key {}: {}", KEY_PATH, e)))
+        .open_subkey_with_flags(subkey, KEY_READ | KEY_WRITE)
+        .map_err(|e| Error::Other(format!("Failed to open registry key {}: {}", subkey, e)))
 }
 
 /// 通知 WinINet 系统代理配置已变更（注册表写入后立即生效）。
@@ -83,7 +89,17 @@ pub fn set_system_proxy(
     auto_config_url: Option<&str>,
 ) -> Result<()> {
     let key = open_key()?;
+    apply_to_key(&key, enabled, address, bypass_list, auto_config_url)
+}
 
+/// 把代理设置写入指定的注册表键（生产 / 测试子键共用）。见 `set_system_proxy` 语义。
+fn apply_to_key(
+    key: &winreg::RegKey,
+    enabled: bool,
+    address: &str,
+    bypass_list: &[String],
+    auto_config_url: Option<&str>,
+) -> Result<()> {
     if enabled {
         // 先删 AutoConfigURL：PAC 与静态代理并存时 WinINet 行为不确定，
         // 接管期间必须保证只有我们的静态代理生效。
@@ -115,7 +131,11 @@ pub fn set_system_proxy(
 /// 获取当前系统代理状态（含 PAC 脚本地址，供启动快照 / 退出还原使用）
 pub fn get_system_proxy() -> Result<SystemProxyConfig> {
     let key = open_key()?;
+    read_from_key(&key)
+}
 
+/// 从指定的注册表键读取代理状态（生产 / 测试子键共用）。见 `get_system_proxy`。
+fn read_from_key(key: &winreg::RegKey) -> Result<SystemProxyConfig> {
     let enabled: u32 = key.get_value("ProxyEnable").unwrap_or(0);
     let address: String = key.get_value("ProxyServer").unwrap_or_default();
     let bypass: String = key.get_value("ProxyOverride").unwrap_or_default();
@@ -192,5 +212,81 @@ mod tests {
     fn test_override_bypass_join() {
         let bypass = ["<local>".to_string(), "lan".to_string()];
         assert_eq!(bypass.join(","), "<local>,lan");
+    }
+
+    /// Windows Registry 冒烟测试：对**独立的测试子键**做真实的写→读→删，
+    /// 验证 `apply_to_key` / `read_from_key` 与 winreg 的真实往返，而不是只测
+    /// 纯数据结构。绝不动用户真实的 Internet Settings 键（`KEY_PATH`）。
+    ///
+    /// 需要 HKCU 可写（正常用户上下文即可，无需管理员）。
+    /// 通过检查：写入 enabled=true→读取 enabled/address/bypass 一致；
+    /// 写入 enabled=false→ProxyEnable 清 0 且 PAC 写回。
+    #[test]
+    fn registry_apply_and_read_roundtrip_on_test_subkey() {
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+
+        // 单层时间戳子键：delete_subkey_all 恰好删掉整棵测试键，不残留中间父层；
+        // 并行/多次运行互不冲突。
+        let subkey = format!(
+            r"Software\ClashEdgeTestSysProxy-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let base = winreg::RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = base
+            .create_subkey_with_flags(&subkey, KEY_READ | KEY_WRITE)
+            .expect("create test subkey under HKCU");
+
+        let baseline = read_from_key(&key).expect("read baseline from empty test subkey");
+        assert!(!baseline.enabled, "fresh subkey must not be enabled");
+        assert!(baseline.auto_config_url.is_none());
+
+        // 1. 写入 enabled=true：ProxyServer / ProxyOverride / ProxyEnable=1
+        apply_to_key(
+            &key,
+            true,
+            "127.0.0.1:7890",
+            &["<local>".to_string(), "localhost".to_string()],
+            None,
+        )
+        .expect("apply enabled");
+        let enabled = read_from_key(&key).expect("read enabled");
+        assert!(enabled.enabled);
+        assert_eq!(enabled.address, "127.0.0.1:7890");
+        assert_eq!(
+            enabled.bypass_list,
+            vec!["<local>".to_string(), "localhost".to_string()]
+        );
+
+        // 2. 写入 enabled=false 且带原 PAC：ProxyEnable=0 + AutoConfigURL 写回
+        apply_to_key(&key, false, "", &[], Some("http://127.0.0.1:1080/pac"))
+            .expect("apply disabled with pac");
+        let disabled = read_from_key(&key).expect("read disabled");
+        assert!(!disabled.enabled);
+        assert_eq!(
+            disabled.auto_config_url.as_deref(),
+            Some("http://127.0.0.1:1080/pac")
+        );
+
+        // 3. 写入 enabled=false 且无 PAC：ProxyEnable 清 0。AutoConfigURL 保持
+        //    上一步写入的值不变——apply_to_key 的语义是「调用方无 PAC 快照时
+        //    不碰注册表里可能存在的其他值」，因此第 2 步写入的 PAC 应保留。
+        apply_to_key(&key, false, "", &[], None).expect("apply disabled no pac");
+        let cleared = read_from_key(&key).expect("read cleared");
+        assert!(!cleared.enabled);
+        assert_eq!(
+            cleared.auto_config_url.as_deref(),
+            Some("http://127.0.0.1:1080/pac"),
+            "disable without PAC snapshot must not clobber existing AutoConfigURL"
+        );
+
+        // 清理：先释放 key 句柄再删除子键——Windows 上不能删除仍被句柄占用的键，
+        // winreg 的 delete_subkey_all 在句柄未 drop 时会静默失败导致测试子键泄漏。
+        // 用 expect 断言删除成功，泄漏即测试失败。
+        drop(key);
+        base.delete_subkey_all(&subkey)
+            .expect("test subkey must be removed to avoid leaking into HKCU");
     }
 }
