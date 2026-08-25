@@ -1,4 +1,4 @@
-// src-tauri/src/tray/events.rs
+﻿// src-tauri/src/tray/events.rs
 //! Tray event handlers
 //!
 //! This module handles all tray icon events including:
@@ -126,7 +126,7 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             let selected = {
                 // 临界区内仅执行核心操作，块结束释放 guard 后再 refresh_tray/emit
                 //（tokio Mutex 不可重入，refresh_tray 内部会再次 lock）。
-                let core = state.core_manager.lock().await;
+                let core = state.core_manager.get();
                 match core.as_ref() {
                     Some(c) => match c.select_proxy_group(group.clone(), proxy.clone()).await {
                         Ok(()) => Some((group, proxy)),
@@ -166,7 +166,7 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
         "close_all" => {
             info!("Tray: closing all connections");
             let state = app_handle.state::<crate::AppState>();
-            let core = state.core_manager.lock().await;
+            let core = state.core_manager.get();
             if let Some(c) = core.as_ref() {
                 c.close_all_connections().await?;
             }
@@ -179,7 +179,7 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             {
                 // restart 在 tokio Mutex 临界区内执行（跨 await 持有 OK）；
                 // 块结束后 guard 释放，refresh_tray 才安全（tokio Mutex 不可重入）。
-                let core = state.core_manager.lock().await;
+                let core = state.core_manager.get();
                 if let Some(c) = core.as_ref() {
                     c.restart().await?;
                 }

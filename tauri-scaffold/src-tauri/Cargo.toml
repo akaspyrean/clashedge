@@ -19,7 +19,7 @@ tauri-build = { version = "2", features = ["config-json5"] }
 
 [dependencies]
 # config-json5 与 tauri-build 对应启用，保证 cargo build 阶段与运行时都能解析带注释的配置。
-tauri = { version = "2", features = ["common-controls-v6", "tray-icon", "config-json5", "devtools"] }
+tauri = { version = "2", features = ["common-controls-v6", "tray-icon", "config-json5"] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = { version = "2", features = ["tracing"] }
@@ -29,9 +29,10 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 
-# devtools（open_devtools）不放到 target.cfg 依赖里：Cargo 不支持 cfg(debug_assertions)
-# 参与依赖/feature 选择。等价做法是 feature 常开，但所有调用点（托盘菜单项、事件分发）
-# 均用 #[cfg(debug_assertions)] 门控，release 构建不编译任何 devtools 调用面。
+# devtools：Tauri 2 在 debug 构建自动启用 Web Inspector，release 构建
+# 不需要该 feature——所有 open_devtools() 调用均用 #[cfg(debug_assertions)]
+# 门控，release 不编译任何 devtools 调用面。移除 "devtools" feature 以消除
+# release 二进制中不必要的调试/攻击面。
 
 # P1-11：shell plugin 未使用（打开目录走 Rust command），移除以减少攻击面。
 # fs plugin 保留但收紧权限：capabilities.json 中移除过宽的 Desktop/Documents/Downloads
@@ -53,6 +54,7 @@ windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet"] }
 directories = "5"
 once_cell = "1.19"
 parking_lot = "0.12"
+ipnet = "2"
 base64 = "0.21"
 rand = "0.8"
 # Portable Updater 更新包完整性校验（SHA256，Cargo.lock 锁 0.10.9）

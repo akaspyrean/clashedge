@@ -1,4 +1,4 @@
-// src-tauri/src/commands/config.rs
+﻿// src-tauri/src/commands/config.rs
 //! 配置命令：获取/更新/重置/导入/导出配置
 //!
 //! P0-3/P0-4 事务化（AUDIT-0.8.7）：
@@ -432,7 +432,7 @@ fn import_supplies_nodes(config: &Config) -> bool {
 /// 导致「新配置已写盘但 Mihomo 仍用旧值」的假成功。核心未运行时不报错：
 /// 文件已重写，下次启动自然加载新配置。
 async fn reload_running_core(state: &State<'_, crate::AppState>) -> Result<()> {
-    let core_guard = state.core_manager.lock().await;
+    let core_guard = state.core_manager.get();
     if let Some(core) = core_guard.as_ref() {
         core.reload_config().await?;
     }

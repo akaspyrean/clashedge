@@ -148,6 +148,9 @@ pub struct CoreManager {
     crash_times: Arc<Mutex<Vec<std::time::Instant>>>,
     /// 当前子进程的启动时刻（稳定运行判定用）
     started_at: Arc<Mutex<Option<std::time::Instant>>>,
+    /// 生命周期互斥锁：start/stop/restart/reload_config 串行执行，
+    /// 只读 REST 操作（get_connections/get_proxy_groups/version 等）不需要此锁。
+    lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl CoreManager {
@@ -195,6 +198,7 @@ impl CoreManager {
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             crash_times: Arc::new(Mutex::new(Vec::new())),
             started_at: Arc::new(Mutex::new(None)),
+            lifecycle: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -276,6 +280,7 @@ impl CoreManager {
 
     /// 启动 mihomo 进程：生成运行时配置 → `-d -f` 启动 → 轮询 REST 就绪
     pub async fn start(&self) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
         // P0-6：递增 generation 使所有旧 watcher 失效（它们会在下一次
         // 轮询比对时退出），随后本流程成功后只 spawn 一个新 watcher。
         let generation = self
@@ -844,6 +849,7 @@ impl CoreManager {
 
     /// 停止 mihomo 进程
     pub async fn stop(&self) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
         // P0-6：递增 generation 使旧 watcher 失效（防止它把本次主动停止
         // 当成崩溃处理）；P1-7：标记用户主动停止双保险
         self.generation
@@ -895,6 +901,7 @@ impl CoreManager {
 
     /// 重启 mihomo
     pub async fn restart(&self) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
         self.stop().await?;
         self.start().await
     }
@@ -970,6 +977,7 @@ impl CoreManager {
     /// 热重载后必须通过健康检查（P0-4）；REST 失败、校验失败或未运行时
     /// 回退整进程重启。
     pub async fn reload_config(&self) -> Result<()> {
+        let _lifecycle_guard = self.lifecycle.lock().await;
         let config = self.config();
         self.write_runtime_config(&config)?;
 

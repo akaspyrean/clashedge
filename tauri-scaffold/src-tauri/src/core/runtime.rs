@@ -1,4 +1,4 @@
-//! 统一编排层：apply_proxy_mode / apply_tun / apply_system_proxy
+﻿//! 统一编排层：apply_proxy_mode / apply_tun / apply_system_proxy
 //!
 //! 前端命令（commands/proxy.rs）与托盘事件（tray/events.rs）都调用这里，
 //! 消除两套重复的"改配置 + 动核心"逻辑，确保
@@ -61,7 +61,7 @@ pub(crate) async fn ensure_core_serving(app: &AppHandle) -> Result<()> {
     // 已运行且端口可连 → 直接通过；否则自动启动/重启一次（P0-2 方案 1）。
     // start()/restart() 内部含就绪探测与 bind 冲突检测，失败会返回 Err。
     let ensured = {
-        let guard = state.core_manager.lock().await;
+        let guard = state.core_manager.get();
         match guard.as_ref() {
             Some(core) if core.status() == crate::core::manager::CoreStatus::Running => {
                 if port_alive(port).await {
@@ -165,7 +165,7 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
 
     // 2. 运行中：先重写 runtime-config.yaml（下次重启保持新值），再 PATCH 实时生效
     let applied = {
-        let core_guard = state.core_manager.lock().await;
+        let core_guard = state.core_manager.get();
         match core_guard.as_ref() {
             Some(core) => {
                 if let Err(e) = core.regen_runtime_config() {
@@ -211,7 +211,7 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
 
     // 2. 运行中：重写 runtime-config.yaml + PATCH；PATCH 失败回退重启
     let applied = {
-        let core_guard = state.core_manager.lock().await;
+        let core_guard = state.core_manager.get();
         match core_guard.as_ref() {
             Some(core) => {
                 if let Err(e) = core.regen_runtime_config() {
@@ -386,7 +386,7 @@ pub async fn activate_profile(app: &AppHandle, name: &str) -> Result<()> {
     // 2. 整进程重启：Profile 切换会改变代理列表，mihomo REST 热重载对 proxy
     //    定义列表不可靠（返回 200 但节点可能未注入），改为重启保证生效。
     let applied = {
-        let core_guard = state.core_manager.lock().await;
+        let core_guard = state.core_manager.get();
         match core_guard.as_ref() {
             Some(core) => core.restart().await,
             None => Ok(()),
@@ -418,7 +418,7 @@ pub(crate) async fn refresh_tray(app: &AppHandle) -> Result<()> {
     let i18n = crate::i18n::loader::I18n::new(&config.locale);
 
     let (core_status, proxies) = {
-        let core_guard = state.core_manager.lock().await;
+        let core_guard = state.core_manager.get();
         let status = core_guard.as_ref().map(|c| c.status()).unwrap_or_default();
         let groups = match core_guard.as_ref() {
             Some(c) => c.get_proxy_groups().await.unwrap_or_default(),

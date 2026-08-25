@@ -34,10 +34,11 @@ use tracing::{error, info, warn};
 /// 应用状态 - 需要公开以便 commands 访问
 ///
 /// 注意锁类型：
-/// - `core_manager` 是 tokio Mutex（异步锁，可在 `.await` 期间持有）
+/// - `core_manager` 初始化后稳定持有（OnceLock），只读 REST 操作并发执行，
+///   生命周期操作（start/stop/restart/reload）走内部 lifecycle 互斥锁。
 /// - `config_manager` / `tray` 是 std Mutex（同步锁，禁止跨 `.await` 持有）
 pub struct AppState {
-    pub core_manager: tauri::async_runtime::Mutex<Option<CoreManager>>,
+    pub core_manager: std::sync::OnceLock<crate::core::manager::CoreManager>,
     pub config_manager: std::sync::Mutex<ConfigManager>,
     pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
     /// 启动前的系统代理快照，用于退出时还原（None = 启动时无外部代理，退出时直接清除）
@@ -62,7 +63,7 @@ pub struct AppState {
 impl AppState {
     fn new() -> Self {
         Self {
-            core_manager: tauri::async_runtime::Mutex::new(None),
+            core_manager: std::sync::OnceLock::new(),
             config_manager: std::sync::Mutex::new(ConfigManager::new()),
             tray: std::sync::Mutex::new(None),
             original_system_proxy: std::sync::Mutex::new(None),
@@ -156,7 +157,7 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let config_handle = { state.config_manager.lock().unwrap().config_handle() };
                 let core_mgr = CoreManager::new(app.handle().clone(), config_handle)?;
-                *state.core_manager.try_lock().unwrap() = Some(core_mgr);
+                state.core_manager.set(core_mgr).ok();
             }
 
             // 创建系统托盘（内部会把 TrayIcon 存入 AppState.tray）
@@ -259,7 +260,7 @@ pub fn run() {
                     let mut attempt: u32 = 0;
                     let mut started = false;
                     loop {
-                        let core_guard = state.core_manager.lock().await;
+                        let core_guard = state.core_manager.get();
                         let ok = match core_guard.as_ref() {
                             Some(core) => core.start().await.is_ok(),
                             None => false,
@@ -411,10 +412,9 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     //    进程名 taskkill，避免误杀用户另行运行的 mihomo。
     let state = app_handle.state::<AppState>();
     let pid = {
-        let guard = state.core_manager.try_lock();
-        match guard {
-            Ok(g) => g.as_ref().and_then(|c| c.child_pid()),
-            Err(_) => None,
+        match state.core_manager.get() {
+            Some(core) => core.child_pid(),
+            None => None,
         }
     }
     .or_else(|| {

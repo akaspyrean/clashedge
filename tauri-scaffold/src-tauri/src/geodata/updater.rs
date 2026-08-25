@@ -166,14 +166,18 @@ async fn download_file(
     for (index, url) in urls.iter().enumerate() {
         info!(
             "Attempting to download from URL {} (attempt {})",
-            url,
+            crate::util::fetch::redact_url_for_log(url),
             index + 1
         );
 
         // C2 SSRF 防护：目标 URL 必须通过禁段校验（get_direct_first 内部也会再校验，
         // 这里显式校验以给出清晰的逐 URL 拒绝提示）
         if let Err(e) = crate::util::fetch::validate_url(url).await {
-            warn!("URL {} rejected: {}", url, e);
+            warn!(
+                "URL {} rejected: {}",
+                crate::util::fetch::redact_url_for_log(url),
+                e
+            );
             continue;
         }
 
@@ -225,11 +229,15 @@ async fn download_file(
                             }
                             Ok(None) => break,
                             Err(e) => {
-                                warn!("Failed to read response from {}: {}", url, e);
+                                warn!(
+                                    "Failed to read response from {}: {}",
+                                    crate::util::fetch::redact_url_for_log(url),
+                                    e
+                                );
                                 let _ = file.flush().await;
                                 return Err(anyhow::anyhow!(
                                     "Failed to read response body from {}",
-                                    url
+                                    crate::util::fetch::redact_url_for_log(url)
                                 ));
                             }
                         }
@@ -249,7 +257,7 @@ async fn download_file(
                             "Downloaded {} successfully ({} bytes via {})",
                             target_path.display(),
                             size,
-                            url
+                            crate::util::fetch::redact_url_for_log(url)
                         );
                         return Ok(size);
                     } else {
@@ -263,7 +271,11 @@ async fn download_file(
                 }
             }
             Err(e) => {
-                warn!("Download failed from {}: {}", url, e);
+                warn!(
+                    "Download failed from {}: {}",
+                    crate::util::fetch::redact_url_for_log(url),
+                    e
+                );
                 continue; // 尝试下一个 URL
             }
         }
