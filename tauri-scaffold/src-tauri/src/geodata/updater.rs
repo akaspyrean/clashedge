@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::geodata::sources::GeoSources;
 use tauri::{Emitter, Manager};
@@ -105,17 +105,37 @@ async fn update_geodata_inner(app_handle: &tauri::AppHandle) -> Result<()> {
 
         // 原子替换：先备份现有文件，再重命名临时文件为最终文件
         // Step 1: 将现有文件重命名为备份（如果存在）
-        if final_path.exists() {
+        let had_backup = if final_path.exists() {
             fs::rename(final_path, backup_path)
                 .await
                 .context("Failed to backup existing geo data file")?;
             info!("Backed up existing {} to {}", name, backup_path.display());
-        }
+            true
+        } else {
+            false
+        };
 
-        // Step 2: 将临时文件重命名为最终文件（同文件系统内原子操作）
-        fs::rename(&temp_path, final_path)
-            .await
-            .context("Failed to replace geo data file atomically")?;
+        // Step 2: 将临时文件重命名为最终文件（同文件系统内原子操作）；
+        // 失败时把备份恢复原位再返回 Err——不能让最终文件缺失且无人恢复。
+        if let Err(e) = fs::rename(&temp_path, final_path).await {
+            error!("Failed to replace {}: {}; restoring backup", name, e);
+            if had_backup {
+                if let Err(rb) = fs::rename(backup_path, final_path).await {
+                    return Err(anyhow::anyhow!(
+                        "Failed to replace {} ({}), and backup restore also failed: {}",
+                        name,
+                        e,
+                        rb
+                    ));
+                }
+                info!("Restored previous {} from backup", name);
+            }
+            let _ = fs::remove_file(&temp_path).await;
+            return Err(anyhow::anyhow!(
+                "Failed to replace geo data file atomically: {}",
+                e
+            ));
+        }
         info!(
             "Atomically replaced {} with {}",
             final_path.display(),
@@ -253,57 +273,6 @@ async fn download_file(
         "All {} URLs failed to download",
         urls.len()
     ))
-}
-
-/// Roll back GeoIP/GeoSite files to the previous version
-///
-/// 如果更新失败，此函数从备份（.backup）恢复之前的 GeoIP / GeoSite 文件。
-pub async fn rollback_geodata(app_handle: &tauri::AppHandle) -> Result<()> {
-    let result = rollback_geodata_inner(app_handle).await;
-    let (ok, msg) = match &result {
-        Ok(()) => (true, "ok".to_string()),
-        Err(e) => (false, e.to_string()),
-    };
-    let _ = app_handle.emit(
-        "geodata-rolled-back",
-        serde_json::json!({ "ok": ok, "error": msg }),
-    );
-    result
-}
-
-async fn rollback_geodata_inner(app_handle: &tauri::AppHandle) -> Result<()> {
-    let geoip_path = crate::util::paths::get_geoip_path(app_handle)?;
-    let geosite_path = crate::util::paths::get_geosite_path(app_handle)?;
-    let geoip_backup = backup_path(&geoip_path);
-    let geosite_backup = backup_path(&geosite_path);
-
-    let mut rolled_back = false;
-
-    // 尝试恢复 GeoIP
-    if geoip_path.exists() && geoip_backup.exists() {
-        let _ = fs::remove_file(&geoip_path).await;
-        fs::rename(&geoip_backup, &geoip_path)
-            .await
-            .context("Failed to rollback geoip.dat")?;
-        info!("Rolled back geoip.dat");
-        rolled_back = true;
-    }
-
-    // 尝试恢复 GeoSite
-    if geosite_path.exists() && geosite_backup.exists() {
-        let _ = fs::remove_file(&geosite_path).await;
-        fs::rename(&geosite_backup, &geosite_path)
-            .await
-            .context("Failed to rollback geosite.dat")?;
-        info!("Rolled back geosite.dat");
-        rolled_back = true;
-    }
-
-    if !rolled_back {
-        warn!("No geo data files were rolled back (none were updated or backed up)");
-    }
-
-    Ok(())
 }
 
 /// 查询 GeoIP / GeoSite 文件的当前状态

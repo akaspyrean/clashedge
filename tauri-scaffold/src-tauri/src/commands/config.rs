@@ -59,6 +59,37 @@ pub async fn update_config(
     crate::core::runtime::refresh_tray(&app).await
 }
 
+/// 字段级更新：前端只提交发生变化的顶层键（kebab-case），
+/// 后端浅合并到当前配置后再走与 update_config 完全相同的校验 + 事务。
+/// 消除整包回传的读-改-写竞态——用户停留在设置页期间托盘/其他入口
+/// 改过的字段不会再被旧快照覆盖。
+#[command]
+pub async fn update_config_fields(
+    app: AppHandle,
+    state: State<'_, crate::AppState>,
+    patch: serde_json::Value,
+) -> Result<()> {
+    let obj = patch
+        .as_object()
+        .ok_or_else(|| Error::InvalidArgument("patch 必须是顶层键值对象".to_string()))?;
+    if obj.is_empty() {
+        return Ok(());
+    }
+    let new_config = {
+        let config_guard = state.config_manager.lock().unwrap();
+        let mut current = serde_json::to_value(config_guard.get_config())?;
+        let cur_obj = current
+            .as_object_mut()
+            .ok_or_else(|| Error::Other("当前配置不是 JSON 对象".to_string()))?;
+        for (k, v) in obj {
+            cur_obj.insert(k.clone(), v.clone());
+        }
+        config_guard.prepare_update(current)?
+    };
+    commit_config_transaction(&app, &state, new_config).await?;
+    crate::core::runtime::refresh_tray(&app).await
+}
+
 #[command]
 pub async fn reset_config(app: AppHandle, state: State<'_, crate::AppState>) -> Result<()> {
     // set_config 内部会把默认占位密钥轮换为随机值（H1）
@@ -66,14 +97,33 @@ pub async fn reset_config(app: AppHandle, state: State<'_, crate::AppState>) -> 
     crate::core::runtime::refresh_tray(&app).await
 }
 
-/// P1-13：设置页「从文件导入 YAML」的文件读取收口到 Rust 侧。
-/// 前端只传用户在系统对话框中选择的路径，这里校验扩展名（.yaml/.yml）
-/// 与大小上限（10 MB）后读取内容返回——不给 WebView 开放通用 fs 读权限，
-/// capability 保持只有 dialog 权限。
+/// P1：设置页「从文件导入 YAML」的文件选择与读取全部收口到 Rust 侧。
+/// 前端不再传任意绝对路径（WebView 被攻破时可借此遍历读磁盘 YAML），
+/// 改为由 Rust 侧弹出系统文件对话框，用户选定后立即校验扩展名与大小上限
+/// 并读取内容返回；取消选择返回 None。
 #[command]
-pub async fn read_import_file(path: String) -> Result<String> {
-    let p = std::path::Path::new(&path);
-    let ext_ok = p
+pub async fn pick_import_file(app: AppHandle) -> Result<Option<String>> {
+    // blocking_pick_file 会阻塞当前线程，不能在 async 上下文/主线程调用，
+    // 放到独立的阻塞线程池线程执行。
+    let picked = tokio::task::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        app.dialog()
+            .file()
+            .add_filter("YAML", &["yaml", "yml"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| Error::Other(format!("文件对话框任务失败：{}", e)))?;
+
+    let Some(path) = picked else {
+        return Ok(None); // 用户取消
+    };
+    let path = path
+        .into_path()
+        .map_err(|e| Error::Other(format!("无效的文件路径：{}", e)))?;
+
+    // 对话框已按扩展名过滤，仍需防御性校验（对话框可被绕过输入任意路径）
+    let ext_ok = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| matches!(e.to_ascii_lowercase().as_str(), "yaml" | "yml"))
@@ -83,17 +133,19 @@ pub async fn read_import_file(path: String) -> Result<String> {
             "仅支持导入 .yaml / .yml 配置文件".to_string(),
         ));
     }
-    if !p.is_file() {
-        return Err(Error::NotFound(format!("文件不存在：{}", path)));
+    if !path.is_file() {
+        return Err(Error::NotFound(format!("文件不存在：{}", path.display())));
     }
     const MAX_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
-    let meta = std::fs::metadata(p)?;
+    let meta = std::fs::metadata(&path)?;
     if meta.len() > MAX_IMPORT_BYTES {
         return Err(Error::InvalidArgument(
             "配置文件超过 10 MB 大小限制".to_string(),
         ));
     }
-    std::fs::read_to_string(p).map_err(|e| Error::InvalidArgument(format!("读取文件失败：{}", e)))
+    std::fs::read_to_string(&path)
+        .map(Some)
+        .map_err(|e| Error::InvalidArgument(format!("读取文件失败：{}", e)))
 }
 
 /// 事务式提交配置变更：校验已完成，这里执行
@@ -188,14 +240,17 @@ async fn rollback_config_and_runtime(
 /// 否则不动用户自己的代理。
 fn restore_windows_proxy(snapshot: Option<&SystemProxyConfig>, old_port: u16) -> Result<()> {
     match snapshot {
-        Some(s) => {
-            crate::proxy::system_proxy::set_system_proxy(s.enabled, &s.address, &s.bypass_list)
-        }
+        Some(s) => crate::proxy::system_proxy::set_system_proxy(
+            s.enabled,
+            &s.address,
+            &s.bypass_list,
+            s.auto_config_url.as_deref(),
+        ),
         None => {
             let ours = format!("127.0.0.1:{}", old_port);
             let cur = crate::proxy::system_proxy::get_system_proxy().ok();
             if matches!(&cur, Some(c) if c.enabled && c.address == ours) {
-                crate::proxy::system_proxy::set_system_proxy(false, "", &[])
+                crate::proxy::system_proxy::set_system_proxy(false, "", &[], None)
             } else {
                 Ok(())
             }
@@ -225,6 +280,8 @@ async fn sync_windows_side_effects(
             true,
             &address,
             &crate::core::runtime::default_bypass(),
+            // 接管：删除用户原有 PAC（原值已随快照/journal 保留）
+            None,
         )?;
         // journal：接管成功 → 记录"接管前"原始状态。已有 journal 时保留其
         // original（避免用我们自己写的代理覆盖用户真正的原始快照）。
@@ -268,8 +325,9 @@ async fn sync_windows_side_effects(
                 true,
                 &orig.address,
                 &orig.bypass_list,
+                orig.auto_config_url.as_deref(),
             )?,
-            None => crate::proxy::system_proxy::set_system_proxy(false, "", &[])?,
+            None => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None)?,
         }
         crate::proxy::journal::clear_journal(&data_dir);
         info!("Windows system proxy synced OFF per config intent");

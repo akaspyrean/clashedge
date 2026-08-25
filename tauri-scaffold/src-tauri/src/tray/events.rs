@@ -3,9 +3,9 @@
 //!
 //! This module handles all tray icon events including:
 //! - Proxy group selection
-//! - Mode changes (global/rule/direct/script)
+//! - Mode changes (global/rule/direct)
 //! - System proxy / TUN / config mixin toggles
-//! - Geo data update / rollback
+//! - Geo data update
 //! - Connection management
 //! - Quit/restart operations
 
@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 /// - Proxy mode changes
 /// - Proxy group selection
 /// - System proxy / TUN / config mixin toggles
-/// - Geo data update / rollback
+/// - Geo data update
 /// - Connection management
 /// - Quit/restart operations
 ///
@@ -156,17 +156,6 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             std::mem::drop(tauri::async_runtime::spawn(async move {
                 if let Err(e) = crate::geodata::updater::update_geodata(&h).await {
                     error!("Geo data update failed: {}", e);
-                }
-            }));
-        }
-
-        // Rollback geo data
-        "geodata_rollback" => {
-            info!("Tray: rolling back geo data");
-            let h = app_handle.clone();
-            std::mem::drop(tauri::async_runtime::spawn(async move {
-                if let Err(e) = crate::geodata::updater::rollback_geodata(&h).await {
-                    error!("Geo data rollback failed: {}", e);
                 }
             }));
         }

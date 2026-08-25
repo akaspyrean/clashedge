@@ -60,6 +60,22 @@ async function onReload() {
     coreActionBusy.value = false;
   }
 }
+
+async function onStart() {
+  try {
+    await core.start();
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+
+async function onStop() {
+  try {
+    await core.stop();
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
 </script>
 
 <template>
@@ -100,7 +116,7 @@ async function onReload() {
           type="primary"
           class="core-btn"
           :loading="core.starting"
-          @click="core.start()"
+          @click="onStart"
         >
           {{ $t("dashboard.start") }}
         </el-button>
@@ -110,7 +126,7 @@ async function onReload() {
           plain
           class="core-btn"
           :loading="core.stopping"
-          @click="core.stop()"
+          @click="onStop"
         >
           {{ $t("dashboard.stop") }}
         </el-button>

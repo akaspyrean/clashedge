@@ -292,7 +292,18 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     };
     let before_change = crate::proxy::system_proxy::get_system_proxy().ok();
     let bypass = default_bypass();
-    if let Err(e) = crate::proxy::system_proxy::set_system_proxy(enable, &address, &bypass) {
+    // 开启：接管并删除用户原有 PAC（原值已随快照/journal 保留）；
+    // 关闭：写回接管前快照中的 AutoConfigURL，还原用户原有 PAC。
+    let auto_config_url = if enable {
+        None
+    } else {
+        before_change
+            .as_ref()
+            .and_then(|b| b.auto_config_url.as_deref())
+    };
+    if let Err(e) =
+        crate::proxy::system_proxy::set_system_proxy(enable, &address, &bypass, auto_config_url)
+    {
         // 3. 回滚
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();

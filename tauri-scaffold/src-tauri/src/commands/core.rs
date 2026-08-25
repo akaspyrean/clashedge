@@ -57,7 +57,7 @@ pub async fn stop_core(app: AppHandle, state: State<'_, crate::AppState>) -> Res
         was
     };
     if was_on {
-        if let Err(e) = crate::proxy::system_proxy::set_system_proxy(false, "", &[]) {
+        if let Err(e) = crate::proxy::system_proxy::set_system_proxy(false, "", &[], None) {
             tracing::warn!("Failed to clear system proxy after stopping core: {}", e);
         }
         let _ = app.emit(

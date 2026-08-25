@@ -17,9 +17,11 @@ const core = useCoreStore();
 
 const entries = ref<LogEntry[]>([]);
 const connected = ref(false);
+const connecting = ref(false);
 const errorMsg = ref("");
 const MAX_LINES = 500;
 let idSeq = 0;
+let everConnected = false;
 let unlisteners: UnlistenFn[] = [];
 
 const listEl = ref<HTMLElement | null>(null);
@@ -66,12 +68,18 @@ function clear() {
 }
 
 async function connect() {
+  // 幂等守卫：已连接/连接中直接返回，防止重复启动后端 SSE 导致日志翻倍。
+  if (connected.value || connecting.value) return;
+  connecting.value = true;
   errorMsg.value = "";
-  connected.value = false;
   try {
+    // 曾连接过则先停旧流，避免后端残留旧 SSE 连接。
+    if (everConnected) await logsApi.stop();
     await logsApi.start();
   } catch (e) {
     errorMsg.value = String(e);
+  } finally {
+    connecting.value = false;
   }
 }
 
@@ -88,6 +96,7 @@ onMounted(async () => {
   unlisteners.push(
     await listen<{ level: string; message: string }>("log-line", (ev) => {
       connected.value = true;
+      everConnected = true;
       errorMsg.value = "";
       push(ev.payload.level, ev.payload.message);
     })
@@ -95,6 +104,7 @@ onMounted(async () => {
   unlisteners.push(
     await listen("log-connected", () => {
       connected.value = true;
+      everConnected = true;
       errorMsg.value = "";
     })
   );
@@ -122,7 +132,7 @@ onUnmounted(() => {
         <span class="status-dot" aria-hidden="true"></span>
         {{ $t(statusText) }}
       </span>
-      <el-button :disabled="!core.status.running" @click="connect">
+      <el-button :disabled="!core.status.running" :loading="connecting" @click="connect">
         {{ $t("logs.reconnect") }}
       </el-button>
       <el-button @click="clear">{{ $t("logs.clear") }}</el-button>

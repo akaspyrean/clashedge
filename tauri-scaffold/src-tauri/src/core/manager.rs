@@ -560,7 +560,7 @@ impl CoreManager {
                 };
                 if sys_proxy_intent {
                     warn!("Disabling system proxy: core crashed (was pointing at dead port)");
-                    let _ = crate::proxy::system_proxy::set_system_proxy(false, "", &[]);
+                    let _ = crate::proxy::system_proxy::set_system_proxy(false, "", &[], None);
                 }
 
                 if user_stopped.load(std::sync::atomic::Ordering::SeqCst) {
@@ -719,6 +719,7 @@ impl CoreManager {
                                         true,
                                         &addr,
                                         &crate::core::runtime::default_bypass(),
+                                        None,
                                     ) {
                                         Ok(()) => info!(
                                             "System proxy restored after auto-restart ({})",
@@ -793,6 +794,7 @@ impl CoreManager {
                         true,
                         &orig.address,
                         &orig.bypass_list,
+                        orig.auto_config_url.as_deref(),
                     ) {
                         Ok(()) => {
                             info!(
@@ -851,11 +853,34 @@ impl CoreManager {
         }
         let child = self.child.lock().unwrap().take();
         if let Some(mut child) = child {
-            info!("Stopping mihomo (PID {})", child.id().unwrap_or(0));
+            // 先记下 PID：kill 后 wait 超时需要按 PID 精确兜底清杀
+            let pid = child.id();
+            info!("Stopping mihomo (PID {})", pid.unwrap_or(0));
             *self.status.lock().unwrap() = CoreStatus::Stopping;
             // 先温和 kill，再兜底 taskkill（防句柄未回收导致杀不掉）
             let _ = child.kill().await;
-            let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+            if tokio::time::timeout(Duration::from_secs(3), child.wait())
+                .await
+                .is_err()
+            {
+                // kill 之后 wait 仍超时：进程可能残留为孤儿，按 PID 强杀。
+                // 参考 main.rs 退出清理的写法；taskkill 也失败才记录告警放弃。
+                match pid {
+                    Some(pid) => {
+                        warn!(
+                            "mihomo did not exit after kill; taskkill fallback (PID {})",
+                            pid
+                        );
+                        if let Err(e) = std::process::Command::new("taskkill")
+                            .args(["/PID", &pid.to_string(), "/F"])
+                            .status()
+                        {
+                            warn!("taskkill fallback failed for PID {}: {}", pid, e);
+                        }
+                    }
+                    None => warn!("mihomo did not exit after kill and no PID available"),
+                }
+            }
         }
         *self.status.lock().unwrap() = CoreStatus::Stopped;
         info!("mihomo stopped");
