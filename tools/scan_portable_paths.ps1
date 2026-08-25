@@ -21,11 +21,14 @@ param(
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path $Root)) { throw "Root not found: $Root" }
 
-# Generic leak patterns (machine-independent): drive-letter user/build paths.
+# Leak patterns: build-machine absolute paths that must not be baked into the
+# portable tree. These are *developer-machine* source paths — NOT the CI runner
+# user (`runneradmin`), whose path legitimately appears in compiled binaries
+# (panic locations, `file!()`). Patterns are kept specific to the dev box so
+# the runner's own `C:\Users\runneradmin\` build paths don't false-positive.
 $DevSourcePatterns = @(
-    "[A-Za-z]:[\\/]Users[\\/]",
-    "[A-Za-z]:[\\/]900 AIWork",
-    "900 AIWork"
+    "D:\\900 AIWork",
+    "C:\\Users\\Fong"
 )
 
 $TextExt = @(
