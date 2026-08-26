@@ -29,6 +29,7 @@ dashboard:
   stopping: "停止中…"
   mixed_port: "混合端口"
   core_version: "核心版本"
+  current_node: "当前节点"
   start: "启动核心"
   stop: "停止核心"
   restart: "重启核心"
@@ -221,6 +222,7 @@ connections:
   empty: "暂无连接"
   total_download: "下载总量"
   total_upload: "上传总量"
+  truncated_notice: "仅显示前 {max} 条连接（共 {count} 条）"
 
 logs:
   title: "日志"
@@ -253,6 +255,8 @@ about:
   update_available: "发现新版本 {version}，正在下载并校验…"
   update_staged: "新版本 {version} 已就绪，重启应用后由启动器完成安装（数据不受影响）"
   update_failed: "检查更新失败：{error}"
+  discard_staged: "丢弃"
+  discarded_staged: "已丢弃已下载的更新"
 
 common:
   save: "保存"

@@ -29,6 +29,7 @@ dashboard:
   stopping: "Stopping…"
   mixed_port: "Mixed Port"
   core_version: "Core Version"
+  current_node: "Current Node"
   start: "Start Core"
   stop: "Stop Core"
   restart: "Restart Core"
@@ -221,6 +222,7 @@ connections:
   empty: "No connections"
   total_download: "Total Download"
   total_upload: "Total Upload"
+  truncated_notice: "Showing first {max} of {count} connections"
 
 logs:
   title: "Logs"
@@ -253,6 +255,8 @@ about:
   update_available: "Version {version} available, downloading and verifying…"
   update_staged: "Version {version} is ready; the launcher will install it on next start (data is preserved)"
   update_failed: "Update check failed: {error}"
+  discard_staged: "Discard"
+  discarded_staged: "Discarded staged update"
 
 common:
   save: "Save"

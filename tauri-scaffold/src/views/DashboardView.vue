@@ -3,14 +3,29 @@
      - 状态卡：核心状态与「启动/停止 → 重载 → 重启」同卡，顺序排布
      - 设置卡：仅保留系统代理开关（订阅管理已移回独立「配置」页） -->
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { proxyApi } from "@/api/proxy";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
+import { useProxyStore } from "@/stores/proxy";
 
 const core = useCoreStore();
 const config = useConfigStore();
+const proxyStore = useProxyStore();
+
+// Dashboard 需要当前节点/延迟：进入页面且核心运行时加载一次代理组，
+// 复用「代理」页同一个 store，不重复建数据源；核心从停止→运行（含在
+// 本页启动核心）后也要刷新，保证「界面状态 = 应用状态」。
+onMounted(() => {
+  if (core.status.running) void proxyStore.loadGroups();
+});
+watch(
+  () => core.status.running,
+  (running) => {
+    if (running) void proxyStore.loadGroups();
+  }
+);
 
 const running = computed(() => core.status.running);
 // 核心控制动作 in-flight 守卫：restart/reload 无自带的 starting/stopping 状态，
@@ -25,6 +40,20 @@ const statusKey = computed(() =>
         ? "dashboard.running"
         : "dashboard.stopped"
 );
+
+/** 当前节点：mihomo GLOBAL 组的当前选中（rule/global 模式下都直观，
+ *  direct 模式无代理组 → 显示 "—"）。 */
+const currentGroup = computed(() =>
+  proxyStore.groups.find((g) => g.name === "GLOBAL")
+);
+const currentNode = computed(() => currentGroup.value?.now ?? "—");
+/** 当前节点延迟：复用代理页已测的组延迟；未测为 "—"。 */
+const currentLatency = computed(() => {
+  const g = currentGroup.value;
+  if (!g) return "—";
+  const d = proxyStore.delays[g.name];
+  return d == null ? "—" : `${d} ms`;
+});
 
 /** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色），
  *  成功后同步本地 store，避免下次整包保存时把该字段覆盖回 false。 */
@@ -96,16 +125,19 @@ async function onStop() {
 
       <div class="status-grid">
         <div class="stat-item">
-          <div class="stat-label">{{ $t("dashboard.core_version") }}</div>
-          <div class="stat-value">{{ core.status.version ?? "—" }}</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-label">{{ $t("dashboard.mixed_port") }}</div>
-          <div class="stat-value">{{ config.mixedPort }}</div>
+          <div class="stat-label">{{ $t("dashboard.current_node") }}</div>
+          <div class="stat-value node-value" :title="currentNode">
+            {{ currentNode }}
+            <span class="node-latency">{{ currentLatency }}</span>
+          </div>
         </div>
         <div class="stat-item">
           <div class="stat-label">{{ $t("dashboard.proxy_mode") }}</div>
           <div class="stat-value">{{ $t("tray.mode_" + config.proxyMode) }}</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">{{ $t("dashboard.core_version") }}</div>
+          <div class="stat-value">{{ core.status.version ?? "—" }}</div>
         </div>
       </div>
 
@@ -191,6 +223,18 @@ async function onStop() {
   gap: 12px;
 }
 
+/* 小窗口：三列过窄，降为上下堆叠的行式（保留分隔线语义改为上边框）。 */
+@media (max-width: 640px) {
+  .status-grid {
+    grid-template-columns: 1fr;
+    row-gap: 4px;
+  }
+  .stat-item + .stat-item {
+    border-left: none;
+    border-top: 1px solid var(--card-border);
+  }
+}
+
 .stat-item {
   padding: var(--space-1) 0 var(--space-1) var(--space-4);
 }
@@ -211,6 +255,28 @@ async function onStop() {
   color: var(--text-primary);
 }
 
+/* 当前节点：名称超长省略；延迟作为次级信息跟随其后。 */
+.node-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.node-latency {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .status-card {
   /* 单值！EP 头部用 calc(var(--el-card-padding) - 2px)，双值会让 calc
      失效、头部内边距归零（核心状态/运行中贴边的根因）。 */
@@ -222,6 +288,13 @@ async function onStop() {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
+}
+
+/* 小窗口（~560px）下三列按钮过窄：换行为自动列宽，避免文案截断。 */
+@media (max-width: 640px) {
+  .core-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 .core-btn {
