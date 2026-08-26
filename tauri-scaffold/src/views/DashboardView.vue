@@ -70,6 +70,13 @@ const currentNode = computed(() => {
   if (config.proxyMode === "direct") return "—";
   return currentGroup.value?.now ?? "—";
 });
+/** 当前节点延迟：有数据时显示，无数据时 template 完全不渲染。 */
+const currentLatency = computed(() => {
+  const g = currentGroup.value;
+  if (!g) return null;
+  const d = proxyStore.delays[g.name];
+  return d == null ? null : `${d} ms`;
+});
 
 /** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色），
  *  成功后同步本地 store，避免下次整包保存时把该字段覆盖回 false。 */
@@ -144,6 +151,7 @@ async function onStop() {
           <div class="stat-label">{{ $t("dashboard.current_node") }}</div>
           <div class="stat-value node-value" :title="currentNode">
             <span class="node-name">{{ currentNode }}</span>
+            <span v-if="currentLatency" class="node-latency">{{ currentLatency }}</span>
           </div>
         </div>
         <div class="stat-item">
@@ -262,6 +270,15 @@ async function onStop() {
 .node-value .node-name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.node-latency {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .status-card {

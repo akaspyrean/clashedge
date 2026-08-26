@@ -1,7 +1,7 @@
 ﻿<!-- src/views/ProxiesView.vue - 代理组：切换代理模式、查看各组节点、手动选择与延迟测试 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { Lightning, Refresh } from "@element-plus/icons-vue";
+import { Refresh } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { proxyApi, type ProxyGroup } from "@/api/proxy";
 import { resolveGroupId } from "@/constants/groups";
@@ -56,12 +56,6 @@ async function onTestGroup(group: string) {
   } finally {
     testingGroups.value.delete(group);
   }
-}
-
-/** 手动测速（组内逐节点）：复用 store 的全局 testingNodes 标志防重入。 */
-async function onManualTest(group: string) {
-  if (proxyStore.testingNodes) return;
-  await proxyStore.testGroupProxies(group);
 }
 
 /** 组延迟文本：未测试 / 失败时显示 "—"。 */
@@ -191,17 +185,6 @@ watch(
               {{ $t("proxies.latency") }} {{ delayOf(g.name) }}
             </el-tag>
             <span class="group-actions">
-              <el-button
-                v-if="isManual(g)"
-                size="small"
-                circle
-                text
-                :loading="proxyStore.testingNodes"
-                :title="$t('proxies.manual_test')"
-                @click.stop="onManualTest(g.name)"
-              >
-                <el-icon><Lightning /></el-icon>
-              </el-button>
               <el-button
                 size="small"
                 circle
