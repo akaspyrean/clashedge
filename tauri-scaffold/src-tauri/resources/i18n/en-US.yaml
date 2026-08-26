@@ -85,7 +85,7 @@ settings:
   theme_light: "Light"
   theme_system: "System"
   autostart: "Auto Start"
-  silent_autostart: "Silent Start (hide main window)"
+  silent_autostart: "(silent start)"
   data_dir: "Data Directory"
   open_data_dir: "Open Data Directory"
   core_version: "Core Version"

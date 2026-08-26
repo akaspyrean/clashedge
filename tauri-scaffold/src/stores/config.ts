@@ -26,7 +26,11 @@ export const useConfigStore = defineStore("config", {
   actions: {
     async load() {
       this.config = await configApi.get();
-      this.baseline = structuredClone(this.config);
+      // 深拷贝基线。不能用 structuredClone：config 是 Pinia reactive proxy，
+      // 结构化克隆算法明确拒绝 Proxy（DataCloneError），load() 会抛错被调用方
+      // 吞掉 → 托盘/UI 联动第二次失效（刷新不到新值）。config 是纯 JSON 数据，
+      // JSON 往返深拷贝足够且语义明确。
+      this.baseline = JSON.parse(JSON.stringify(this.config));
       return this.config;
     },
     /** 计算当前配置相对基线的顶层键差异。
@@ -68,7 +72,8 @@ export const useConfigStore = defineStore("config", {
       if (this.baseline) {
         const base: Record<string, unknown> = this.baseline;
         for (const key of Object.keys(partial)) {
-          base[key] = structuredClone(next[key as keyof ClashConfig]);
+          // JSON 深拷贝（见 load() 注释：config/reactive proxy 不能用 structuredClone）
+          base[key] = JSON.parse(JSON.stringify(next[key as keyof ClashConfig]));
         }
       }
     },
