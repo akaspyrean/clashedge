@@ -462,3 +462,30 @@ html[data-theme="dark"] {
 .el-descriptions {
   --el-descriptions-item-bordered-label-background: var(--bg-soft);
 }
+
+/* ---- 统一状态语言（小圆点 + 文字）----
+ * Dashboard / Logs 共用：同一套「已连接/已运行」语义色，
+ * 避免各页各自定义造成视觉漂移。视图内如需扩展使用 .status-pill 基础类。 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.status-pill.running {
+  color: var(--done);
+}
+
+.status-pill.running .status-dot {
+  background: var(--done);
+}

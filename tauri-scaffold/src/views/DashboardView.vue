@@ -210,30 +210,8 @@ async function onStop() {
   font-weight: 500;
 }
 
-/* 状态指示：小圆点 + 文字，替代高饱和状态灯（设计规范 §8）。 */
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-
-.status-pill.running {
-  color: var(--done);
-}
-
-.status-pill.running .status-dot {
-  background: var(--done);
-}
+/* 状态指示由全局 .status-pill/.status-dot/.running 提供（styles.css），
+ * 本页不再重复定义，保证与 Logs 页语义色一致。 */
 
 .status-grid {
   display: grid;
