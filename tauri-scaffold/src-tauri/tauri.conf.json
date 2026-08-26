@@ -5,7 +5,7 @@
   // 鏁?CSP 鐨?connect-src 浠呬繚鐣?'self'锛堝悓婧?invoke / 浜嬩欢锛夛紝骞舵樉寮忓叧闂?
   // object / frame 娉ㄥ叆闈€俿tyle-src 淇濈暀 'unsafe-inline' 鍥?Element Plus 闇€瑕併€?
   "productName": "ClashEdge",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "identifier": "com.clashedge.portable",
   "build": {
     "beforeDevCommand": "npm run dev",
