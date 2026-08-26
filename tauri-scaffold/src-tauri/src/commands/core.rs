@@ -2,7 +2,7 @@
 //! 核心命令：核心服务启动/停止/重启/状态
 
 use crate::util::error::Result;
-use tauri::{command, AppHandle, Emitter, Manager, State};
+use tauri::{command, AppHandle, State};
 
 #[command]
 pub async fn get_status(state: State<'_, crate::AppState>) -> Result<serde_json::Value> {
@@ -34,39 +34,10 @@ pub async fn start_core(app: AppHandle, state: State<'_, crate::AppState>) -> Re
 }
 
 #[command]
-pub async fn stop_core(app: AppHandle, state: State<'_, crate::AppState>) -> Result<()> {
-    {
-        let core_guard = state.core_manager.get();
-        if let Some(core) = core_guard.as_ref() {
-            core.stop().await?;
-        }
-    }
-
-    // 内核停止后，若系统代理仍指向本应用端口，必须立即关闭——
-    // 否则系统代理继续指向已死的 127.0.0.1:7890，用户全网 ERR_CONNECTION_REFUSED。
-    // 配置里的 system_proxy 意图也同步置 false，避免下次启动前被误还原。
-    let was_on = {
-        let state = app.state::<crate::AppState>();
-        let mut cfg_mgr = state.config_manager.lock().unwrap();
-        let mut cfg = cfg_mgr.get_config();
-        let was = cfg.general.system_proxy;
-        if was {
-            cfg.general.system_proxy = false;
-            let _ = cfg_mgr.set_config(cfg);
-        }
-        was
-    };
-    if was_on {
-        if let Err(e) = crate::proxy::system_proxy::set_system_proxy(false, "", &[], None) {
-            tracing::warn!("Failed to clear system proxy after stopping core: {}", e);
-        }
-        let _ = app.emit(
-            "system-proxy-changed",
-            serde_json::json!({ "enable": false }),
-        );
-    }
-    // 停止后托盘菜单（运行态图标/代理组子菜单）跟随刷新。
-    crate::core::runtime::refresh_tray(&app).await
+pub async fn stop_core(app: AppHandle) -> Result<()> {
+    // 统一编排：停核心 + 关闭系统代理（config/registry/journal/事件/托盘）
+    // 全部走 runtime::stop_core_and_sync_proxy，不再绕过 config_tx 事务。
+    crate::core::runtime::stop_core_and_sync_proxy(&app).await
 }
 
 #[command]

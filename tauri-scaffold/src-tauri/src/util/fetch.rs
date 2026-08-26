@@ -29,9 +29,13 @@ use reqwest::Url;
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
-/// 统一 URL 日志脱敏：只保留 scheme://host[:port]/path，删除 userinfo、query、fragment。
-/// 订阅 URL 的 token/key 常在 query 里，自定义 geodata URL 可能带签名参数——
-/// 一律不得进入日志。解析失败返回 "***"。
+/// 统一 URL 脱敏（唯一实现，日志与前端展示共用）：只保留 scheme://host[:port]，
+/// 删除 userinfo、query、fragment 与**完整 path**。
+///
+/// 为什么删 path：很多机场/订阅服务把 token 放在 path（如
+/// `/api/v1/client/<token>`），而不仅是 query；保留 path 会把这类凭证原样泄露
+/// 到日志/前端。有非根路径时以 `/…` 占位提示存在路径，避免误以为 URL 无路径。
+/// 解析失败返回 "***"。
 pub fn redact_url_for_log(url: &str) -> String {
     match Url::parse(url) {
         Ok(parsed) => {
@@ -45,8 +49,9 @@ pub fn redact_url_for_log(url: &str) -> String {
                 out.push(':');
                 out.push_str(&port.to_string());
             }
+            // path 可能携带 token，一律不保留；仅用占位标记提示原 URL 含路径。
             if !parsed.path().is_empty() && parsed.path() != "/" {
-                out.push_str(parsed.path());
+                out.push_str("/…");
             }
             out
         }

@@ -6,6 +6,7 @@ pub mod autostart;
 pub mod error;
 pub mod fetch;
 pub mod logging;
+pub mod normalizer;
 pub mod paths;
 
 pub use error::Error;

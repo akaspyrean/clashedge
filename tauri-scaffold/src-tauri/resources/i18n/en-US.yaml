@@ -107,6 +107,7 @@ general:
   ipv6: "IPv6"
   geodata_mode: "GeoData Mode"
   geo_auto_update: "Auto Update GeoData"
+  auto_update_subscription: "Auto Update Subscriptions"
   find_process_mode: "Process Lookup Mode"
   proxy_mode: "Proxy Mode"
   profile: "Profile"
