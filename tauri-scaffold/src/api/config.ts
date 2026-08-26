@@ -64,6 +64,7 @@ export interface ClashConfig {
   ipv6: boolean;
   "geodata-mode": string;
   "geo-auto-update": boolean;
+  "auto-update-subscription": boolean;
   "find-process-mode": string;
   mode: string;
   profile: string;

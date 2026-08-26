@@ -130,6 +130,11 @@ pub struct GeneralConfig {
     #[serde(default)]
     pub geo_auto_update: bool,
 
+    /// 启动时是否自动刷新过期订阅（超过 24h 未更新的订阅）。
+    /// 隐式访问订阅服务器涉及可预期性与隐私，故做成显式设置；默认开启。
+    #[serde(default = "default_auto_update_subscription")]
+    pub auto_update_subscription: bool,
+
     #[serde(default = "default_find_process_mode")]
     pub find_process_mode: String,
 
@@ -161,6 +166,9 @@ pub(crate) fn default_geodata_mode() -> serde_yaml::Value {
 fn default_find_process_mode() -> String {
     "off".to_string()
 }
+fn default_auto_update_subscription() -> bool {
+    true
+}
 fn default_proxy_mode() -> String {
     "rule".to_string()
 }
@@ -176,6 +184,7 @@ impl Default for GeneralConfig {
             ipv6: false,
             geodata_mode: default_geodata_mode(),
             geo_auto_update: false,
+            auto_update_subscription: true,
             find_process_mode: default_find_process_mode(),
             proxy_mode: default_proxy_mode(),
             profile: String::new(),

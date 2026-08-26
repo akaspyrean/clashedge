@@ -262,16 +262,20 @@ impl CoreManager {
     /// 所有后续配置与开关操作排队等锁，整个应用"卡死"。改为公开入口只加锁、
     /// 内部 *_locked 不再加锁，串行语义不变。
     async fn start_locked(&self) -> Result<()> {
+        // 幂等启动：若已在运行则直接返回。旧实现在此分支调用 stop_locked()
+        // 会让 generation 被二次递增，而下方 spawn_watcher(generation) 用的是
+        // 递增前的旧值，导致 watcher 首次轮询即判定被取代而退出——核心裸奔、
+        // 失去 supervisor。start 的语义是"确保运行中"，重复调用不应产生副作用。
+        if self.is_running() {
+            return Ok(());
+        }
+
         // P0-6：递增 generation 使所有旧 watcher 失效（它们会在下一次
         // 轮询比对时退出），随后本流程成功后只 spawn 一个新 watcher。
         let generation = self
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
-
-        if self.is_running() {
-            self.stop_locked().await?;
-        }
 
         // P1-7：用户主动启动 → 清除停止标志
         self.user_stopped

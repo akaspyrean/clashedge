@@ -1,4 +1,4 @@
-﻿// src-tauri/src/commands/profiles.rs
+// src-tauri/src/commands/profiles.rs
 //! 配置文件命令：列表、新建、删除、重命名、激活、编辑、导入、导出
 //!
 //! 安全：所有 `profiles/<name>.yaml` 路径构造必须先过
@@ -219,28 +219,19 @@ fn backup_path_for(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// 日志脱敏订阅 URL：只保留 `scheme://host[:port]/path`，丢弃 query
-/// （token/key 等凭证常在 query 里）。解析失败返回 `"***"`。
+/// 删除暂存路径：`{name}.yaml` -> `{name}.yaml.pending-delete`。
+/// 扩展名不再是 `.yaml`，不会被 `list_profiles` 扫描到，删除中途失败时文件可恢复。
+fn pending_delete_path_for(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".pending-delete");
+    path.with_file_name(name)
+}
+
+/// 订阅 URL 脱敏：统一委托 `util::fetch::redact_url_for_log`（唯一实现）。
+/// 仅保留 `scheme://host[:port]`，删除 userinfo/query/fragment 与完整 path
+/// （path 可能携带 token，如 `/api/v1/client/<token>`）。解析失败返回 `"***"`。
 fn redact_url(url: &str) -> String {
-    match reqwest::Url::parse(url) {
-        Ok(parsed) => {
-            let mut out = String::new();
-            out.push_str(parsed.scheme());
-            out.push_str("://");
-            if let Some(host) = parsed.host_str() {
-                out.push_str(host);
-            }
-            if let Some(port) = parsed.port() {
-                out.push(':');
-                out.push_str(&port.to_string());
-            }
-            if !parsed.path().is_empty() && parsed.path() != "/" {
-                out.push_str(parsed.path());
-            }
-            out
-        }
-        Err(_) => "***".to_string(),
-    }
+    crate::util::fetch::redact_url_for_log(url)
 }
 
 /// 当前激活的 profile 名（来自共享配置）
@@ -344,16 +335,29 @@ pub async fn delete_profile(app: AppHandle, name: String) -> Result<()> {
         return Err(Error::NotFound("Profile not found".to_string()));
     }
 
-    std::fs::remove_file(file_path)?;
-
-    // 若删除的是激活中的 Profile，激活标记不能指向已不存在的文件：
-    // 重置回内置预设 DIRECT 并重载核心；失败必须上报（文件已删但激活态
-    // 仍指向它，UI 与运行时配置会不一致），不能静默吞掉。
     let was_active = active_profile(&app) == name;
+    let pending = pending_delete_path_for(&file_path);
+
+    // 事务化删除：先把正式文件暂存为 `.pending-delete`，切换激活成功后才真正删除。
+    // 若切换激活失败，恢复暂存文件，保证原 profile 不丢失（避免"文件已删但激活态
+    // 仍指向它"的不一致）。
+    std::fs::rename(&file_path, &pending)?;
+
+    // 删除的是激活中的 Profile：先重置回内置预设 DIRECT 并重载核心；失败恢复文件。
     if was_active {
-        crate::core::runtime::activate_profile(&app, "DIRECT")
-            .await
-            .map_err(|e| Error::Other(format!("配置文件已删除但激活状态重置失败：{}", e)))?;
+        if let Err(e) = crate::core::runtime::activate_profile(&app, "DIRECT").await {
+            let _ = std::fs::rename(&pending, &file_path);
+            return Err(Error::Other(format!(
+                "激活状态重置失败，已恢复原 Profile：{}",
+                e
+            )));
+        }
+    }
+
+    // 提交：真正删除暂存文件。清理失败不视为删除失败（激活已切换、暂存文件不可见），
+    // 仅告警，避免用户看到"删除失败"却已生效的矛盾反馈。
+    if let Err(e) = std::fs::remove_file(&pending) {
+        warn!("Profile deleted but pending file cleanup failed: {}", e);
     }
 
     Ok(())
@@ -383,11 +387,17 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
             cfg.general.profile = new_name.clone();
             cfg_mgr.set_config(cfg)?;
         }
-        // 运行中的核心需要重载才能加载新文件名；失败回退原逻辑（重命名不因此失败）
+        // 运行中的核心需要重载才能加载新文件名。重载失败不使重命名回退（文件已在
+        // 新名下、配置已指向新名，下次启动即生效），但必须显式告警，不能静默吞掉。
         {
             let core_guard = state.core_manager.get();
             if let Some(core) = core_guard.as_ref() {
-                let _ = core.reload_config().await;
+                if let Err(e) = core.reload_config().await {
+                    warn!(
+                        "Renamed active profile to '{}' but core reload failed: {}",
+                        new_name, e
+                    );
+                }
             }
         }
         // 与其他激活路径对齐：刷新托盘菜单勾选态，并通知前端刷新代理组
@@ -448,7 +458,12 @@ pub async fn import_profile(app: AppHandle, name: String, content: String) -> Re
     // 统一校验（与网络导入同一标准）
     validate_subscription_content(&content)?;
 
-    atomic_write(&file_path, content.as_bytes())?;
+    // 归一化为 proxies-only 节点集（兼容 proxy-providers 型订阅）
+    let (normalized, _warnings) = normalize_subscription_body(&app, &content).await?;
+    let normalized = format!("# profile: {}\n{}", name, normalized);
+    validate_subscription_content(&normalized)?;
+
+    atomic_write(&file_path, normalized.as_bytes())?;
     Ok(())
 }
 
@@ -526,6 +541,21 @@ pub async fn import_profile_from_url(app: AppHandle, name: String, url: String) 
         return Err(e);
     }
 
+    // 归一化为 proxies-only 节点集：兼容 proxy-providers 型订阅（Issue #1）。
+    // 只保留节点，订阅自带的 groups/rules/hosts 等不进入存储（应用掌握策略结构）。
+    let body = strip_subscribe_header(&text);
+    let (normalized, warnings) = normalize_subscription_body(&app, &body).await?;
+    if !warnings.is_empty() {
+        warn!("Import '{}': {}", redact_url(&url), warnings.join("；"));
+    }
+    let final_text = format!("# subscribe-url: {}\n{}", parsed.as_str(), normalized);
+    if let Err(e) = validate_subscription_content(&final_text) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    // 归一化结果覆写临时文件后，再原子提交为正式文件
+    std::fs::write(&temp_path, final_text.as_bytes())?;
+
     // 新文件：临时文件原子 rename 为正式文件（目标不存在，无需备份）
     commit_profile_file(&temp_path, &file_path)?;
     Ok(())
@@ -548,11 +578,39 @@ fn extract_subscribe_url(content: &str) -> Option<String> {
     })
 }
 
-/// P1-10：脱敏订阅 URL，返回 host 或脱敏 URL，不泄露 token/key。
+/// 去掉 `# subscribe-url:` 注释头，返回订阅正文（供归一化解析）。
+fn strip_subscribe_header(content: &str) -> String {
+    content
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("# subscribe-url:") || t.starts_with("#subscribe-url:"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 归一化订阅正文为 proxies-only 的 YAML 文档（Subscription Normalizer）。
+/// 兼容仅含 `proxy-providers` 的现代订阅；返回 (归一化文档, 过程提示)。
+async fn normalize_subscription_body(app: &AppHandle, body: &str) -> Result<(String, Vec<String>)> {
+    let norm = crate::util::normalizer::normalize_subscription(app, body).await?;
+    for w in &norm.warnings {
+        warn!("Subscription normalization: {}", w);
+    }
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::String("proxies".into()),
+        serde_yaml::Value::Sequence(norm.proxies),
+    );
+    let doc = serde_yaml::to_string(&serde_yaml::Value::Mapping(m))?;
+    Ok((doc, norm.warnings))
+}
+
+/// P1-10：脱敏订阅 URL，返回 host（含可选端口），不泄露 token/key。
 ///
-/// - `https://user:pass@host:port/path?token=secret#frag` → `https://host:port/path`
-/// - `https://host/path?token=secret` → `https://host/path`
-/// - `https://host:port/path` → 原样返回（无敏感字段）
+/// - `https://user:pass@host:port/path?token=secret#frag` → `https://host:port/…`
+/// - `https://host/path?token=secret` → `https://host/…`
+/// - `https://host:port` → `https://host:port`
 /// - 解析失败 → 返回 None（不泄露原始字符串）
 fn redact_subscribe_url(url: &str) -> Option<String> {
     reqwest::Url::parse(url).ok()?;
@@ -703,6 +761,19 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         return Err(e);
     }
 
+    // 归一化为 proxies-only 节点集（与导入一致，兼容 proxy-providers 型订阅）
+    let body = strip_subscribe_header(&text);
+    let (normalized, warnings) = normalize_subscription_body(app, &body).await?;
+    if !warnings.is_empty() {
+        warn!("Update '{}': {}", redact_url(&url), warnings.join("；"));
+    }
+    let final_text = format!("# subscribe-url: {}\n{}", parsed.as_str(), normalized);
+    if let Err(e) = validate_subscription_content(&final_text) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    std::fs::write(&temp_path, final_text.as_bytes())?;
+
     // 事务第二步/第三步：备份旧文件为 .bak，再把临时文件 rename 为正式文件；
     // 任一步失败自动恢复 .bak 并清理临时文件。
     commit_profile_file(&temp_path, &file_path)?;
@@ -838,16 +909,18 @@ mod tests {
     }
 
     #[test]
-    fn redact_url_drops_query_and_userinfo() {
+    fn redact_url_drops_query_and_userinfo_and_path() {
+        // path 也可能携带 token（如 /api/v1/client/<token>），必须一并丢弃。
         assert_eq!(
             redact_url("https://example.com/path?token=secret&id=1"),
-            "https://example.com/path"
+            "https://example.com/…"
         );
         assert_eq!(
             redact_url("https://user:pass@sub.example.com:8443/api/sub?token=abc#frag"),
-            "https://sub.example.com:8443/api/sub"
+            "https://sub.example.com:8443/…"
         );
         assert_eq!(redact_url("http://host/"), "http://host");
+        assert_eq!(redact_url("https://host/path"), "https://host/…");
         // 解析失败不泄露原始串
         assert_eq!(redact_url("not a url \n bad"), "***");
     }

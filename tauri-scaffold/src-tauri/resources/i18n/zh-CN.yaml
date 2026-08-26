@@ -107,6 +107,7 @@ general:
   ipv6: "IPv6"
   geodata_mode: "地理数据模式"
   geo_auto_update: "自动更新地理数据"
+  auto_update_subscription: "自动更新订阅"
   find_process_mode: "进程查找模式"
   proxy_mode: "代理模式"
   profile: "配置文件"

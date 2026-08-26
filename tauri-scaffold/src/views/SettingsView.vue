@@ -385,6 +385,12 @@ async function onUpdateGeo() {
           <el-form-item class="pref-switch" :label="$t('general.geo_auto_update')">
             <el-switch v-model="cfg['geo-auto-update']" />
           </el-form-item>
+          <el-form-item
+            class="pref-switch"
+            :label="$t('general.auto_update_subscription')"
+          >
+            <el-switch v-model="cfg['auto-update-subscription']" />
+          </el-form-item>
           <el-form-item :label="$t('general.find_process_mode')" class="pref-select">
             <el-select v-model="cfg['find-process-mode']">
               <el-option

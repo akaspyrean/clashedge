@@ -428,6 +428,25 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     Ok(())
 }
 
+/// 停止核心并同步系统代理（统一编排入口）。
+///
+/// 历史遗留的 stop_core 命令自行操作 ConfigManager（直接改 system_proxy 并
+/// 吞掉 set_config 错误），绕过 config_tx 事务，与 apply_* 编排层形成两套路径。
+/// 本函数是唯一入口：先停核心，再把"关闭系统代理"交给 apply_system_proxy(false)
+/// ——它统一处理 config_tx 串行化、配置持久化、注册表还原（含 journal.original
+/// 恢复用户原代理）、journal 清理、事件推送与托盘刷新。
+pub async fn stop_core_and_sync_proxy(app: &AppHandle) -> Result<()> {
+    {
+        let state = app.state::<crate::AppState>();
+        let core_guard = state.core_manager.get();
+        if let Some(core) = core_guard.as_ref() {
+            core.stop().await?;
+        }
+    }
+    // 系统代理关闭复用统一事务（幂等：已关则无副作用）。
+    apply_system_proxy(app, false).await
+}
+
 /// 激活 Profile：校验名称合法且文件存在 → 持久化激活名 → 重新生成运行时配置 →
 /// 热重载运行中的核心 → 失败回滚。空内容的 Profile 不阻塞：build_runtime_config
 /// 会回退到内置模板。

@@ -20,6 +20,7 @@ function baseConfig(extra: Partial<Record<string, unknown>> = {}): ClashConfig {
     ipv6: false,
     "geodata-mode": "manual",
     "geo-auto-update": false,
+    "auto-update-subscription": true,
     "find-process-mode": "off",
     mode: "rule",
     profile: "DIRECT",
