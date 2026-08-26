@@ -326,7 +326,7 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     // journal 写失败只影响**开启**路径——关闭路径不写 journal（读不到原代理时
     // 降级为直接关闭），data_dir 解析失败不应阻塞关闭。
     let journal_err = match (data_dir.as_ref(), enable) {
-        (Ok(dir), true) => match crate::proxy::journal::write_journal(
+        (Ok(dir), true) => crate::proxy::journal::write_journal(
             dir,
             &crate::proxy::journal::ProxyJournal {
                 session_id: format!(
@@ -343,10 +343,8 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
                 original: before_change.clone(),
                 owned: true,
             },
-        ) {
-            Ok(()) => None,
-            Err(e) => Some(e),
-        },
+        )
+        .err(),
         (Err(e), true) => {
             // 开启但 data_dir 解析失败 → 无法写 journal，拒绝开启（P0-1 语义）
             Some(Error::Other(format!(
