@@ -22,24 +22,24 @@
   --dur-base: 200ms;
 }
 
-/* ---- 浅色主题（设计系统）---- */
+/* ---- 浅色主题（设计系统 · Flyme 3 收敛）---- */
 :root {
   color-scheme: light;
 
-  /* ===== 背景 ===== */
-  --bg-app: #F5F7FA;
+  /* ===== 背景：更中性、去蓝灰倾向（Flyme 3 纯净感）===== */
+  --bg-app: #F4F5F7;
   --bg-surface: #FFFFFF;
-  --bg-raised: #FBFCFD;
-  --bg-sidebar: #EDF1F6;
-  --bg-soft: #EAF0F7;
+  --bg-raised: #FAFBFC;
+  --bg-sidebar: #EEF0F3;
+  --bg-soft: #F0F2F5;
 
   /* ===== 文本 ===== */
-  --text-primary: #1C1F24;
-  --text-secondary: #475467;
-  --text-tertiary: #667085;
+  --text-primary: #1A1D21;
+  --text-secondary: #444B53;
+  --text-tertiary: #6B7480;
 
-  /* ===== 边框 ===== */
-  --border-subtle: #D8DEE6;
+  /* ===== 边框：更弱（Flyme 3 靠底色分层而非描边）===== */
+  --border-subtle: #E1E4E8;
 
   /* ===== 强调色 ===== */
   --accent: #2A62CC;
@@ -51,9 +51,9 @@
   --error: #B42318;
   --idle: #475467;
 
-  /* ===== 尺寸/字体 ===== */
-  --r-sm: 8px;
-  --r-md: 12px;
+  /* ===== 尺寸/字体：圆角收窄（12→10, 8→6），更工具感 ===== */
+  --r-sm: 6px;
+  --r-md: 10px;
   --font:
     -apple-system,
     BlinkMacSystemFont,
@@ -63,14 +63,10 @@
     "Microsoft YaHei",
     sans-serif;
 
-  /* ---- 派生 token：设计系统未显式提供，按语义补齐 ----
-   * --on-error：error 底上的前景（浅色主题 error 深、用白；深色主题 error 浅、用深字）。
-   * --interactive-hover：hover/激活底色，取自 bg-soft。
-   * --card-border：卡片描边，比全局 border-subtle 略弱，保证卡片与页底分层但克制。
-   * --menu-active-bg：侧边栏选中项底色（accent 极淡），配合左侧指示条。 */
+  /* ---- 派生 token（浅色 · Flyme 3 收敛）---- */
   --on-error: #FFFFFF;
   --interactive-hover: var(--bg-soft);
-  --card-border: #E3E8F0;
+  --card-border: #E8EBEF;
   --menu-active-bg: var(--accent-soft);
 
   /* ---- Element Plus 主题映射（浅色）----
@@ -125,43 +121,40 @@
   --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #000);
 }
 
-/* ---- 深色主题（设计系统）----
+/* ---- 深色主题（设计系统 · Flyme 3 收敛）----
  * 海拔分层对齐 Apple HIG：base < sidebar < surface < raised，
  * 相邻层亮度差 ≥ 4%，让卡片靠底色浮起而不是靠描边。 */
 html[data-theme="dark"] {
   color-scheme: dark;
 
-  /* ===== 背景 ===== */
-  --bg-app: #0e1013;
-  --bg-surface: #191c21;
-  --bg-raised: #23272e;
-  --bg-sidebar: #131519;
-  --bg-soft: #262b33;
+  /* ===== 背景：更纯净的中性灰（去蓝色倾向，Flyme 3 干净感）===== */
+  --bg-app: #0d0f12;
+  --bg-surface: #181b20;
+  --bg-raised: #21252b;
+  --bg-sidebar: #121418;
+  --bg-soft: #252a30;
 
-  /* ===== 文本 ===== */
-  /* 中性灰阶：去蓝色倾向，一级到三级亮度阶梯拉开。 */
+  /* ===== 文本：中性灰阶，去蓝色倾向 ===== */
   --text-primary: #f5f6f7;
-  --text-secondary: #b9bfc7;
-  --text-tertiary: #858d97;
+  --text-secondary: #b7bdc5;
+  --text-tertiary: #838b95;
 
-  /* ===== 边框 ===== */
-  /* 表面分层增强后，描边可以更弱，减少线框噪音。 */
-  --border-subtle: #31363e;
+  /* ===== 边框：更弱 ===== */
+  --border-subtle: #2f343c;
 
   /* ===== 强调色 ===== */
-  /* 主色向 iOS systemBlue(dark) 靠拢：更高饱和、更干净的蓝。 */
   --accent: #4e8fff;
-  --accent-soft: rgba(78, 143, 255, 0.14);
+  --accent-soft: rgba(78, 143, 255, 0.12);
 
   /* ===== 状态色 ===== */
   --approval: #f2b866;
   --done: #7edb99;
   --error: #ff9a93;
-  --idle: #b9bfc7;
+  --idle: #b7bdc5;
 
-  /* ===== 尺寸/字体 ===== */
-  --r-sm: 8px;
-  --r-md: 12px;
+  /* ===== 尺寸/字体：圆角收窄 ===== */
+  --r-sm: 6px;
+  --r-md: 10px;
   --font:
     -apple-system,
     BlinkMacSystemFont,
@@ -171,10 +164,10 @@ html[data-theme="dark"] {
     "Microsoft YaHei",
     sans-serif;
 
-  /* ---- 派生 token（深色）---- */
+  /* ---- 派生 token（深色 · Flyme 3 收敛）---- */
   --on-error: #101214;
   --interactive-hover: var(--bg-soft);
-  --card-border: #262a31;
+  --card-border: #252a31;
   --menu-active-bg: var(--accent-soft);
 
   /* ---- Element Plus 主题映射（深色）----
