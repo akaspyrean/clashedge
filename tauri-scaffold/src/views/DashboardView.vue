@@ -43,23 +43,28 @@ const statusKey = computed(() =>
 
 /** 当前节点所处的组。
  *  - 全局模式：GLOBAL 组的当前选中；
- *  - 规则模式：优先出口组「扶梯出行」，回退 人工优选/自动优选/人工智能/影音视听；
- *    （GLOBAL.now 在 rule 下常为 DIRECT，不代表实际出口，不能取它做「当前节点」）
+ *  - 规则模式：优先选「当前选中是真实节点」的组（排除 DIRECT/REJECT/PASS 占位），
+ *    顺序对齐「代理」页（扶梯出行→人工智能→影音视听→人工优选→自动优选），
+ *    避免某组停在占位节点时把它误当出口；全都占位则回退第一组。
  *  - 直连模式：无代理节点。
  * 取到的 `now` 即为真实出口选中，确保概览与代理页一致。 */
+const PLACEHOLDER_NODES = new Set(["DIRECT", "REJECT", "PASS"]);
 const currentGroup = computed(() => {
   const groups = proxyStore.groups;
   if (!groups.length) return undefined;
   if (config.proxyMode === "direct") return undefined;
-  const order: string[] =
-    config.proxyMode === "global"
-      ? ["GLOBAL"]
-      : ["扶梯出行", "人工优选", "自动优选", "人工智能", "影音视听", "GLOBAL"];
-  for (const name of order) {
-    const g = groups.find((x) => x.name === name);
-    if (g) return g;
+  if (config.proxyMode === "global") {
+    return groups.find((g) => g.name === "GLOBAL") ?? groups[0];
   }
-  return groups[0];
+  const order = ["扶梯出行", "人工智能", "影音视听", "人工优选", "自动优选", "GLOBAL"];
+  const ranked = [...groups].sort((a, b) => {
+    const ai = order.indexOf(a.name);
+    const bi = order.indexOf(b.name);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+  // 优先「当前选中非占位」的组：真实出口节点优先展示，自动优选不会被占位组吃掉
+  const withReal = ranked.find((g) => g.now && !PLACEHOLDER_NODES.has(g.now));
+  return withReal ?? ranked[0];
 });
 const currentNode = computed(() => {
   if (config.proxyMode === "direct") return "—";
@@ -145,7 +150,7 @@ async function onStop() {
         <div class="stat-item">
           <div class="stat-label">{{ $t("dashboard.current_node") }}</div>
           <div class="stat-value node-value" :title="currentNode">
-            {{ currentNode }}
+            <span class="node-name">{{ currentNode }}</span>
             <span class="node-latency">{{ currentLatency }}</span>
           </div>
         </div>
@@ -251,16 +256,19 @@ async function onStop() {
   color: var(--text-primary);
 }
 
-/* 当前节点：名称超长省略；延迟作为次级信息跟随其后。 */
+/* 当前节点：与其它 stat-value 同字号同字重（协调），
+ * 名称超长省略、完整名走 title；延迟作为次级信息跟随。 */
 .node-value {
   display: flex;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
-  font-size: 14px;
-  font-weight: 500;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.node-value .node-name {
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 

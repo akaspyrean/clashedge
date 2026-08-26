@@ -85,7 +85,7 @@ settings:
   theme_light: "浅色"
   theme_system: "跟随系统"
   autostart: "开机自启"
-  silent_autostart: "静默启动(不显示主窗口)"
+  silent_autostart: "(静默启动)"
   data_dir: "数据目录"
   open_data_dir: "打开数据目录"
   core_version: "核心版本"

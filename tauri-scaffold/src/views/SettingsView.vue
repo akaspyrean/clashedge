@@ -8,7 +8,6 @@ import { useI18n } from "vue-i18n";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { configApi, type ClashConfig } from "@/api/config";
-import { updateApi } from "@/api/update";
 import type { GeoDataStatus } from "@/api/geodata";
 import { geodataApi } from "@/api/geodata";
 import { proxyApi } from "@/api/proxy";
@@ -59,52 +58,6 @@ const autostartLoading = ref(false);
 
 const tunLoading = ref(false);
 
-// 0.8.10 Portable Updater
-const updateLoading = ref(false);
-const updateMsg = ref("");
-const stagedVersion = ref("");
-
-async function refreshStaged() {
-  try {
-    const pending = await updateApi.staged();
-    stagedVersion.value = pending?.version ?? "";
-  } catch {
-    stagedVersion.value = "";
-  }
-}
-
-async function onCheckUpdate() {
-  updateLoading.value = true;
-  updateMsg.value = "";
-  try {
-    const status = await updateApi.check();
-    if (status.status === "available") {
-      updateMsg.value = t("about.update_available", { version: status.version });
-      // P0-6：下载不传任何参数——后端只使用刚验签过的 manifest，
-      // WebView 传入的 version/url/hash 不参与下载决策。
-      await updateApi.download();
-      stagedVersion.value = status.version;
-      ElMessage.success(t("about.update_staged", { version: status.version }));
-    } else {
-      updateMsg.value = t("about.up_to_date");
-    }
-  } catch (e) {
-    updateMsg.value = t("about.update_failed", { error: String(e) });
-  } finally {
-    updateLoading.value = false;
-  }
-}
-
-async function onDiscardStaged() {
-  try {
-    await updateApi.discard();
-    stagedVersion.value = "";
-    ElMessage.success(t("about.discarded_staged"));
-  } catch (e) {
-    ElMessage.error(String(e));
-  }
-}
-
 const allowLanAdvancedOpen = ref<string[]>([]);
 
 /** 局域网 CIDR 白名单：输入框逗号/换行分隔文本 <-> string[]。 */
@@ -144,7 +97,6 @@ onMounted(async () => {
   } catch {
     geo.value = null;
   }
-  refreshStaged();
   try {
     autostart.value = await utilApi.getAutostart();
   } catch {
@@ -386,38 +338,37 @@ async function onUpdateGeo() {
             <el-input-number v-model="cfg['mixed-port']" :min="1" :max="65535" />
           </el-form-item>
           <el-form-item class="pref-switch" :label="$t('general.allow_lan')">
-            <div class="allow-lan-block">
-              <el-switch
-                :model-value="cfg['allow-lan']"
-                @change="onAllowLanChange"
-              />
-              <el-collapse v-model="allowLanAdvancedOpen" class="lan-advanced">
-                <el-collapse-item :title="$t('general.lan_advanced')" name="lan">
-                  <el-form-item :label="$t('general.bind_address')" label-width="120px">
-                    <el-input
-                      v-model="cfg['bind-address']"
-                      style="width: 300px"
-                      :placeholder="$t('general.bind_address_placeholder')"
-                      clearable
-                    />
-                  </el-form-item>
-                  <el-form-item :label="$t('general.lan_allowed_ips')" label-width="120px">
-                    <div class="lan-ips">
-                      <el-input
-                        v-model="lanAllowedIpsText"
-                        type="textarea"
-                        :rows="2"
-                        :placeholder="$t('general.lan_allowed_ips_placeholder')"
-                      />
-                      <span v-if="lanAllowedIpsWarning" class="lan-ips-warning">
-                        {{ lanAllowedIpsWarning }}
-                      </span>
-                    </div>
-                  </el-form-item>
-                </el-collapse-item>
-              </el-collapse>
-            </div>
+            <el-switch
+              :model-value="cfg['allow-lan']"
+              @change="onAllowLanChange"
+            />
           </el-form-item>
+          <!-- 高级限制：仅局域网连接开启时才显示/可设置 -->
+          <el-collapse v-if="cfg['allow-lan']" v-model="allowLanAdvancedOpen" class="lan-advanced">
+            <el-collapse-item :title="$t('general.lan_advanced')" name="lan">
+              <el-form-item :label="$t('general.bind_address')" label-width="120px">
+                <el-input
+                  v-model="cfg['bind-address']"
+                  style="width: 300px"
+                  :placeholder="$t('general.bind_address_placeholder')"
+                  clearable
+                />
+              </el-form-item>
+              <el-form-item :label="$t('general.lan_allowed_ips')" label-width="120px">
+                <div class="lan-ips">
+                  <el-input
+                    v-model="lanAllowedIpsText"
+                    type="textarea"
+                    :rows="2"
+                    :placeholder="$t('general.lan_allowed_ips_placeholder')"
+                  />
+                  <span v-if="lanAllowedIpsWarning" class="lan-ips-warning">
+                    {{ lanAllowedIpsWarning }}
+                  </span>
+                </div>
+              </el-form-item>
+            </el-collapse-item>
+          </el-collapse>
           <el-form-item class="pref-switch" :label="$t('general.ipv6')">
             <el-switch v-model="cfg.ipv6" />
           </el-form-item>
@@ -572,20 +523,6 @@ async function onUpdateGeo() {
             {{ coreStore.status.version ?? "—" }}
           </el-descriptions-item>
         </el-descriptions>
-
-        <!-- 0.8.10 Portable Updater -->
-        <div style="margin-top: 16px">
-          <el-button :loading="updateLoading" @click="onCheckUpdate">
-            {{ $t("about.check_update") }}
-          </el-button>
-          <span v-if="updateMsg" class="update-msg">{{ updateMsg }}</span>
-        </div>
-        <div v-if="stagedVersion" class="update-msg" style="margin-top: 8px">
-          {{ $t("about.update_staged", { version: stagedVersion }) }}
-          <el-button size="small" text type="danger" @click="onDiscardStaged">
-            {{ $t("about.discard_staged") }}
-          </el-button>
-        </div>
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -671,14 +608,14 @@ async function onUpdateGeo() {
   font-variant-numeric: tabular-nums;
 }
 
-.allow-lan-block {
-  width: 100%;
-}
-
+/* 高级限制（仅 allow-lan 开启时显示）：从属块，缩进对齐开关行的内容区，
+ * 用弱背景与主设置行分层，不喧宾夺主。 */
 .lan-advanced {
-  margin-top: 4px;
+  margin: 0 0 18px 150px;
   border-top: none;
   border-bottom: none;
+  background: var(--bg-soft);
+  border-radius: var(--r-sm);
 }
 
 .lan-ips {
