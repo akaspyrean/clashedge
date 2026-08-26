@@ -2,7 +2,7 @@
 //! 工具命令：打开目录、版本、语言等
 
 use crate::util::error::Result;
-use tauri::{command, State};
+use tauri::{command, Emitter, State};
 
 #[command]
 pub async fn open_data_dir(app: tauri::AppHandle) -> Result<()> {
@@ -39,7 +39,9 @@ pub fn get_autostart() -> Result<bool> {
 #[command]
 pub async fn set_autostart(app: tauri::AppHandle, enable: bool) -> Result<()> {
     crate::util::autostart::set_autostart(enable)?;
-    crate::core::runtime::refresh_tray(&app).await
+    crate::core::runtime::refresh_tray(&app).await?;
+    let _ = app.emit("autostart-changed", serde_json::json!({ "enable": enable }));
+    Ok(())
 }
 
 #[command]
