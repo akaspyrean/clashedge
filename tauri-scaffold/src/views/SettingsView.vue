@@ -355,10 +355,9 @@ async function onUpdateGeo() {
       <!-- 常规 -->
       <el-tab-pane :label="$t('settings.tabs.general')">
         <el-form label-width="150px" class="settings-form">
-          <el-form-item :label="$t('settings.language')">
+          <el-form-item :label="$t('settings.language')" class="pref-select">
             <el-select
               :model-value="cfg.locale"
-              style="width: 220px"
               @change="onLocaleChange"
             >
               <el-option
@@ -376,14 +375,17 @@ async function onUpdateGeo() {
               <el-radio-button value="dark">{{ $t("settings.theme_dark") }}</el-radio-button>
             </el-radio-group>
           </el-form-item>
-          <el-form-item :label="$t('settings.autostart')">
+          <el-form-item class="pref-switch">
+            <template #label>
+              <span class="pref-label">{{ $t("settings.autostart") }}</span>
+              <span class="pref-hint">{{ $t("settings.silent_autostart") }}</span>
+            </template>
             <el-switch v-model="autostart" :loading="autostartLoading" @change="onAutostartChange" />
-            <span class="autostart-hint">{{ $t("settings.silent_autostart") }}</span>
           </el-form-item>
           <el-form-item :label="$t('general.mixed_port')">
             <el-input-number v-model="cfg['mixed-port']" :min="1" :max="65535" />
           </el-form-item>
-          <el-form-item :label="$t('general.allow_lan')">
+          <el-form-item class="pref-switch" :label="$t('general.allow_lan')">
             <div class="allow-lan-block">
               <el-switch
                 :model-value="cfg['allow-lan']"
@@ -416,24 +418,24 @@ async function onUpdateGeo() {
               </el-collapse>
             </div>
           </el-form-item>
-          <el-form-item :label="$t('general.ipv6')">
+          <el-form-item class="pref-switch" :label="$t('general.ipv6')">
             <el-switch v-model="cfg.ipv6" />
           </el-form-item>
-          <el-form-item :label="$t('general.log_level')">
-            <el-select v-model="cfg['log-level']" style="width: 220px">
+          <el-form-item :label="$t('general.log_level')" class="pref-select">
+            <el-select v-model="cfg['log-level']">
               <el-option v-for="lv in logLevels" :key="lv" :label="lv" :value="lv" />
             </el-select>
           </el-form-item>
-          <el-form-item :label="$t('general.geodata_mode')">
-            <el-select v-model="cfg['geodata-mode']" style="width: 220px">
+          <el-form-item :label="$t('general.geodata_mode')" class="pref-select">
+            <el-select v-model="cfg['geodata-mode']">
               <el-option v-for="m in geodataModes" :key="m" :label="m" :value="m" />
             </el-select>
           </el-form-item>
-          <el-form-item :label="$t('general.geo_auto_update')">
+          <el-form-item class="pref-switch" :label="$t('general.geo_auto_update')">
             <el-switch v-model="cfg['geo-auto-update']" />
           </el-form-item>
-          <el-form-item :label="$t('general.find_process_mode')">
-            <el-select v-model="cfg['find-process-mode']" style="width: 220px">
+          <el-form-item :label="$t('general.find_process_mode')" class="pref-select">
+            <el-select v-model="cfg['find-process-mode']">
               <el-option
                 v-for="m in findProcessModes"
                 :key="m"
@@ -442,10 +444,9 @@ async function onUpdateGeo() {
               />
             </el-select>
           </el-form-item>
-          <el-form-item :label="$t('general.proxy_mode')">
+          <el-form-item :label="$t('general.proxy_mode')" class="pref-select">
             <el-select
               :model-value="cfg.mode"
-              style="width: 220px"
               @change="onProxyModeChange"
             >
               <el-option
@@ -456,16 +457,16 @@ async function onUpdateGeo() {
               />
             </el-select>
           </el-form-item>
-          <el-form-item :label="$t('general.system_proxy')">
+          <el-form-item class="pref-switch" :label="$t('general.system_proxy')">
             <el-switch
               :model-value="cfg['system-proxy']"
               @change="onSystemProxyChange"
             />
           </el-form-item>
-          <el-form-item :label="$t('settings.data_dir')">
+          <el-form-item class="pref-action" :label="$t('settings.data_dir')">
             <el-button @click="onOpenDataDir">{{ $t("settings.open_data_dir") }}</el-button>
           </el-form-item>
-          <el-form-item>
+          <el-form-item class="pref-save">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
           </el-form-item>
         </el-form>
@@ -474,17 +475,17 @@ async function onUpdateGeo() {
       <!-- 代理 -->
       <el-tab-pane :label="$t('settings.tabs.proxy')">
         <el-form label-width="150px" class="settings-form">
-          <el-form-item :label="$t('proxy.config_mixin')">
+          <el-form-item class="pref-switch" :label="$t('proxy.config_mixin')">
             <el-switch v-model="cfg['mixin-enabled']" />
           </el-form-item>
-          <el-form-item :label="$t('proxy.tun_mode')">
+          <el-form-item class="pref-switch" :label="$t('proxy.tun_mode')">
             <el-switch
               :model-value="cfg.tun.enable"
               :loading="tunLoading"
               @change="onTunEnableChange"
             />
           </el-form-item>
-          <el-form-item>
+          <el-form-item class="pref-save">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
           </el-form-item>
         </el-form>
@@ -493,7 +494,7 @@ async function onUpdateGeo() {
       <!-- TUN -->
       <el-tab-pane :label="$t('settings.tabs.tun')">
         <el-form label-width="150px" class="settings-form">
-          <el-form-item :label="$t('tun.enable')">
+          <el-form-item class="pref-switch" :label="$t('tun.enable')">
             <el-switch
               :model-value="cfg.tun.enable"
               :loading="tunLoading"
@@ -506,10 +507,10 @@ async function onUpdateGeo() {
               <el-option value="gvisor" :label="$t('tun.stack_gvisor')" />
             </el-select>
           </el-form-item>
-          <el-form-item :label="$t('tun.auto_route')">
+          <el-form-item class="pref-switch" :label="$t('tun.auto_route')">
             <el-switch v-model="cfg.tun['auto-route']" />
           </el-form-item>
-          <el-form-item :label="$t('tun.auto_detect_interface')">
+          <el-form-item class="pref-switch" :label="$t('tun.auto_detect_interface')">
             <el-switch v-model="cfg.tun['auto-detect-interface']" />
           </el-form-item>
           <el-form-item :label="$t('tun.interface_name')">
@@ -519,7 +520,7 @@ async function onUpdateGeo() {
               :placeholder="$t('tun.interface_name')"
             />
           </el-form-item>
-          <el-form-item>
+          <el-form-item class="pref-save">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
           </el-form-item>
         </el-form>
@@ -548,10 +549,10 @@ async function onUpdateGeo() {
               </span>
             </div>
           </el-form-item>
-          <el-form-item>
+          <el-form-item class="pref-save">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
           </el-form-item>
-          <el-form-item>
+          <el-form-item class="pref-danger">
             <el-button @click="onImportConfig">{{ $t("advanced.import_config") }}</el-button>
             <el-button @click="onExportConfig">{{ $t("advanced.export_config") }}</el-button>
             <el-button type="danger" plain @click="onReset">
@@ -595,13 +596,67 @@ async function onUpdateGeo() {
   max-width: 680px;
 }
 
+/* 桌面偏好布局：行距收敛（后台表单 22px → 桌面设置 18px）
+ * 开关行/标签的层级统一，去"表单"感。 */
 .settings-form .el-form-item {
-  margin-bottom: 22px;
+  margin-bottom: 18px;
 }
 
 .settings-form .el-form-item__label {
   color: var(--text-secondary);
   font-weight: 500;
+}
+
+/* 开关行：标签居左、控件居右对齐，形成"系统代理 [开]"的桌面偏好节奏。 */
+.settings-form .el-form-item--no-asterisk.pref-switch,
+.settings-form .pref-switch {
+  display: flex;
+  align-items: center;
+}
+
+.settings-form .pref-switch .el-form-item__content {
+  margin-left: auto;
+}
+
+/* 开关行 label：主标签 + 次级说明（桌面设置常用单行 label 或多行 stack） */
+.settings-form .pref-switch .el-form-item__label {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.4;
+}
+
+.pref-label {
+  font-weight: 500;
+}
+
+.pref-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+/* select/输入行：控件固定宽度，标签不换行 */
+.settings-form .pref-select .el-form-item__content {
+  width: 220px;
+  margin-left: auto;
+}
+
+/* 保存行：与表单体隔开，不参与标签居左的排版 */
+.settings-form .pref-save .el-form-item__content {
+  margin-left: 150px;
+}
+
+/* 危险操作行：底部独立区域，弱化边框与色彩 */
+.settings-form .pref-danger {
+  border-top: 1px solid var(--card-border);
+  padding-top: 16px;
+  margin-top: 4px;
+}
+
+.settings-form .pref-danger .el-form-item__content {
+  margin-left: 150px;
 }
 
 .geo-row {
@@ -614,12 +669,6 @@ async function onUpdateGeo() {
   font-size: 12px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
-}
-
-.autostart-hint {
-  margin-left: 10px;
-  font-size: 12px;
-  color: var(--text-tertiary);
 }
 
 .allow-lan-block {

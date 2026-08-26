@@ -83,14 +83,14 @@ async function connect() {
   }
 }
 
-const levelType = (level: string) =>
+const levelClass = (level: string): string =>
   level === "error"
-    ? "danger"
+    ? "lv-error"
     : level === "warning"
-      ? "warning"
+      ? "lv-warning"
       : level === "debug"
-        ? "info"
-        : "success";
+        ? "lv-debug"
+        : "lv-info";
 
 onMounted(async () => {
   unlisteners.push(
@@ -153,9 +153,7 @@ onUnmounted(() => {
         {{ $t(errorMsg ? "logs.disconnected" : "logs.waiting") }}
       </div>
       <div v-for="e in entries" :key="e.id" class="log-line">
-        <el-tag :type="levelType(e.level)" size="small" effect="plain">
-          {{ e.level.toUpperCase() }}
-        </el-tag>
+        <span class="log-level" :class="levelClass(e.level)">{{ e.level.toUpperCase() }}</span>
         <span class="log-msg">{{ e.message }}</span>
       </div>
     </div>
@@ -163,30 +161,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 状态指示：与概览页同一套「小圆点 + 文字」语言（设计规范 §8）。 */
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-
-.status-pill.running {
-  color: var(--done);
-}
-
-.status-pill.running .status-dot {
-  background: var(--done);
-}
+/* 状态指示由全局 .status-pill/.status-dot/.running 提供（styles.css），
+ * 与概览页共用同一套语义色。 */
 
 .log-toolbar {
   display: flex;
@@ -232,8 +208,33 @@ onUnmounted(() => {
   background: var(--interactive-hover);
 }
 
-.log-line .el-tag {
+/* 级别文字：固定宽度右对齐，语义色统一（error/warning 醒目，debug/info 弱化），
+ * 不给整行铺背景，保持日志工具化可读。 */
+.log-level {
   flex: none;
+  width: 56px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.log-level.lv-error {
+  color: var(--error);
+}
+
+.log-level.lv-warning {
+  color: var(--approval);
+}
+
+.log-level.lv-debug {
+  color: var(--text-tertiary);
+}
+
+.log-level.lv-info {
+  color: var(--accent);
 }
 
 .log-msg {
