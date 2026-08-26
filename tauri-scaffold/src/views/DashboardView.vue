@@ -70,12 +70,12 @@ const currentNode = computed(() => {
   if (config.proxyMode === "direct") return "—";
   return currentGroup.value?.now ?? "—";
 });
-/** 当前节点延迟：复用代理页已测的组延迟；未测为 "—"。 */
+/** 当前节点延迟：复用代理页已测的组延迟；为空时整行不显示（避免 "—" 困惑）。 */
 const currentLatency = computed(() => {
   const g = currentGroup.value;
-  if (!g) return "—";
+  if (!g) return null;
   const d = proxyStore.delays[g.name];
-  return d == null ? "—" : `${d} ms`;
+  return d == null ? null : `${d} ms`;
 });
 
 /** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色），
@@ -151,7 +151,7 @@ async function onStop() {
           <div class="stat-label">{{ $t("dashboard.current_node") }}</div>
           <div class="stat-value node-value" :title="currentNode">
             <span class="node-name">{{ currentNode }}</span>
-            <span class="node-latency">{{ currentLatency }}</span>
+            <span v-if="currentLatency" class="node-latency">{{ currentLatency }}</span>
           </div>
         </div>
         <div class="stat-item">
