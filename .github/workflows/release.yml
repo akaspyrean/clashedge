@@ -138,8 +138,11 @@ jobs:
         run: |
           $launcher = ".\release\portable-out\ClashEdge.exe"
           if (-not (Test-Path $launcher)) { throw "Launcher not found: $launcher" }
-          & $launcher --test-recovery
-          if ($LASTEXITCODE -ne 0) { throw "Launcher recovery tests failed (exit $LASTEXITCODE)" }
+          # ClashEdge.exe 是 winexe（GUI 子系统），PowerShell 的 & 运算符不捕获
+          # 它的退出码（$LASTEXITCODE 为空）。用 Start-Process -Wait -PassThru
+          # 正确获取 ExitCode。
+          $proc = Start-Process -FilePath $launcher -ArgumentList "--test-recovery" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) { throw "Launcher recovery tests failed (exit $($proc.ExitCode))" }
           Write-Host "Launcher recovery tests passed."
 
       - name: Generate Portable Updater manifest
