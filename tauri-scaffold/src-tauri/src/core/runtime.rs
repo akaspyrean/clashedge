@@ -261,16 +261,22 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
 pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
 
-    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
-    let _tx = state.config_tx.lock().await;
-
     // P0-2：开启前必须确认 Core Running 且 mixed-port 实际 TCP 可连接；
     // 不满足时先尝试自动启动核心，仍失败则拒绝开启并返回明确错误——
     // 绝不能让 Windows 指向无人监听的代理端口。此校验在任何持久化之前，
     // 失败时不留下任何半套状态。
+    //
+    // 注意：ensure_core_serving 在核心异常时可能触发一次慢速
+    // start()/restart()（含就绪轮询，最长 ~10s）。若它在拿到 config_tx
+    // 之后执行，会长期占住这把全局锁，导致其余开关（TUN/代理模式/mixin/
+    // 托盘）全部排队等待——「很多开关像卡 bug」。此校验只确认核心在服务，
+    // 不修改配置，放到事务锁之前执行最安全。
     if enable {
         ensure_core_serving(app).await?;
     }
+
+    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
+    let _tx = state.config_tx.lock().await;
 
     // C9 系统代理开启前密钥兜底：若当前配置仍是占位/空/旧遗留密钥，立即轮换。
     // 系统代理开启后，本机所有流量（含局域网可到达路径）都可能触达本地控制器，
