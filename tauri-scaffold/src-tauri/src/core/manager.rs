@@ -251,6 +251,17 @@ impl CoreManager {
     /// 启动 mihomo 进程：生成运行时配置 → `-d -f` 启动 → 轮询 REST 就绪
     pub async fn start(&self) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
+        self.start_locked().await
+    }
+
+    /// start 实现体（调用方必须已持有 lifecycle 锁）。
+    ///
+    /// P0 修复：tokio Mutex 不可重入——旧实现 restart() 持锁后调 stop()/
+    /// start()，而它们内部再次 lock 同一把锁 → 永久死锁。表现为：重启/激活
+    /// Profile/TUN 回退重启全部挂起；且持有 config_tx 的事务走到该分支后，
+    /// 所有后续配置与开关操作排队等锁，整个应用"卡死"。改为公开入口只加锁、
+    /// 内部 *_locked 不再加锁，串行语义不变。
+    async fn start_locked(&self) -> Result<()> {
         // P0-6：递增 generation 使所有旧 watcher 失效（它们会在下一次
         // 轮询比对时退出），随后本流程成功后只 spawn 一个新 watcher。
         let generation = self
@@ -259,7 +270,7 @@ impl CoreManager {
             + 1;
 
         if self.is_running() {
-            self.stop().await?;
+            self.stop_locked().await?;
         }
 
         // P1-7：用户主动启动 → 清除停止标志
@@ -353,7 +364,7 @@ impl CoreManager {
                 // 系统代理指向 127.0.0.1:7890 便随之失效——必须显式报错，而非假 Running
                 // （坚持「界面状态 = Mihomo 实际状态」）。
                 if let Err(bind_err) = self.detect_bind_conflict() {
-                    let _ = self.stop().await; // 清掉僵尸进程（stop 会把状态置 Stopped）
+                    let _ = self.stop_locked().await; // 清掉僵尸进程（stop_locked 会把状态置 Stopped）
                     *self.status.lock().unwrap() = CoreStatus::Error(bind_err.to_string());
                     let _ = self.app_handle.emit(
                         "core-status-changed",
@@ -385,7 +396,7 @@ impl CoreManager {
             }
             Err(e) => {
                 *self.status.lock().unwrap() = CoreStatus::Error(e.to_string());
-                let _ = self.stop().await; // 清掉起不来的僵尸进程
+                let _ = self.stop_locked().await; // 清掉起不来的僵尸进程
                 Err(e)
             }
         }
@@ -821,6 +832,11 @@ impl CoreManager {
     /// 停止 mihomo 进程
     pub async fn stop(&self) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
+        self.stop_locked().await
+    }
+
+    /// stop 实现体（调用方必须已持有 lifecycle 锁，见 start_locked 注释）。
+    async fn stop_locked(&self) -> Result<()> {
         // P0-6：递增 generation 使旧 watcher 失效（防止它把本次主动停止
         // 当成崩溃处理）；P1-7：标记用户主动停止双保险
         self.generation
@@ -873,8 +889,16 @@ impl CoreManager {
     /// 重启 mihomo
     pub async fn restart(&self) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
-        self.stop().await?;
-        self.start().await
+        // P0 修复：旧实现 self.stop().await? / self.start().await 会再次 lock
+        // 同一把 tokio Mutex（不可重入）→ 永久死锁。改用 *_locked 不再加锁的
+        // 内部实现体，串行语义不变。
+        self.restart_locked().await
+    }
+
+    /// restart 实现体（调用方必须已持有 lifecycle 锁，见 start_locked 注释）。
+    async fn restart_locked(&self) -> Result<()> {
+        self.stop_locked().await?;
+        self.start_locked().await
     }
 
     /// P0-4：热重载后的真实运行状态校验。PUT /configs 返回 200 不代表新配置
@@ -1002,7 +1026,9 @@ impl CoreManager {
         }
 
         info!("Config rewritten, restarting core");
-        self.restart().await
+        // P0 修复：reload_config 已持 lifecycle 锁，直接调 restart_locked
+        // 而非 restart()（后者会再 lock → 死锁）。
+        self.restart_locked().await
     }
 
     /// 用当前共享配置重新生成 runtime-config.yaml（不重启、不推事件）。
