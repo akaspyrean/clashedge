@@ -70,6 +70,14 @@ function delayOf(name: string): string {
   return d == null ? "—" : `${d} ms`;
 }
 
+/** 延迟分级（克制：<100 正常 / 100-300 中性 / >300 弱警告 / 失败错误）：
+ *  返回修饰 class 名；未测/无值时无修饰。不做「交通灯墙」。 */
+function delayClass(d: number | null | undefined): string {
+  if (d == null) return "";
+  if (d >= 300) return "delay-warn";
+  return "";
+}
+
 /** 人工优选组（手动挑选节点场景）专属：提供组内节点逐一测速。 */
 const isManual = (g: ProxyGroup) => resolveGroupId(g.name) === "manual";
 
@@ -215,10 +223,11 @@ watch(
             type="button"
             class="proxy-item"
             :class="{ active: proxy === g.now }"
+            :title="proxy"
             @click="onSelectNode(g.name, proxy)"
           >
             <span class="proxy-node">{{ proxy }}</span>
-            <span v-if="isManual(g)" class="proxy-node-delay">
+            <span v-if="isManual(g)" class="proxy-node-delay" :class="delayClass(proxyStore.nodeDelays[proxy])">
               {{ nodeDelayOf(proxy) }}
             </span>
           </button>
@@ -232,7 +241,8 @@ watch(
 .proxy-toolbar {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-3);
   margin-bottom: var(--space-4);
 }
 
@@ -312,6 +322,7 @@ watch(
   color: var(--text-secondary);
   font-size: 13px;
   line-height: inherit;
+  max-width: 100%;
   cursor: pointer;
   user-select: none;
   transition:
@@ -321,9 +332,26 @@ watch(
     transform 0.12s ease;
 }
 
+/* 节点名超长省略；完整名称通过 title 提示查看（见模板 :title="proxy"）。 */
+.proxy-node {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .proxy-node-delay {
+  flex: none;
   font-size: 12px;
   color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 延迟分级（克制）：>300ms 弱警告；失败（"—"）与 <300 用中性文字，
+ * 不做「交通灯墙」。 */
+.proxy-node-delay.delay-warn {
+  color: var(--approval);
 }
 
 .proxy-item:hover {

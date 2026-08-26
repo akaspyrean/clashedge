@@ -99,8 +99,7 @@ async function onDiscardStaged() {
   try {
     await updateApi.discard();
     stagedVersion.value = "";
-    // 技术债：后端 i18n yaml 归属 src-tauri（本批次不可改），暂用字面量中文
-    ElMessage.success("已丢弃已下载的更新");
+    ElMessage.success(t("about.discarded_staged"));
   } catch (e) {
     ElMessage.error(String(e));
   }
@@ -583,7 +582,7 @@ async function onUpdateGeo() {
         <div v-if="stagedVersion" class="update-msg" style="margin-top: 8px">
           {{ $t("about.update_staged", { version: stagedVersion }) }}
           <el-button size="small" text type="danger" @click="onDiscardStaged">
-            丢弃
+            {{ $t("about.discard_staged") }}
           </el-button>
         </div>
       </el-tab-pane>

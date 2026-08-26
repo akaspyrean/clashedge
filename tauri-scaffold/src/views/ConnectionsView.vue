@@ -186,7 +186,7 @@ onUnmounted(() => {
     <el-empty v-else :description="$t('connections.empty')" />
 
     <div v-if="connectionCount > MAX_DISPLAY" class="truncated-notice">
-      仅显示前 {{ MAX_DISPLAY }} 条连接（共 {{ connectionCount }} 条）
+      {{ $t("connections.truncated_notice", { max: MAX_DISPLAY, count: connectionCount }) }}
     </div>
   </div>
 </template>
