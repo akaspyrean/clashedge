@@ -59,9 +59,9 @@ async function onTestGroup(group: string) {
 }
 
 /** 组延迟文本：未测试 / 失败时显示 "—"。 */
-function delayOf(name: string): string {
+function delayOf(name: string): string | null {
   const d = proxyStore.delays[name];
-  return d == null ? "—" : `${d} ms`;
+  return d == null ? null : `${d} ms`;
 }
 
 /** 延迟分级（克制：<100 正常 / 100-300 中性 / >300 弱警告 / 失败错误）：
@@ -181,7 +181,7 @@ watch(
             <span class="group-name">{{ g.name }}</span>
             <el-tag size="small" effect="plain">{{ g.type }}</el-tag>
             <span class="group-now">{{ g.now }}</span>
-            <el-tag size="small" type="info" effect="plain">
+            <el-tag v-if="delayOf(g.name)" size="small" type="info" effect="plain">
               {{ $t("proxies.latency") }} {{ delayOf(g.name) }}
             </el-tag>
             <span class="group-actions">
