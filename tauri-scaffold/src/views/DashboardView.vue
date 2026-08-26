@@ -41,12 +41,30 @@ const statusKey = computed(() =>
         : "dashboard.stopped"
 );
 
-/** 当前节点：mihomo GLOBAL 组的当前选中（rule/global 模式下都直观，
- *  direct 模式无代理组 → 显示 "—"）。 */
-const currentGroup = computed(() =>
-  proxyStore.groups.find((g) => g.name === "GLOBAL")
-);
-const currentNode = computed(() => currentGroup.value?.now ?? "—");
+/** 当前节点所处的组。
+ *  - 全局模式：GLOBAL 组的当前选中；
+ *  - 规则模式：优先出口组「扶梯出行」，回退 人工优选/自动优选/人工智能/影音视听；
+ *    （GLOBAL.now 在 rule 下常为 DIRECT，不代表实际出口，不能取它做「当前节点」）
+ *  - 直连模式：无代理节点。
+ * 取到的 `now` 即为真实出口选中，确保概览与代理页一致。 */
+const currentGroup = computed(() => {
+  const groups = proxyStore.groups;
+  if (!groups.length) return undefined;
+  if (config.proxyMode === "direct") return undefined;
+  const order: string[] =
+    config.proxyMode === "global"
+      ? ["GLOBAL"]
+      : ["扶梯出行", "人工优选", "自动优选", "人工智能", "影音视听", "GLOBAL"];
+  for (const name of order) {
+    const g = groups.find((x) => x.name === name);
+    if (g) return g;
+  }
+  return groups[0];
+});
+const currentNode = computed(() => {
+  if (config.proxyMode === "direct") return "—";
+  return currentGroup.value?.now ?? "—";
+});
 /** 当前节点延迟：复用代理页已测的组延迟；未测为 "—"。 */
 const currentLatency = computed(() => {
   const g = currentGroup.value;
