@@ -58,6 +58,8 @@ jobs:
       - name: cargo audit (known vulnerabilities)
         # cargo-audit 检查 Cargo.lock 中已公开的依赖漏洞。
         # 安装一次后缓存由 rust-cache 保留。
+        # working-directory 与 fmt/clippy/test 一致（Cargo.lock 在 src-tauri 下）。
+        working-directory: tauri-scaffold/src-tauri
         run: |
           cargo install cargo-audit --locked 2>$null
           cargo audit
