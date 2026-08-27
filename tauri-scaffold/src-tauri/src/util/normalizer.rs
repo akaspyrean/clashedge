@@ -106,22 +106,15 @@ async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscr
                 .unwrap_or("compatible")
                 .to_ascii_lowercase();
             match ptype.as_str() {
-                "http" | "compatible" => match expand_http_provider(app, &name, prov_map).await {
-                    Ok((nodes, bytes)) => {
-                        total_bytes += bytes;
-                        if total_bytes > MAX_TOTAL_PROVIDER_BYTES {
-                            return Err(Error::Subscription(format!(
-                                "total provider bytes {} exceed limit of {}",
-                                total_bytes, MAX_TOTAL_PROVIDER_BYTES
-                            )));
-                        }
-                        append_prefixed(&mut proxies, &name, nodes);
+                "http" | "compatible" => {
+                    match expand_http_provider(app, &name, prov_map, &mut total_bytes).await {
+                        Ok(nodes) => append_prefixed(&mut proxies, &name, nodes),
+                        Err(e) => warnings.push(format!(
+                            "http provider '{}' could not be expanded: {}",
+                            name, e
+                        )),
                     }
-                    Err(e) => warnings.push(format!(
-                        "http provider '{}' could not be expanded: {}",
-                        name, e
-                    )),
-                },
+                }
                 "inline" => {
                     let nodes = prov_map
                         .get("proxies")
@@ -170,12 +163,16 @@ async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscr
 }
 
 /// 拉取 http 型 provider 的远端 YAML，抽取其顶层 `proxies`。
-/// 返回 (节点列表, 已拉取字节数) 供调用方累计总量上限。
+///
+/// `total_bytes` 是所有 http provider 的累计已下载字节数（跨 provider 总量上限）。
+/// 在**下载 chunk 期间**就累加并校验，无论后续 YAML/UTF-8 解析是否成功都计入
+/// budget——避免"下载了 9MB 但解析失败 → 不计入总量"的绕过。
 async fn expand_http_provider(
     app: &AppHandle,
     name: &str,
     prov_map: &serde_yaml::Mapping,
-) -> Result<(Vec<Value>, u64)> {
+    total_bytes: &mut u64,
+) -> Result<Vec<Value>> {
     let url = prov_map
         .get("url")
         .and_then(|v| v.as_str())
@@ -205,21 +202,26 @@ async fn expand_http_provider(
                 MAX_PROVIDER_BYTES
             )));
         }
+        // 跨 provider 累计，下载即计入（解析失败也计入）。
+        *total_bytes += chunk.len() as u64;
+        if *total_bytes > MAX_TOTAL_PROVIDER_BYTES {
+            return Err(Error::Subscription(format!(
+                "total provider bytes {} exceed limit of {}",
+                *total_bytes, MAX_TOTAL_PROVIDER_BYTES
+            )));
+        }
     }
-    let total = bytes.len() as u64;
     let text = String::from_utf8(bytes)
         .map_err(|e| Error::Subscription(format!("provider response not UTF-8: {}", e)))?;
 
     let doc: Value = serde_yaml::from_str(&text)
         .map_err(|e| Error::Subscription(format!("provider YAML invalid: {}", e)))?;
-    Ok((
-        doc.as_mapping()
-            .and_then(|m| m.get("proxies"))
-            .and_then(|v| v.as_sequence())
-            .cloned()
-            .unwrap_or_default(),
-        total,
-    ))
+    Ok(doc
+        .as_mapping()
+        .and_then(|m| m.get("proxies"))
+        .and_then(|v| v.as_sequence())
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// 读取 file 型 provider：仅允许应用数据目录内的相对安全路径。
@@ -257,15 +259,26 @@ fn expand_file_provider(
 
     let base = crate::util::paths::get_app_data_dir(app)
         .map_err(|e| Error::Subscription(format!("cannot resolve data dir: {}", e)))?;
+    // 真正的符号链接防护：只做 `Path::starts_with` 是纯组件比较，不解析 symlink /
+    // junction——Data/xxx/link.yaml 仍能 starts_with(Data)，但其真实目标可能在外部。
+    // 这里 canonicalize 后再比较真实路径。
+    let base_canon = base
+        .canonicalize()
+        .map_err(|e| Error::Subscription(format!("cannot canonicalize data dir: {}", e)))?;
     let full = base.join(p);
-    // 再次确认解析后仍落在 base 内（防御符号链接/绝对拼接）
-    if !full.starts_with(&base) {
+    let full_canon = full.canonicalize().map_err(|e| {
+        Error::Subscription(format!(
+            "file provider '{}' unreadable (cannot canonicalize): {}",
+            name, e
+        ))
+    })?;
+    if !full_canon.starts_with(&base_canon) {
         return Err(Error::Subscription(format!(
             "file provider '{}' escapes data dir",
             name
         )));
     }
-    let text = std::fs::read_to_string(&full)
+    let text = std::fs::read_to_string(&full_canon)
         .map_err(|e| Error::Subscription(format!("file provider '{}' unreadable: {}", name, e)))?;
     let doc: Value = serde_yaml::from_str(&text)
         .map_err(|e| Error::Subscription(format!("provider YAML invalid: {}", e)))?;

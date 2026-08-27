@@ -372,23 +372,37 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
         // 开启：接管并删除用户原有 PAC（原值已随 journal.original 保留）
         crate::proxy::system_proxy::set_system_proxy(true, &address, &bypass, None)
     } else {
-        // 关闭：退出接管 → 优先读 journal.original 完整还原用户原代理
-        // （P0-1 语义变更，用户已授权）。无 journal 或 original 为 None →
-        // 退化为 ProxyEnable=0（与旧行为一致，不破坏无 journal 的边界）。
-        match data_dir
+        // 关闭：只有当我们确实接管了系统代理（journal 存在且 owned=true）才允许
+        // 还原/关闭。没有接管凭据 → 不碰注册表——否则会把用户自己（非 ClashEdge）
+        // 的系统代理也关掉（例如用户原本用 10.0.0.5:8080，ClashEdge 从未接管过）。
+        //
+        // 还原语义（与 recover_on_startup 的异常恢复路径保持一致）：
+        // - original.enabled = true  → 还原静态代理 address/bypass + 原 PAC；
+        // - original.enabled = false → ProxyEnable=0，同时写回 original.auto_config_url
+        //   （原 PAC），避免"正常关闭丢 PAC、异常恢复反而保留"的语义不一致；
+        // - original = None          → 还原为"无代理"（ProxyEnable=0）。
+        let journal = data_dir
             .as_ref()
             .ok()
-            .and_then(|d| crate::proxy::journal::read_journal(d))
-            .and_then(|j| j.original)
-        {
-            Some(orig) if orig.enabled => crate::proxy::system_proxy::set_system_proxy(
-                true,
-                &orig.address,
-                &orig.bypass_list,
-                orig.auto_config_url.as_deref(),
-            ),
-            Some(_) => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None),
-            None => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None),
+            .and_then(|d| crate::proxy::journal::read_journal(d));
+        match journal.as_ref().filter(|j| j.owned) {
+            Some(j) => match &j.original {
+                Some(orig) if orig.enabled => crate::proxy::system_proxy::set_system_proxy(
+                    true,
+                    &orig.address,
+                    &orig.bypass_list,
+                    orig.auto_config_url.as_deref(),
+                ),
+                Some(orig) => crate::proxy::system_proxy::set_system_proxy(
+                    false,
+                    "",
+                    &[],
+                    orig.auto_config_url.as_deref(),
+                ),
+                None => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None),
+            },
+            // 未接管 → 不碰 Windows Registry（保持用户自己的代理不变）
+            None => Ok(()),
         }
     };
     if let Err(e) = reg_result {
