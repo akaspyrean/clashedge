@@ -151,7 +151,7 @@ pub fn build_tray_menu(
     // More submenu
     // dev_tools（打开 devtools）仅 debug 构建展示；release 不暴露调试面。
     // move_to_monitor 无真实实现（违反「已展示=必须可用」），菜单中移除；
-    // 待 Portable Updater 阶段实现后再恢复。
+    // Portable Updater 由设置页和 Launcher 链路承载，托盘不重复增加入口。
     // dev_tools 是 cfg 条件条目，无法收进 vec![] 字面量：先建非空 Vec，
     // debug 构建再把 dev_tools 插到队首，菜单顺序与旧实现一致。
     #[allow(unused_mut)]

@@ -37,6 +37,20 @@ pub struct ProxyJournal {
     pub original: Option<SystemProxyConfig>,
     /// 是否由本应用接管了系统代理
     pub owned: bool,
+    /// 接管成功后应存在的完整 Windows 代理状态。
+    /// v1.0.4 journal 没有此字段；旧文件按 mixed_port 生成 canonical 状态。
+    #[serde(default)]
+    pub managed: Option<SystemProxyConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseOutcome {
+    NoOwnership,
+    OwnershipLost,
+    Restored {
+        message: String,
+        restored: SystemProxyConfig,
+    },
 }
 
 fn journal_path(data_dir: &std::path::Path) -> PathBuf {
@@ -85,120 +99,330 @@ pub fn read_journal(data_dir: &std::path::Path) -> Option<ProxyJournal> {
     }
 }
 
-/// 启动自愈：检测上次会话是否异常结束且系统代理仍被本应用占用。
-///
-/// 返回 `Some(恢复说明)` 表示执行了一次恢复（已把注册表代理改回原始状态）。
-/// 判定条件（全部满足才动作，避免误伤用户手动设置的代理）：
-/// 1. journal 存在（上次会话开启过系统代理且未走干净关闭路径）；
-/// 2. 当前注册表代理 enabled 且 address == `127.0.0.1:{mixed_port}`
-///    （仍指向本应用端口 = 上次进程没来得及还原）。
-///
-/// P0-1：恢复成功后才删 journal。旧行为是"读完即删"，恢复失败的话 journal
-/// 已不在，下次启动再无凭据继续恢复。新顺序：
-/// 1. 读取 journal + 当前注册表状态；
-/// 2. 若不命中恢复条件（无 journal / 非指向本应用的死代理）→ 删 journal 收尾；
-/// 3. 若命中 → 执行恢复；**恢复成功才删 journal**；恢复失败时保留 journal，
-///    下次启动可继续尝试恢复。
-pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
-    let journal = read_journal(data_dir)?;
-    // 以 journal 记录的端口为准（更贴近"当时"的状态）
-    let ours = format!("127.0.0.1:{}", journal.mixed_port);
+fn canonical_managed(journal: &ProxyJournal) -> SystemProxyConfig {
+    journal
+        .managed
+        .clone()
+        .unwrap_or_else(|| crate::proxy::system_proxy::managed_proxy_config(journal.mixed_port))
+}
 
-    // 判定当前注册表代理是否仍指向本应用的死代理。
-    // 区分「读取成功但非本应用接管」与「注册表读取失败」：
-    // - 读取成功且非本应用接管（用户已手动改回 / 其他工具接管）→ journal 失去
-    //   意义，清理收尾；
-    // - **注册表读取失败** → 无法判定当前状态，是临时的还是永久未知。
-    //   此时**必须保留 journal**（不清），返回 None 待下次启动再试——否则先
-    //   删凭据再判定，正是审计 P0-1 指出的"先删后恢复"边界。
-    let current = match crate::proxy::system_proxy::get_system_proxy() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(
-                "Cannot read system proxy registry state on startup (keeping journal for retry): {}",
-                e
-            );
-            // P0-1：注册表读取失败 → 无法判定当前状态，保留 journal 下次启动再试。
-            // 绝不能在这里 clear_journal——否则异常退出残留的死代理会永久失去恢复凭据。
-            return None;
-        }
+/// 端口切换已安全释放旧 ownership、但新端口接管随后失败时，只有 Windows
+/// 仍精确等于释放后的用户基线，才允许把旧 journal/managed 状态写回。
+/// 退避期间用户或其他软件一旦修改任一字段，就拒绝回滚，避免覆盖新接管者。
+fn restore_previous_with<Read, Restore, Write>(
+    previous: &ProxyJournal,
+    expected_baseline: &SystemProxyConfig,
+    mut read: Read,
+    mut restore: Restore,
+    mut write: Write,
+) -> Result<()>
+where
+    Read: FnMut() -> Result<SystemProxyConfig>,
+    Restore: FnMut(&SystemProxyConfig) -> Result<()>,
+    Write: FnMut(&ProxyJournal) -> Result<()>,
+{
+    let current = read()?;
+    if current != *expected_baseline {
+        return Err(Error::Other(
+            "Windows proxy changed after the old port was released; refusing to restore previous ClashEdge ownership"
+                .to_string(),
+        ));
+    }
+    write(previous)?;
+    let previous_managed = canonical_managed(previous);
+    restore(&previous_managed)?;
+    if read()? != previous_managed {
+        return Err(Error::Other(
+            "Previous ClashEdge proxy ownership restore could not be verified; journal kept"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn restore_previous_ownership(
+    data_dir: &std::path::Path,
+    previous: &ProxyJournal,
+    expected_baseline: &SystemProxyConfig,
+) -> Result<()> {
+    restore_previous_with(
+        previous,
+        expected_baseline,
+        crate::proxy::system_proxy::get_system_proxy,
+        crate::proxy::system_proxy::restore_system_proxy,
+        |journal| write_journal(data_dir, journal),
+    )
+}
+
+fn error_after_switch_failure(
+    data_dir: &std::path::Path,
+    previous_switch: Option<&(ProxyJournal, SystemProxyConfig)>,
+    primary: Error,
+) -> Error {
+    let Some((previous, baseline)) = previous_switch else {
+        return primary;
     };
-    let stale = current.enabled && current.address == ours;
+    match restore_previous_ownership(data_dir, previous, baseline) {
+        Ok(()) => Error::Other(format!(
+            "{}; previous ClashEdge proxy ownership was restored",
+            primary
+        )),
+        Err(rollback) => Error::Other(format!(
+            "{}; previous ownership rollback was not safe or failed: {}",
+            primary, rollback
+        )),
+    }
+}
 
-    if !stale {
-        // journal 残留但当前注册表不再指向本应用的死代理（用户已手动改回 / 已被
-        // 其他工具接管）→ journal 已无恢复意义，清理收尾。
-        clear_journal(data_dir);
-        return None;
+fn points_at_managed_address(current: &SystemProxyConfig, managed: &SystemProxyConfig) -> bool {
+    current.enabled && current.address == managed.address
+}
+
+/// ownership 释放的可测试主体：只有完整 managed 状态仍一致时才写注册表；
+/// 写后复读与 original 精确相等，才允许清 journal。
+fn release_with<Read, Restore, Clear>(
+    journal: Option<ProxyJournal>,
+    journal_exists: bool,
+    expected_port: u16,
+    mut read: Read,
+    mut restore: Restore,
+    mut clear: Clear,
+) -> Result<ReleaseOutcome>
+where
+    Read: FnMut() -> Result<SystemProxyConfig>,
+    Restore: FnMut(&SystemProxyConfig) -> Result<()>,
+    Clear: FnMut(),
+{
+    let current = read().map_err(|e| {
+        Error::Other(format!(
+            "Cannot confirm system proxy ownership; journal kept: {}",
+            e
+        ))
+    })?;
+    let Some(journal) = journal else {
+        let hinted = crate::proxy::system_proxy::managed_proxy_config(expected_port);
+        if journal_exists || points_at_managed_address(&current, &hinted) {
+            return Err(Error::Other(
+                "System proxy still targets ClashEdge but ownership journal is missing or corrupt; refusing to modify registry or stop Mihomo"
+                    .to_string(),
+            ));
+        }
+        return Ok(ReleaseOutcome::NoOwnership);
+    };
+
+    if !journal.owned {
+        clear();
+        return Ok(ReleaseOutcome::NoOwnership);
+    }
+    let managed = canonical_managed(&journal);
+    if current != managed {
+        if points_at_managed_address(&current, &managed) {
+            return Err(Error::Other(
+                "Windows proxy still targets ClashEdge, but its managed fields changed; ownership is ambiguous, so registry and Mihomo were left untouched"
+                    .to_string(),
+            ));
+        }
+        clear();
+        return Ok(ReleaseOutcome::OwnershipLost);
     }
 
-    // 命中恢复条件：当前是死代理，必须还原到 journal.original 记录的用户原状态。
-    let restore_outcome = match &journal.original {
-        Some(orig) if orig.enabled => {
-            // 用户原本有静态代理：还原为原 address / bypass / PAC
-            match crate::proxy::system_proxy::set_system_proxy(
-                true,
-                &orig.address,
-                &orig.bypass_list,
-                orig.auto_config_url.as_deref(),
-            ) {
-                Ok(()) => {
-                    let msg = format!(
-                        "Recovered system proxy to original ({}) after abnormal exit",
-                        orig.address
-                    );
-                    info!("{}", msg);
-                    Some(msg)
-                }
-                Err(e) => {
-                    let msg = format!(
-                        "Stale proxy pointed at dead {} but restore failed: {}",
-                        ours, e
-                    );
-                    warn!("{}", msg);
-                    // 恢复失败至少要把死代理关掉，不能留着断网；
-                    // 用户原有的 PAC（若快照有）一并写回
-                    let _ = crate::proxy::system_proxy::set_system_proxy(
-                        false,
-                        "",
-                        &[],
-                        journal
-                            .original
-                            .as_ref()
-                            .and_then(|o| o.auto_config_url.as_deref()),
-                    );
-                    None
-                }
+    let target = journal
+        .original
+        .clone()
+        .unwrap_or_else(crate::proxy::system_proxy::disabled_proxy_config);
+    restore(&target).map_err(|e| {
+        Error::Other(format!(
+            "Failed to restore owned Windows proxy; Mihomo must remain running and journal was kept: {}",
+            e
+        ))
+    })?;
+    let verified = read().map_err(|e| {
+        Error::Other(format!(
+            "Windows proxy restore could not be verified; Mihomo must remain running and journal was kept: {}",
+            e
+        ))
+    })?;
+    if verified != target {
+        return Err(Error::Other(
+            "Windows proxy restore verification failed; Mihomo must remain running and journal was kept"
+                .to_string(),
+        ));
+    }
+
+    let message = if target.enabled {
+        format!("Restored original Windows proxy ({})", target.address)
+    } else if target.auto_config_url.is_some() {
+        "Restored original Windows PAC configuration".to_string()
+    } else {
+        "Restored original Windows no-proxy configuration".to_string()
+    };
+    clear();
+    info!("{}", message);
+    Ok(ReleaseOutcome::Restored {
+        message,
+        restored: target,
+    })
+}
+
+/// 正常退出、手动关闭、异常启动恢复共用的唯一 ownership 释放入口。
+pub fn release_owned_proxy(
+    data_dir: &std::path::Path,
+    expected_port: u16,
+) -> Result<ReleaseOutcome> {
+    let path = journal_path(data_dir);
+    release_with(
+        read_journal(data_dir),
+        path.exists(),
+        expected_port,
+        crate::proxy::system_proxy::get_system_proxy,
+        crate::proxy::system_proxy::restore_system_proxy,
+        || clear_journal(data_dir),
+    )
+}
+
+/// 退出专用：完成 ownership 判定、恢复和复读验证，但把 journal 清理延后到
+/// Mihomo 已确认停止之后，满足退出事务的严格顺序。
+pub fn release_owned_proxy_for_exit(
+    data_dir: &std::path::Path,
+    expected_port: u16,
+) -> Result<ReleaseOutcome> {
+    let path = journal_path(data_dir);
+    release_with(
+        read_journal(data_dir),
+        path.exists(),
+        expected_port,
+        crate::proxy::system_proxy::get_system_proxy,
+        crate::proxy::system_proxy::restore_system_proxy,
+        || {},
+    )
+}
+
+pub fn recover_on_startup(
+    data_dir: &std::path::Path,
+    expected_port: u16,
+) -> Result<ReleaseOutcome> {
+    release_owned_proxy(data_dir, expected_port)
+}
+
+/// 建立 ownership。重复开启不会覆盖 original；端口变化先安全释放旧 ownership。
+pub fn acquire_system_proxy(data_dir: &std::path::Path, mixed_port: u16) -> Result<()> {
+    acquire_system_proxy_if_unchanged(data_dir, mixed_port, None)
+}
+
+/// Mihomo 崩溃重启时传入 `expected_current`，确保退避期间的用户修改不被覆盖。
+pub fn acquire_system_proxy_if_unchanged(
+    data_dir: &std::path::Path,
+    mixed_port: u16,
+    expected_current: Option<&SystemProxyConfig>,
+) -> Result<()> {
+    let managed = crate::proxy::system_proxy::managed_proxy_config(mixed_port);
+    let path = journal_path(data_dir);
+    let mut previous_switch: Option<(ProxyJournal, SystemProxyConfig)> = None;
+    if let Some(existing) = read_journal(data_dir) {
+        let current = crate::proxy::system_proxy::get_system_proxy()?;
+        let old_managed = canonical_managed(&existing);
+        if existing.owned && current == old_managed {
+            if old_managed == managed {
+                return Ok(());
             }
-        }
-        _ => {
-            // 原本未启用静态代理：清掉残留的死代理；若用户原有 PAC 则写回还原
-            let pac = journal
+            let baseline = existing
                 .original
-                .as_ref()
-                .and_then(|o| o.auto_config_url.as_deref());
-            match crate::proxy::system_proxy::set_system_proxy(false, "", &[], pac) {
-                Ok(()) => {
-                    let msg = format!(
-                        "Cleared stale proxy pointing at dead {} after abnormal exit",
-                        ours
-                    );
-                    info!("{}", msg);
-                    Some(msg)
-                }
-                Err(e) => {
-                    warn!("Failed to clear stale proxy after abnormal exit: {}", e);
-                    None
-                }
-            }
+                .clone()
+                .unwrap_or_else(crate::proxy::system_proxy::disabled_proxy_config);
+            release_owned_proxy(data_dir, existing.mixed_port)?;
+            previous_switch = Some((existing, baseline));
+        } else if points_at_managed_address(&current, &old_managed) {
+            return Err(Error::Other(
+                "Cannot change system proxy: existing ClashEdge ownership is ambiguous".to_string(),
+            ));
+        } else {
+            // 保留 journal 作为“曾由 ClashEdge 接管、现已被外部修改”的证据。
+            // 若此处删除，下一次开启尝试会把外部代理误当作全新 baseline 并覆盖。
+            return Err(Error::Other(
+                "Cannot reacquire system proxy because Windows proxy ownership changed".to_string(),
+            ));
         }
-    };
-
-    // P0-1：恢复成功才删 journal；恢复失败保留 journal，下次启动可再试。
-    if restore_outcome.is_some() {
-        clear_journal(data_dir);
+    } else if path.exists() {
+        return Err(Error::Other(
+            "Cannot acquire system proxy because the ownership journal is corrupt; refusing to overwrite Windows proxy"
+                .to_string(),
+        ));
     }
-    restore_outcome
+
+    let before = crate::proxy::system_proxy::get_system_proxy()
+        .map_err(|e| error_after_switch_failure(data_dir, previous_switch.as_ref(), e))?;
+    if let Some(expected) = expected_current {
+        if &before != expected {
+            return Err(error_after_switch_failure(
+                data_dir,
+                previous_switch.as_ref(),
+                Error::Other(
+                    "Windows proxy changed while Mihomo was restarting; refusing to overwrite the new user state"
+                        .to_string(),
+                ),
+            ));
+        }
+    }
+    if points_at_managed_address(&before, &managed) {
+        return Err(error_after_switch_failure(
+            data_dir,
+            previous_switch.as_ref(),
+            Error::Other(
+                "Windows proxy already targets ClashEdge without a valid ownership journal; refusing takeover"
+                    .to_string(),
+            ),
+        ));
+    }
+
+    let journal = ProxyJournal {
+        session_id: format!(
+            "{:016x}{:016x}",
+            rand::random::<u64>(),
+            rand::random::<u64>()
+        ),
+        pid: std::process::id(),
+        mixed_port,
+        original: Some(before.clone()),
+        owned: true,
+        managed: Some(managed.clone()),
+    };
+    write_journal(data_dir, &journal)
+        .map_err(|e| error_after_switch_failure(data_dir, previous_switch.as_ref(), e))?;
+
+    if let Err(e) = crate::proxy::system_proxy::restore_system_proxy(&managed) {
+        let new_takeover_rolled_back = crate::proxy::system_proxy::get_system_proxy().ok().as_ref()
+            == Some(&managed)
+            && crate::proxy::system_proxy::restore_system_proxy(&before).is_ok()
+            && crate::proxy::system_proxy::get_system_proxy().ok().as_ref() == Some(&before);
+        if new_takeover_rolled_back && previous_switch.is_none() {
+            clear_journal(data_dir);
+        }
+        return Err(error_after_switch_failure(
+            data_dir,
+            previous_switch.as_ref(),
+            Error::Other(format!(
+                "Failed to enable Windows proxy; rollback attempted and journal kept unless verified: {}",
+                e
+            )),
+        ));
+    }
+
+    let verified = crate::proxy::system_proxy::get_system_proxy()
+        .map_err(|e| error_after_switch_failure(data_dir, previous_switch.as_ref(), e))?;
+    if verified != managed {
+        if previous_switch.is_none() && !points_at_managed_address(&verified, &managed) {
+            clear_journal(data_dir);
+        }
+        return Err(error_after_switch_failure(
+            data_dir,
+            previous_switch.as_ref(),
+            Error::Other(
+                "Windows proxy takeover verification failed; concurrent proxy change detected"
+                    .to_string(),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -233,6 +457,7 @@ mod tests {
                 auto_config_url: Some("http://pac.example/a.pac".to_string()),
             }),
             owned: true,
+            managed: Some(crate::proxy::system_proxy::managed_proxy_config(7890)),
         }
     }
 
@@ -306,5 +531,186 @@ mod tests {
         clear_journal(&dir);
         assert!(!dir.join(JOURNAL_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn release_restores_only_exact_owned_state_and_verifies_before_clear() {
+        use std::cell::{Cell, RefCell};
+        use std::collections::VecDeque;
+
+        let journal = sample_journal();
+        let managed = canonical_managed(&journal);
+        let original = journal.original.clone().unwrap();
+        let reads = RefCell::new(VecDeque::from([managed, original.clone()]));
+        let restored = RefCell::new(None);
+        let cleared = Cell::new(false);
+        let outcome = release_with(
+            Some(journal),
+            true,
+            7890,
+            || Ok(reads.borrow_mut().pop_front().unwrap()),
+            |target| {
+                *restored.borrow_mut() = Some(target.clone());
+                Ok(())
+            },
+            || cleared.set(true),
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, ReleaseOutcome::Restored { .. }));
+        assert_eq!(restored.into_inner(), Some(original));
+        assert!(cleared.get());
+    }
+
+    #[test]
+    fn release_does_not_touch_registry_after_other_proxy_takes_over() {
+        use std::cell::Cell;
+
+        let current = SystemProxyConfig {
+            enabled: true,
+            address: "127.0.0.1:10809".to_string(),
+            bypass_list: vec![],
+            auto_config_url: None,
+        };
+        let restored = Cell::new(false);
+        let cleared = Cell::new(false);
+        let outcome = release_with(
+            Some(sample_journal()),
+            true,
+            7890,
+            || Ok(current.clone()),
+            |_| {
+                restored.set(true);
+                Ok(())
+            },
+            || cleared.set(true),
+        )
+        .unwrap();
+
+        assert_eq!(outcome, ReleaseOutcome::OwnershipLost);
+        assert!(!restored.get());
+        assert!(cleared.get());
+    }
+
+    #[test]
+    fn release_keeps_core_and_journal_when_address_is_ours_but_fields_changed() {
+        use std::cell::Cell;
+
+        let mut current = crate::proxy::system_proxy::managed_proxy_config(7890);
+        current.auto_config_url = Some("http://changed.example/proxy.pac".to_string());
+        let restored = Cell::new(false);
+        let cleared = Cell::new(false);
+        let result = release_with(
+            Some(sample_journal()),
+            true,
+            7890,
+            || Ok(current.clone()),
+            |_| {
+                restored.set(true);
+                Ok(())
+            },
+            || cleared.set(true),
+        );
+
+        assert!(result.is_err());
+        assert!(!restored.get());
+        assert!(!cleared.get());
+    }
+
+    #[test]
+    fn release_failure_or_failed_verification_keeps_journal() {
+        use std::cell::Cell;
+
+        let managed = crate::proxy::system_proxy::managed_proxy_config(7890);
+        let cleared = Cell::new(false);
+        let failed_write = release_with(
+            Some(sample_journal()),
+            true,
+            7890,
+            || Ok(managed.clone()),
+            |_| Err(Error::Other("injected registry failure".to_string())),
+            || cleared.set(true),
+        );
+        assert!(failed_write.is_err());
+        assert!(!cleared.get());
+
+        let reads =
+            std::cell::RefCell::new(std::collections::VecDeque::from([managed.clone(), managed]));
+        let failed_verify = release_with(
+            Some(sample_journal()),
+            true,
+            7890,
+            || Ok(reads.borrow_mut().pop_front().unwrap()),
+            |_| Ok(()),
+            || cleared.set(true),
+        );
+        assert!(failed_verify.is_err());
+        assert!(!cleared.get());
+    }
+
+    #[test]
+    fn missing_journal_never_authorizes_clearing_a_live_clashedge_proxy() {
+        let managed = crate::proxy::system_proxy::managed_proxy_config(7890);
+        let result = release_with(
+            None,
+            false,
+            7890,
+            || Ok(managed.clone()),
+            |_| panic!("must not write registry"),
+            || panic!("must not clear missing journal"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn failed_port_switch_restores_previous_ownership_only_from_exact_baseline() {
+        use std::cell::RefCell;
+        use std::collections::VecDeque;
+
+        let previous = sample_journal();
+        let baseline = previous.original.clone().unwrap();
+        let previous_managed = canonical_managed(&previous);
+        let reads = RefCell::new(VecDeque::from([baseline.clone(), previous_managed.clone()]));
+        let written = RefCell::new(None);
+        let restored = RefCell::new(None);
+
+        restore_previous_with(
+            &previous,
+            &baseline,
+            || Ok(reads.borrow_mut().pop_front().unwrap()),
+            |target| {
+                *restored.borrow_mut() = Some(target.clone());
+                Ok(())
+            },
+            |journal| {
+                *written.borrow_mut() = Some(journal.session_id.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(written.into_inner().as_deref(), Some("smoke-session"));
+        assert_eq!(restored.into_inner(), Some(previous_managed));
+    }
+
+    #[test]
+    fn failed_port_switch_never_overwrites_concurrent_proxy_takeover() {
+        let previous = sample_journal();
+        let baseline = previous.original.clone().unwrap();
+        let external = SystemProxyConfig {
+            enabled: true,
+            address: "127.0.0.1:10809".to_string(),
+            bypass_list: vec!["external".to_string()],
+            auto_config_url: None,
+        };
+
+        let result = restore_previous_with(
+            &previous,
+            &baseline,
+            || Ok(external.clone()),
+            |_| panic!("must not write registry after concurrent takeover"),
+            |_| panic!("must not rewrite journal after concurrent takeover"),
+        );
+        assert!(result.is_err());
     }
 }

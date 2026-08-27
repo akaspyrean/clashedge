@@ -5,9 +5,9 @@
 //! 语义（与 Clash 系客户端一致，参考 clash-verge / clash-nyanpasu）：
 //! - 启用：写 ProxyServer = 127.0.0.1:<mixed-port>、ProxyOverride = 绕过列表、ProxyEnable = 1，
 //!   并删除 AutoConfigURL（禁用用户原有 PAC，避免双重代理冲突）；
-//! - 禁用：**仅置 ProxyEnable = 0**，不删除 ProxyServer / ProxyOverride ——
-//!   用户若原有自己的代理值，不会被我们清掉；快照中的原 AutoConfigURL 由调用方
-//!   传入写回还原；退出还原按启动快照处理（见 main.rs）。
+//! - 普通禁用：**仅置 ProxyEnable = 0**，不删除 ProxyServer / ProxyOverride；
+//! - ownership 释放：调用方确认当前值仍由 ClashEdge 管理后，通过
+//!   `restore_system_proxy` 精确写回 journal 中的完整快照。
 //! - 不做 netsh winhttp：那需要管理员权限，且改的是机器级 WinHTTP 代理，
 //!   与应用级系统代理无关（原实现的非致命调用容易失败并制造假象）。
 //! - UWP 回环豁免在 proxy/loopback.rs，此处不重复实现。
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::util::error::{Error, Result};
 
 /// 系统代理配置结构（快照/还原用）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SystemProxyConfig {
     /// 是否启用系统代理（ProxyEnable == 1）
@@ -32,6 +32,35 @@ pub struct SystemProxyConfig {
 }
 
 const KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+/// ClashEdge 接管期间写入 Windows 的完整、可比较状态。
+///
+/// ownership 判定必须比较完整状态，而不只是 `ProxyServer`。这样用户或其他软件
+/// 在运行期间修改 ProxyOverride / PAC 后，退出路径也会认定 ownership 已丢失，
+/// 不会覆盖对方的后续修改。
+pub fn managed_proxy_config(mixed_port: u16) -> SystemProxyConfig {
+    SystemProxyConfig {
+        enabled: true,
+        address: format!("127.0.0.1:{}", mixed_port),
+        bypass_list: vec![
+            "<local>".to_string(),
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "*.tauri.localhost".to_string(),
+        ],
+        auto_config_url: None,
+    }
+}
+
+/// 没有可读旧快照时的安全“无代理”目标（仅用于兼容旧 journal）。
+pub fn disabled_proxy_config() -> SystemProxyConfig {
+    SystemProxyConfig {
+        enabled: false,
+        address: String::new(),
+        bypass_list: Vec::new(),
+        auto_config_url: None,
+    }
+}
 
 /// 打开 Internet Settings 注册表键。
 /// 必须带 KEY_WRITE：winreg 0.11 的 `open_subkey` 默认只以 KEY_READ 打开，
@@ -74,25 +103,18 @@ fn notify_wininet_changed() {
     }
 }
 
-/// 启用或禁用系统代理。
+/// 精确恢复一份已经持久化的 Windows 代理快照。
 ///
-/// - `enabled == true`：写 ProxyServer / ProxyOverride / ProxyEnable=1，并删除
-///   AutoConfigURL（接管期间禁用用户原有 PAC，避免静态代理与 PAC 双重代理冲突；
-///   原值已随启动快照 / journal 保留）；
-/// - `enabled == false`：仅置 ProxyEnable=0，保留用户原有 ProxyServer / ProxyOverride；
-///   若调用方持有快照中的原 AutoConfigURL（`auto_config_url`），写回以还原用户
-///   原有 PAC。退出时的完整还原见 main.rs 快照。
-pub fn set_system_proxy(
-    enabled: bool,
-    address: &str,
-    bypass_list: &[String],
-    auto_config_url: Option<&str>,
-) -> Result<()> {
+/// 该函数会写回 ProxyServer、ProxyOverride、ProxyEnable 与 AutoConfigURL 的完整
+/// 状态（快照无 PAC 时会删除 AutoConfigURL）。它只能由已经确认 ownership 的
+/// journal 路径调用；普通“关闭”不能用它覆盖未知的用户状态。
+pub fn restore_system_proxy(snapshot: &SystemProxyConfig) -> Result<()> {
     let key = open_key()?;
-    apply_to_key(&key, enabled, address, bypass_list, auto_config_url)
+    restore_to_key(&key, snapshot)
 }
 
 /// 把代理设置写入指定的注册表键（生产 / 测试子键共用）。见 `set_system_proxy` 语义。
+#[cfg(test)]
 fn apply_to_key(
     key: &winreg::RegKey,
     enabled: bool,
@@ -125,6 +147,27 @@ fn apply_to_key(
     #[cfg(target_os = "windows")]
     notify_wininet_changed();
 
+    Ok(())
+}
+
+fn restore_to_key(key: &winreg::RegKey, snapshot: &SystemProxyConfig) -> Result<()> {
+    key.set_value("ProxyServer", &snapshot.address)
+        .map_err(|e| Error::Other(format!("Failed to restore ProxyServer: {}", e)))?;
+    key.set_value("ProxyOverride", &snapshot.bypass_list.join(","))
+        .map_err(|e| Error::Other(format!("Failed to restore ProxyOverride: {}", e)))?;
+    match snapshot.auto_config_url.as_deref() {
+        Some(url) => key
+            .set_value("AutoConfigURL", &url)
+            .map_err(|e| Error::Other(format!("Failed to restore AutoConfigURL: {}", e)))?,
+        None => {
+            let _ = key.delete_value("AutoConfigURL");
+        }
+    }
+    key.set_value("ProxyEnable", &u32::from(snapshot.enabled))
+        .map_err(|e| Error::Other(format!("Failed to restore ProxyEnable: {}", e)))?;
+
+    #[cfg(target_os = "windows")]
+    notify_wininet_changed();
     Ok(())
 }
 
@@ -214,6 +257,18 @@ mod tests {
         assert_eq!(bypass.join(","), "<local>,lan");
     }
 
+    #[test]
+    fn managed_proxy_config_is_the_canonical_owned_state() {
+        let managed = managed_proxy_config(7890);
+        assert!(managed.enabled);
+        assert_eq!(managed.address, "127.0.0.1:7890");
+        assert_eq!(
+            managed.bypass_list,
+            vec!["<local>", "127.0.0.1", "localhost", "*.tauri.localhost"]
+        );
+        assert!(managed.auto_config_url.is_none());
+    }
+
     /// Windows Registry 冒烟测试：对**独立的测试子键**做真实的写→读→删，
     /// 验证 `apply_to_key` / `read_from_key` 与 winreg 的真实往返，而不是只测
     /// 纯数据结构。绝不动用户真实的 Internet Settings 键（`KEY_PATH`）。
@@ -259,6 +314,21 @@ mod tests {
             enabled.bypass_list,
             vec!["<local>".to_string(), "localhost".to_string()]
         );
+
+        // 精确快照恢复必须把全部字段（包括 disabled 状态下的静态值和 PAC）写回。
+        let exact = SystemProxyConfig {
+            enabled: false,
+            address: "10.0.0.5:8080".to_string(),
+            bypass_list: vec!["intranet.example".to_string()],
+            auto_config_url: Some("http://pac.example/proxy.pac".to_string()),
+        };
+        restore_to_key(&key, &exact).expect("restore exact snapshot");
+        assert_eq!(read_from_key(&key).unwrap(), exact);
+
+        // 无 PAC 快照必须删除接管/外部操作残留的 AutoConfigURL。
+        let no_pac = disabled_proxy_config();
+        restore_to_key(&key, &no_pac).expect("restore snapshot without PAC");
+        assert_eq!(read_from_key(&key).unwrap(), no_pac);
 
         // 2. 写入 enabled=false 且带原 PAC：ProxyEnable=0 + AutoConfigURL 写回
         apply_to_key(&key, false, "", &[], Some("http://127.0.0.1:1080/pac"))

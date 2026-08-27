@@ -546,16 +546,44 @@ impl CoreManager {
                     }),
                 );
 
-                // 系统代理自愈：内核已死，代理指向的端口随之失效，先关掉防断网
+                // 系统代理自愈：内核已死时先按统一 ownership 语义精确恢复用户
+                // 原状态。只有完整 managed 状态仍一致才写注册表；用户/其他软件
+                // 已接管时绝不覆盖。
                 let sys_proxy_intent = {
                     let state = app_handle.state::<crate::AppState>();
                     let cfg_mgr = state.config_manager.lock().unwrap();
                     cfg_mgr.get_config().general.system_proxy
                 };
-                if sys_proxy_intent {
-                    warn!("Disabling system proxy: core crashed (was pointing at dead port)");
-                    let _ = crate::proxy::system_proxy::set_system_proxy(false, "", &[], None);
-                }
+                let proxy_restore_target = if sys_proxy_intent {
+                    let port = config.read().general.mixed_port;
+                    match crate::proxy::journal::release_owned_proxy(&data_dir, port) {
+                        Ok(crate::proxy::journal::ReleaseOutcome::Restored {
+                            restored, ..
+                        }) => Some(restored),
+                        Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost)
+                        | Ok(crate::proxy::journal::ReleaseOutcome::NoOwnership) => {
+                            warn!(
+                                "System proxy is no longer owned after core crash; preserving Windows state"
+                            );
+                            Self::give_up_system_proxy_after_restore_failure(
+                                &app_handle,
+                                &Error::Other("system proxy ownership changed".to_string()),
+                            );
+                            None
+                        }
+                        Err(e) => {
+                            // ownership 不明确时不写注册表。若地址仍指向当前端口，
+                            // 后续同端口重启会恢复服务；journal 保留供下次处理。
+                            error!(
+                                "Cannot safely release system proxy after core crash; journal kept: {}",
+                                e
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
 
                 if user_stopped.load(std::sync::atomic::Ordering::SeqCst) {
                     info!("User stopped core; not auto-restarting");
@@ -706,18 +734,16 @@ impl CoreManager {
                                 // P0-5：恢复 Windows 系统代理。崩溃时已临时关闭；
                                 // 自愈成功后必须按用户意图与真实端口恢复，否则出现
                                 // 「UI=开、配置=开、注册表=关」的三态分裂。
-                                if sys_proxy_intent {
-                                    let addr =
-                                        format!("127.0.0.1:{}", config.read().general.mixed_port);
-                                    match crate::proxy::system_proxy::set_system_proxy(
-                                        true,
-                                        &addr,
-                                        &crate::core::runtime::default_bypass(),
-                                        None,
+                                if let Some(expected) = proxy_restore_target.as_ref() {
+                                    let port = config.read().general.mixed_port;
+                                    match crate::proxy::journal::acquire_system_proxy_if_unchanged(
+                                        &data_dir,
+                                        port,
+                                        Some(expected),
                                     ) {
                                         Ok(()) => info!(
-                                            "System proxy restored after auto-restart ({})",
-                                            addr
+                                            "System proxy safely reacquired after auto-restart (127.0.0.1:{})",
+                                            port
                                         ),
                                         Err(e) => {
                                             error!(
@@ -731,10 +757,28 @@ impl CoreManager {
                                             // 并推送事件刷新前端，杜绝三态分裂。
                                             Self::give_up_system_proxy_after_restore_failure(
                                                 &app_handle,
-                                                &data_dir,
                                                 &e,
                                             );
                                         }
+                                    }
+                                } else if sys_proxy_intent {
+                                    // release 失败时可能是注册表读取/验证的瞬时错误。
+                                    // 核心恢复后复读：仍是完整 managed 状态则保持 ON；
+                                    // 否则仅把配置意图落回 false，不覆盖未知 Windows 状态。
+                                    let port = config.read().general.mixed_port;
+                                    let managed =
+                                        crate::proxy::system_proxy::managed_proxy_config(port);
+                                    if crate::proxy::system_proxy::get_system_proxy()
+                                        .map(|current| current != managed)
+                                        .unwrap_or(true)
+                                    {
+                                        Self::give_up_system_proxy_after_restore_failure(
+                                            &app_handle,
+                                            &Error::Other(
+                                                "system proxy ownership could not be confirmed after core restart"
+                                                    .to_string(),
+                                            ),
+                                        );
                                     }
                                 }
                                 info!("mihomo auto-restarted successfully");
@@ -774,47 +818,11 @@ impl CoreManager {
 
     /// P0-3：自愈重启后系统代理恢复失败的收尾。
     ///
-    /// 前提：崩溃处理已把注册表代理关闭（Windows 实际 = OFF），但配置意图仍
-    /// 为 true。此时绝不能让 UI 继续把系统代理当作 ON——
-    /// 1. 尽力把 Windows 退回 journal 记录的用户原始代理状态（成功则清 journal）；
-    /// 2. 配置意图改回 false 并持久化（配置 = Windows 实际状态）；
-    /// 3. 推送 system-proxy-changed 事件，前端据此刷新开关显示真实失败状态。
-    fn give_up_system_proxy_after_restore_failure(
-        app_handle: &AppHandle,
-        data_dir: &std::path::Path,
-        err: &Error,
-    ) {
-        if let Some(journal) = crate::proxy::journal::read_journal(data_dir) {
-            match journal.original.filter(|o| o.enabled) {
-                Some(orig) => {
-                    match crate::proxy::system_proxy::set_system_proxy(
-                        true,
-                        &orig.address,
-                        &orig.bypass_list,
-                        orig.auto_config_url.as_deref(),
-                    ) {
-                        Ok(()) => {
-                            info!(
-                                "Restored user's original system proxy ({}) after failed \
-                                 self-restore",
-                                orig.address
-                            );
-                            crate::proxy::journal::clear_journal(data_dir);
-                        }
-                        Err(e) => warn!(
-                            "Failed to restore user's original proxy; keeping recovery \
-                             journal for next startup: {}",
-                            e
-                        ),
-                    }
-                }
-                None => {
-                    // 用户原本没有启用系统代理：注册表已关，journal 完成使命
-                    crate::proxy::journal::clear_journal(data_dir);
-                }
-            }
-        }
-
+    /// 前提：崩溃恢复确认 ownership 已释放或重新接管失败，但配置意图仍为 true。
+    /// 此时绝不能让 UI 继续把系统代理当作 ON——
+    /// ownership helper 已负责安全恢复/保留 journal；这里仅把配置意图改回 false
+    /// 并推送事件，绝不再直接写注册表形成第四套恢复逻辑。
+    fn give_up_system_proxy_after_restore_failure(app_handle: &AppHandle, err: &Error) {
         {
             let state = app_handle.state::<crate::AppState>();
             let mut cfg_mgr = state.config_manager.lock().unwrap();
