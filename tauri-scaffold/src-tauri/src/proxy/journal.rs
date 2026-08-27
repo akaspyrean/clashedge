@@ -118,7 +118,8 @@ pub fn recover_on_startup(data_dir: &std::path::Path) -> Option<String> {
                 "Cannot read system proxy registry state on startup (keeping journal for retry): {}",
                 e
             );
-            clear_journal(data_dir);
+            // P0-1：注册表读取失败 → 无法判定当前状态，保留 journal 下次启动再试。
+            // 绝不能在这里 clear_journal——否则异常退出残留的死代理会永久失去恢复凭据。
             return None;
         }
     };

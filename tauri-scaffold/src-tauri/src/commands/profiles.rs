@@ -313,30 +313,10 @@ pub async fn create_profile(app: AppHandle, name: String, content: Option<String
         validate_subscription_content(c)?;
     }
 
-    // 空内容走内置模板
-    let yaml = content.unwrap_or_else(|| {
-        r#"
-mixed-port: 7890
-allow-lan: false
-mode: rule
-log-level: info
-ipv6: false
-dns:
-  enable: true
-  listen: 127.0.0.1:9053
-  ipv6: false
-  enhanced-mode: fake-ip
-  fake-ip-range: 198.18.0.1/16
-  default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-  nameserver:
-    - https://dns.alidns.com/dns-query
-    - https://doh.pub/dns-query
-"#
-        .trim()
-        .to_string()
-    });
+    // 空内容走内置模板。产品架构里 Profile 只提供节点（runtime 仅透传 proxies），
+    // 因此空模板就是空节点集，而非一份"看起来像完整 Mihomo 配置、实际大部分字段
+    // 不生效"的误导性模板。
+    let yaml = content.unwrap_or_else(|| "proxies: []\n".to_string());
 
     atomic_write(&file_path, yaml.as_bytes())?;
     Ok(())
@@ -406,10 +386,16 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
     //     文件 new → old 恢复，并重新 activate_profile(old) 让核心加载回旧文件。
     std::fs::rename(&old_path, &new_path)?;
     if let Err(e) = crate::core::runtime::activate_profile(&app, &new_name).await {
-        // 回滚文件：config.profile 已被 activate_profile 回滚到旧名
-        let _ = std::fs::rename(&new_path, &old_path);
+        // 回滚：config.profile 已被 activate_profile 回滚到旧名；这里恢复文件。
+        let restored = std::fs::rename(&new_path, &old_path).is_ok();
         if let Err(e2) = crate::core::runtime::activate_profile(&app, &old_name).await {
             warn!("Rename rollback: re-activate '{}' failed: {}", old_name, e2);
+        }
+        if !restored {
+            return Err(Error::Other(format!(
+                "重命名激活失败，且恢复原文件也失败（'{}' 仍位于 '{}'）：{}",
+                old_name, new_name, e
+            )));
         }
         return Err(Error::Other(format!("重命名激活失败，已回滚：{}", e)));
     }
@@ -719,15 +705,37 @@ fn commit_profile_file(temp_path: &Path, target: &Path) -> Result<()> {
 /// 仍是旧状态"的半套状态。
 async fn activate_with_rollback(app: &AppHandle, name: &str, file_path: &Path) -> Result<()> {
     if let Err(e) = crate::core::runtime::activate_profile(app, name).await {
+        // 回滚：用 .bak 恢复旧内容。文件操作必须确认真的成功——若恢复也失败，
+        // 要如实上报"操作失败且自动恢复失败"，并保留 backup 供手工恢复，而不是
+        // 谎称"已回滚"。rename 在 Windows 上可替换已存在目标；失败则先删再 rename。
         let backup = backup_path_for(file_path);
-        let _ = std::fs::remove_file(file_path);
-        let _ = std::fs::rename(&backup, file_path);
-        if let Err(e2) = crate::core::runtime::activate_profile(app, name).await {
-            warn!("Rollback re-activate failed for '{}': {}", name, e2);
+        let restore_ok = std::fs::rename(&backup, file_path)
+            .or_else(|_| {
+                let _ = std::fs::remove_file(file_path);
+                std::fs::rename(&backup, file_path)
+            })
+            .is_ok();
+
+        if restore_ok {
+            if let Err(e2) = crate::core::runtime::activate_profile(app, name).await {
+                warn!("Rollback re-activate failed for '{}': {}", name, e2);
+            }
+            return Err(Error::Other(format!(
+                "Profile '{}' 保存生效失败，已回滚到旧内容：{}",
+                name, e
+            )));
         }
+        // 文件恢复失败：保留 backup，明确提示备份位置，绝不静默吞掉。
+        warn!(
+            "Profile '{}' rollback file restore FAILED; backup preserved at {}",
+            name,
+            backup.display()
+        );
         return Err(Error::Other(format!(
-            "Profile '{}' 保存生效失败，已回滚到旧内容：{}",
-            name, e
+            "Profile '{}' 保存生效失败，且自动恢复文件也失败（备份保留在 {}）：{}",
+            name,
+            backup.display(),
+            e
         )));
     }
     Ok(())
