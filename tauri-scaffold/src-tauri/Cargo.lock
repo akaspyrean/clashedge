@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "clash-edge"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
