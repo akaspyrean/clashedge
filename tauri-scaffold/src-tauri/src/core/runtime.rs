@@ -432,10 +432,18 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
 ///
 /// 历史遗留的 stop_core 命令自行操作 ConfigManager（直接改 system_proxy 并
 /// 吞掉 set_config 错误），绕过 config_tx 事务，与 apply_* 编排层形成两套路径。
-/// 本函数是唯一入口：先停核心，再把"关闭系统代理"交给 apply_system_proxy(false)
-/// ——它统一处理 config_tx 串行化、配置持久化、注册表还原（含 journal.original
-/// 恢复用户原代理）、journal 清理、事件推送与托盘刷新。
+/// 本函数是唯一入口。
+///
+/// 执行顺序（网络安全优先）：先退出系统代理接管，再停止核心。
+/// 旧实现先停核心再关系统代理——若关系统代理的 set_config 失败，会留下
+/// "Windows 代理仍指向已死的 127.0.0.1:7890" 的断网状态。反过来：即使
+/// 退系统代理失败，也不停止核心，用户至少保持可上网。
 pub async fn stop_core_and_sync_proxy(app: &AppHandle) -> Result<()> {
+    // 1) 先退出系统代理接管（config/registry/journal/事件统一事务）。
+    //    失败则直接返回，不停止核心——宁可保持核心运行也不掐断用户网络。
+    apply_system_proxy(app, false).await?;
+
+    // 2) 再停止核心。
     {
         let state = app.state::<crate::AppState>();
         let core_guard = state.core_manager.get();
@@ -443,8 +451,11 @@ pub async fn stop_core_and_sync_proxy(app: &AppHandle) -> Result<()> {
             core.stop().await?;
         }
     }
-    // 系统代理关闭复用统一事务（幂等：已关则无副作用）。
-    apply_system_proxy(app, false).await
+
+    // apply_system_proxy(false) 末尾的 refresh_tray 发生在核心停止前，此刻
+    // 状态仍是 running；需在核心停止后再刷新一次托盘（运行态图标/代理组）。
+    refresh_tray(app).await?;
+    Ok(())
 }
 
 /// 激活 Profile：校验名称合法且文件存在 → 持久化激活名 → 重新生成运行时配置 →

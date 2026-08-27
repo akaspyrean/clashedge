@@ -32,6 +32,13 @@ pub struct NormalizedSubscription {
 
 /// 单次 provider 拉取的最大字节数（防御恶意超大响应）。
 const MAX_PROVIDER_BYTES: u64 = 10 * 1024 * 1024;
+/// 单个订阅允许声明的 proxy-provider 数量上限（防止恶意订阅声明成百上千个
+/// provider，导致应用顺序访问大量远程地址、长时间占住网络）。
+const MAX_PROVIDER_COUNT: usize = 32;
+/// 所有 http provider 拉取的总字节上限（防多个 provider 累加超量）。
+const MAX_TOTAL_PROVIDER_BYTES: u64 = 20 * 1024 * 1024;
+/// 整次归一化的总时间上限（含所有 provider 拉取；防慢速/挂起远程拖垮导入）。
+const TOTAL_NORMALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// 归一化后节点总数上限（与 profiles.rs 的 MAX_NODE_COUNT 对齐）。
 const MAX_NODE_COUNT: usize = 1000;
 
@@ -43,7 +50,16 @@ const MAX_NODE_COUNT: usize = 1000;
 /// 1. 顶层 `proxies` 非空 → 直接作为节点集（并顺带展开 `proxy-providers` 追加）；
 /// 2. 仅 `proxy-providers` → 逐个安全展开（http 拉取 / inline 内联 / file 本地安全路径）；
 /// 3. 两者都没有 → 空节点集（应用零节点兜底 DIRECT，不视为错误）。
+///
+/// 整体受 `TOTAL_NORMALIZE_TIMEOUT` 保护：任一 provider 拖慢/挂起时超时中止，
+/// 避免导入流程无限阻塞。
 pub async fn normalize_subscription(app: &AppHandle, body: &str) -> Result<NormalizedSubscription> {
+    tokio::time::timeout(TOTAL_NORMALIZE_TIMEOUT, normalize_inner(app, body))
+        .await
+        .map_err(|_| Error::Subscription("Subscription normalization timed out".to_string()))?
+}
+
+async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscription> {
     let value: Value = match serde_yaml::from_str(body) {
         Ok(v) => v,
         Err(e) => {
@@ -69,6 +85,15 @@ pub async fn normalize_subscription(app: &AppHandle, body: &str) -> Result<Norma
 
     // 2) proxy-providers 展开（追加，节点名加 provider 前缀避免跨 provider 冲突）
     if let Some(providers) = map.get("proxy-providers").and_then(|v| v.as_mapping()) {
+        if providers.len() > MAX_PROVIDER_COUNT {
+            return Err(Error::Subscription(format!(
+                "proxy-providers count {} exceeds limit of {}",
+                providers.len(),
+                MAX_PROVIDER_COUNT
+            )));
+        }
+        // 累计所有 http provider 拉取的字节数，超过总上限即中止。
+        let mut total_bytes: u64 = 0;
         for (name_val, prov_val) in providers {
             let name = name_val.as_str().unwrap_or("").to_string();
             let Some(prov_map) = prov_val.as_mapping() else {
@@ -82,7 +107,16 @@ pub async fn normalize_subscription(app: &AppHandle, body: &str) -> Result<Norma
                 .to_ascii_lowercase();
             match ptype.as_str() {
                 "http" | "compatible" => match expand_http_provider(app, &name, prov_map).await {
-                    Ok(nodes) => append_prefixed(&mut proxies, &name, nodes),
+                    Ok((nodes, bytes)) => {
+                        total_bytes += bytes;
+                        if total_bytes > MAX_TOTAL_PROVIDER_BYTES {
+                            return Err(Error::Subscription(format!(
+                                "total provider bytes {} exceed limit of {}",
+                                total_bytes, MAX_TOTAL_PROVIDER_BYTES
+                            )));
+                        }
+                        append_prefixed(&mut proxies, &name, nodes);
+                    }
                     Err(e) => warnings.push(format!(
                         "http provider '{}' could not be expanded: {}",
                         name, e
@@ -136,11 +170,12 @@ pub async fn normalize_subscription(app: &AppHandle, body: &str) -> Result<Norma
 }
 
 /// 拉取 http 型 provider 的远端 YAML，抽取其顶层 `proxies`。
+/// 返回 (节点列表, 已拉取字节数) 供调用方累计总量上限。
 async fn expand_http_provider(
     app: &AppHandle,
     name: &str,
     prov_map: &serde_yaml::Mapping,
-) -> Result<Vec<Value>> {
+) -> Result<(Vec<Value>, u64)> {
     let url = prov_map
         .get("url")
         .and_then(|v| v.as_str())
@@ -171,17 +206,20 @@ async fn expand_http_provider(
             )));
         }
     }
+    let total = bytes.len() as u64;
     let text = String::from_utf8(bytes)
         .map_err(|e| Error::Subscription(format!("provider response not UTF-8: {}", e)))?;
 
     let doc: Value = serde_yaml::from_str(&text)
         .map_err(|e| Error::Subscription(format!("provider YAML invalid: {}", e)))?;
-    Ok(doc
-        .as_mapping()
-        .and_then(|m| m.get("proxies"))
-        .and_then(|v| v.as_sequence())
-        .cloned()
-        .unwrap_or_default())
+    Ok((
+        doc.as_mapping()
+            .and_then(|m| m.get("proxies"))
+            .and_then(|v| v.as_sequence())
+            .cloned()
+            .unwrap_or_default(),
+        total,
+    ))
 }
 
 /// 读取 file 型 provider：仅允许应用数据目录内的相对安全路径。

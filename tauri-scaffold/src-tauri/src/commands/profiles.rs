@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tauri::{command, AppHandle, Emitter, Manager};
+use tauri::{command, AppHandle, Manager};
 use tracing::{info, warn};
 
 use crate::util::atomic::atomic_write;
@@ -104,9 +104,25 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
     };
     let has = |key: &str| map.contains_key(serde_yaml::Value::String(key.to_string()));
     let protocol = get_str("type").unwrap_or("unknown");
-    let name = get_str("name").unwrap_or("unnamed");
-    // 通用字段：所有协议都需要 name 和 server
-    if !has("server") {
+    let name_raw = get_str("name").unwrap_or("");
+    // 通用字段：所有节点都必须有非空的 name / type / server。
+    // 缺失 name 会让 Normalizer 的 dedupe_by_name 把多个无名单节点折叠成一个
+    // （name="" 全部去重只剩一个），且运行时靠 name 注入内置叶子组——必须显式
+    // 拒绝，不做静默修复。
+    if !has("name") || name_raw.trim().is_empty() {
+        return Err(Error::Subscription(format!(
+            "Node #{} ({}) is missing required non-empty field 'name'",
+            index, protocol
+        )));
+    }
+    let name = name_raw;
+    if !has("type") || protocol.trim().is_empty() {
+        return Err(Error::Subscription(format!(
+            "Node #{} is missing required field 'type'",
+            index
+        )));
+    }
+    if !has("server") || get_str("server").unwrap_or("").trim().is_empty() {
         return Err(Error::Subscription(format!(
             "Node #{} ('{}', {}) is missing required field 'server'",
             index, name, protocol
@@ -376,37 +392,26 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
         return Err(Error::InvalidArgument("Profile already exists".to_string()));
     }
 
-    std::fs::rename(&old_path, &new_path)?;
+    // 非激活 profile：仅重命名文件即可。
+    if active_profile(&app) != old_name {
+        std::fs::rename(&old_path, &new_path)?;
+        return Ok(());
+    }
 
-    // 重命名激活中的 Profile 时同步激活标记，避免界面显示已失效的激活名。
-    if active_profile(&app) == old_name {
-        let state = app.state::<crate::AppState>();
-        {
-            let mut cfg_mgr = state.config_manager.lock().unwrap();
-            let mut cfg = cfg_mgr.get_config();
-            cfg.general.profile = new_name.clone();
-            cfg_mgr.set_config(cfg)?;
+    // 激活中的 profile：事务化重命名。
+    //  1) rename 文件 old → new
+    //  2) activate_profile(new)：统一持久化 config.profile=new + 重生成运行时 + 重启核心
+    //     （成功：config=file=core 三者一致，并已刷新托盘/推送事件）
+    //  3) 失败：activate_profile 内部已把 config.profile 回滚到旧名，这里再把
+    //     文件 new → old 恢复，并重新 activate_profile(old) 让核心加载回旧文件。
+    std::fs::rename(&old_path, &new_path)?;
+    if let Err(e) = crate::core::runtime::activate_profile(&app, &new_name).await {
+        // 回滚文件：config.profile 已被 activate_profile 回滚到旧名
+        let _ = std::fs::rename(&new_path, &old_path);
+        if let Err(e2) = crate::core::runtime::activate_profile(&app, &old_name).await {
+            warn!("Rename rollback: re-activate '{}' failed: {}", old_name, e2);
         }
-        // 运行中的核心需要重载才能加载新文件名。重载失败不使重命名回退（文件已在
-        // 新名下、配置已指向新名，下次启动即生效），但必须显式告警，不能静默吞掉。
-        {
-            let core_guard = state.core_manager.get();
-            if let Some(core) = core_guard.as_ref() {
-                if let Err(e) = core.reload_config().await {
-                    warn!(
-                        "Renamed active profile to '{}' but core reload failed: {}",
-                        new_name, e
-                    );
-                }
-            }
-        }
-        // 与其他激活路径对齐：刷新托盘菜单勾选态，并通知前端刷新代理组
-        //（profile-activated 的监听方会重新拉取 /proxies）。
-        crate::core::runtime::refresh_tray(&app).await?;
-        let _ = app.emit(
-            "profile-activated",
-            serde_json::json!({ "profile": new_name }),
-        );
+        return Err(Error::Other(format!("重命名激活失败，已回滚：{}", e)));
     }
 
     Ok(())
@@ -442,7 +447,16 @@ pub async fn update_profile_content(app: AppHandle, name: String, content: Strin
     // 统一校验（与网络导入同一标准）
     validate_subscription_content(&content)?;
 
-    atomic_write(&file_path, content.as_bytes())?;
+    // 事务式写：旧文件 → .bak，新内容 → target；激活中的 Profile 保存后立即生效，
+    // 激活失败回滚 .bak 旧内容（避免"保存成功但运行还是旧节点"的界面≠运行不一致）。
+    let temp_path = temp_path_for(&file_path);
+    std::fs::write(&temp_path, content.as_bytes())?;
+    commit_profile_file(&temp_path, &file_path)?;
+
+    if active_profile(&app) == name {
+        activate_with_rollback(&app, &name, &file_path).await?;
+    }
+
     Ok(())
 }
 
@@ -696,6 +710,29 @@ fn commit_profile_file(temp_path: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 激活 profile 并使其生效；激活失败时回滚已替换的文件（用 `.bak` 恢复旧内容）
+/// 并重新激活旧内容，保证「文件 + config + 运行核心」三者一致。
+///
+/// 前置：调用方已通过 `commit_profile_file` 把旧文件备份到 `.bak`、新内容写到
+/// target。若激活（重启核心加载新内容）失败，target 上是坏的新版本，`.bak` 里
+/// 是仍能工作的旧版本——这里恢复旧版本并重新激活，避免"磁盘已是坏新版本、运行
+/// 仍是旧状态"的半套状态。
+async fn activate_with_rollback(app: &AppHandle, name: &str, file_path: &Path) -> Result<()> {
+    if let Err(e) = crate::core::runtime::activate_profile(app, name).await {
+        let backup = backup_path_for(file_path);
+        let _ = std::fs::remove_file(file_path);
+        let _ = std::fs::rename(&backup, file_path);
+        if let Err(e2) = crate::core::runtime::activate_profile(app, name).await {
+            warn!("Rollback re-activate failed for '{}': {}", name, e2);
+        }
+        return Err(Error::Other(format!(
+            "Profile '{}' 保存生效失败，已回滚到旧内容：{}",
+            name, e
+        )));
+    }
+    Ok(())
+}
+
 /// 更新订阅：读回 profile 顶部的订阅 URL，重新拉取内容并覆盖文件。
 /// 若更新的是激活中的 Profile，走统一编排层 `activate_profile`
 /// 重生成运行时配置并热重载核心，让新节点/规则立即生效（失败回滚）。
@@ -778,9 +815,9 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     // 任一步失败自动恢复 .bak 并清理临时文件。
     commit_profile_file(&temp_path, &file_path)?;
 
-    // 更新激活中的 Profile：热重载使新节点/规则生效
+    // 更新激活中的 Profile：热重载使新节点/规则生效；激活失败回滚 .bak 旧内容。
     if active_profile(app) == name {
-        crate::core::runtime::activate_profile(app, name).await?;
+        activate_with_rollback(app, name, &file_path).await?;
     }
 
     info!("Subscription updated: {}", redact_url(&url));
@@ -923,6 +960,50 @@ mod tests {
         assert_eq!(redact_url("https://host/path"), "https://host/…");
         // 解析失败不泄露原始串
         assert_eq!(redact_url("not a url \n bad"), "***");
+    }
+
+    #[test]
+    fn validate_requires_non_empty_name_type_server() {
+        // 缺失 name：运行时靠 name 注入内置叶子组，且 Normalizer 的 dedupe_by_name
+        // 会把多个无名单节点折叠成一个——必须显式拒绝，不做静默修复。
+        let no_name: serde_yaml::Value = serde_yaml::from_str(
+            "type: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
+        )
+        .unwrap();
+        assert!(
+            validate_node_protocol(&no_name, 1).is_err(),
+            "missing name rejected"
+        );
+
+        // 缺失 type
+        let no_type: serde_yaml::Value = serde_yaml::from_str(
+            "name: n\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
+        )
+        .unwrap();
+        assert!(
+            validate_node_protocol(&no_type, 2).is_err(),
+            "missing type rejected"
+        );
+
+        // 缺失 server
+        let no_server: serde_yaml::Value = serde_yaml::from_str(
+            "name: n\ntype: ss\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
+        )
+        .unwrap();
+        assert!(
+            validate_node_protocol(&no_server, 3).is_err(),
+            "missing server rejected"
+        );
+
+        // 合法节点通过
+        let ok: serde_yaml::Value = serde_yaml::from_str(
+            "name: n\ntype: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
+        )
+        .unwrap();
+        assert!(
+            validate_node_protocol(&ok, 4).is_ok(),
+            "valid node accepted"
+        );
     }
 
     #[test]
