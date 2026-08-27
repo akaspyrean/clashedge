@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  // 瀹夊叏璇存槑锛氬墠绔笉鐩磋繛浠讳綍澶栭儴 HTTP/WebSocket 鈥斺€?璁㈤槄 / geodata 鎷夊彇鍧囩敱鍚庣
-  // reqwest 瀹屾垚锛屾棩蹇楄蛋 Tauri 浜嬩欢閫氶亾锛屽墠绔粎閫氳繃 invoke 璋冨悗绔懡浠ゃ€?
-  // 鏁?CSP 鐨?connect-src 浠呬繚鐣?'self'锛堝悓婧?invoke / 浜嬩欢锛夛紝骞舵樉寮忓叧闂?
-  // object / frame 娉ㄥ叆闈€俿tyle-src 淇濈暀 'unsafe-inline' 鍥?Element Plus 闇€瑕併€?
+  // 安全说明：前端不直连任何外部 HTTP/WebSocket；订阅和 geodata 均由后端
+  // reqwest 拉取，日志走 Tauri 事件通道，前端仅通过 invoke 调用后端命令。
+  // CSP 的 connect-src 只保留 'self'；object/frame 禁止，style-src 因
+  // Element Plus 运行时样式保留 'unsafe-inline'。
   "productName": "ClashEdge",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "identifier": "com.clashedge.portable",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,10 +14,9 @@
     "frontendDist": "../dist"
   },
   "app": {
-    // 鍓嶇鍏ㄩ儴閫氳繃鏄惧紡 import 璋冨懡浠わ紝鏃犻渶娉ㄥ叆鍏ㄥ眬 __TAURI__銆?
-    // 涓荤獥鍙ｄ笉鍦ㄩ厤缃腑澹版槑锛歍auri 2 鐨?on_navigation 瀵艰埅閿佸畾浠呭湪
-    // WebviewWindowBuilder 涓婂彲鐢紙閰嶇疆寮忕獥鍙ｆ棤娉曟寕鎺ワ級锛屾晠鍦?main.rs setup
-    // 涓€氳繃 WebviewWindowBuilder 鍒涘缓锛岀獥鍙ｅ睘鎬т笌鏃ч厤缃繚鎸佷竴鑷淬€?
+    // 前端全部通过显式 import 调命令，无需注入全局 __TAURI__。
+    // 主窗口由 main.rs 的 WebviewWindowBuilder 创建，以便挂载 Tauri 2 的
+    // on_navigation 导航锁定；窗口属性与原配置保持一致。
     "withGlobalTauri": false,
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'none'"

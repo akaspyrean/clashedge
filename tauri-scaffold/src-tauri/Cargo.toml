@@ -1,6 +1,6 @@
 [package]
 name = "clash-edge"
-version = "1.0.4"
+version = "1.0.5"
 description = "ClashEdge - Lightweight Clash Client for Windows"
 authors = ["akaspyrean"]
 edition = "2021"
@@ -16,12 +16,8 @@ tauri-build = { version = "2", features = ["config-json5"] }
 [dependencies]
 # config-json5 与 tauri-build 对应启用，保证 cargo build 阶段与运行时都能解析带注释的配置。
 tauri = { version = "2", features = ["common-controls-v6", "tray-icon", "config-json5"] }
-tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = { version = "2", features = ["tracing"] }
-tauri-plugin-notification = "2"
-tauri-plugin-clipboard-manager = "2"
-tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 
 # devtools：Tauri 2 在 debug 构建自动启用 Web Inspector，release 构建
@@ -29,9 +25,8 @@ tauri-plugin-single-instance = "2"
 # 门控，release 不编译任何 devtools 调用面。移除 "devtools" feature 以消除
 # release 二进制中不必要的调试/攻击面。
 
-# P1-11：shell plugin 未使用（打开目录走 Rust command），移除以减少攻击面。
-# fs plugin 保留但收紧权限：capabilities.json 中移除过宽的 Desktop/Documents/Downloads
-# 读取权限，仅允许应用自身数据目录（通过 Rust command 完成文件操作）。
+# P1-11：shell / fs / notification / clipboard / opener 均未被前后端调用；文件导入
+# 只用 dialog + Rust command，打开目录也走 Rust command，故移除未使用插件。
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"
@@ -41,7 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 log = "0.4"
 anyhow = "1.0"
 thiserror = "1.0"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "stream", "rustls-tls-webpki-roots", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream", "rustls-tls-webpki-roots", "socks"] }
 winreg = "0.11"
 # 已作为传递依赖存在于 Cargo.lock（tauri/tokio 体系），无需新增下载。
 # Win32_Networking_WinInet：写入系统代理注册表后通知 WinINet 立即刷新。

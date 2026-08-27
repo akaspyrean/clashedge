@@ -100,25 +100,6 @@ pub(crate) async fn ensure_core_serving(app: &AppHandle) -> Result<()> {
     }
     Ok(())
 }
-/// 系统代理绕过列表（ProxyOverride）：本机/局域网直连。
-/// 必须显式列出 127.0.0.1 / localhost / *.tauri.localhost：
-/// - 系统代理开启时，WebView2 的前端资源与 IPC 走 tauri.localhost / 127.0.0.1；
-/// - mihomo 外部控制器在 127.0.0.1:9090，后端用 reqwest 直连；
-/// - 仅靠 `<local>`（对应空主机名/局域网）不会覆盖字面量 IP 127.0.0.1 与
-///   tauri.localhost 域名，导致这些回环请求被错误地代理到 mihomo 的 7890，
-///   在内核未就绪/重启时返回 ERR_CONNECTION_REFUSED（BUG1 根因之一）。
-///
-/// pub(crate)：CoreSupervisor 在崩溃自愈恢复系统代理时复用同一份绕过列表，
-/// 保证恢复值与正常开启路径完全一致。
-pub(crate) fn default_bypass() -> Vec<String> {
-    vec![
-        "<local>".to_string(),
-        "127.0.0.1".to_string(),
-        "localhost".to_string(),
-        "*.tauri.localhost".to_string(),
-    ]
-}
-
 /// P0-3：系统代理开启/恢复失败后，把配置意图落回 Windows 实际状态（false）
 /// 并推送事件——不允许 UI 在注册表实际关闭时继续把开关显示为 ON。
 pub(crate) async fn mark_system_proxy_failed(app: &AppHandle, reason: &str) {
@@ -277,6 +258,14 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
 
     // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
     let _tx = state.config_tx.lock().await;
+    let data_dir = crate::util::paths::get_app_data_dir(app)?;
+    let mixed_port = state
+        .config_manager
+        .lock()
+        .unwrap()
+        .get_config()
+        .general
+        .mixed_port;
 
     // C9 系统代理开启前密钥兜底：若当前配置仍是占位/空/旧遗留密钥，立即轮换。
     // 系统代理开启后，本机所有流量（含局域网可到达路径）都可能触达本地控制器，
@@ -301,133 +290,21 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
         old
     };
 
-    // 2. 写注册表（真实生效）。写之前快照当前 Windows 代理状态，
-    //    作为 Recovery Journal 的"用户原始状态"记录。
-    let address = {
-        let cfg = state.config_manager.lock().unwrap().get_config();
-        format!("127.0.0.1:{}", cfg.general.mixed_port)
-    };
-    let before_change = crate::proxy::system_proxy::get_system_proxy().ok();
-    let bypass = default_bypass();
-
-    // P0-1：journal 是崩溃恢复的唯一凭据，必须在改注册表之前持久化成功。
-    //   旧顺序："改注册表 → 写 journal（失败仅 warn）" —— 进程在两步之间崩溃
-    //   会留下死代理 + 无 journal，下次启动无法恢复。
-    //   新顺序（开启路径）：
-    //     1) 快照原注册表（before_change，已是开启前状态）
-    //     2) 写 journal: original=before_change, owned=true  ← 必须成功
-    //     3) 改注册表接管
-    //     4) 失败回滚：清 journal + 回滚 config
-    //   关闭路径语义变更（用户已授权）：
-    //     OFF 不再只是 ProxyEnable=0，而是"退出 ClashEdge 接管"——
-    //     读 journal.original 完整还原用户原代理（无则关闭）。这与
-    //     sync_windows_side_effects 的 OFF 分支语义一致。
-    let data_dir = crate::util::paths::get_app_data_dir(app);
-    // journal 写失败只影响**开启**路径——关闭路径不写 journal（读不到原代理时
-    // 降级为直接关闭），data_dir 解析失败不应阻塞关闭。
-    let journal_err = match (data_dir.as_ref(), enable) {
-        (Ok(dir), true) => crate::proxy::journal::write_journal(
-            dir,
-            &crate::proxy::journal::ProxyJournal {
-                session_id: format!(
-                    "{:016x}{:016x}",
-                    rand::random::<u64>(),
-                    rand::random::<u64>()
-                ),
-                pid: std::process::id(),
-                mixed_port: address
-                    .rsplit(':')
-                    .next()
-                    .and_then(|p| p.parse().ok())
-                    .unwrap_or(0),
-                original: before_change.clone(),
-                owned: true,
-            },
-        )
-        .err(),
-        (Err(e), true) => {
-            // 开启但 data_dir 解析失败 → 无法写 journal，拒绝开启（P0-1 语义）
-            Some(Error::Other(format!(
-                "Failed to resolve data dir for proxy journal: {}",
-                e
-            )))
-        }
-        _ => None,
-    };
-    if let Some(e) = journal_err {
-        // journal 写不进去 → 拒绝开启系统代理（P0-1 语义变更）。
-        let mut cfg_mgr = state.config_manager.lock().unwrap();
-        let mut cfg = cfg_mgr.get_config();
-        cfg.general.system_proxy = old;
-        let _ = cfg_mgr.set_config(cfg);
-        error!(
-            "apply_system_proxy({}) aborted: journal write failed: {}",
-            enable, e
-        );
-        return Err(e);
-    }
-
-    // 3. 改注册表（真实接管 / 还原）
+    // 2. 所有接管/释放均走 proxy journal 的统一 ownership helper。
+    //    释放失败时 helper 保留 journal；调用方回滚配置并保持 Mihomo 运行。
     let reg_result = if enable {
-        // 开启：接管并删除用户原有 PAC（原值已随 journal.original 保留）
-        crate::proxy::system_proxy::set_system_proxy(true, &address, &bypass, None)
+        crate::proxy::journal::acquire_system_proxy(&data_dir, mixed_port)
     } else {
-        // 关闭：只有当我们确实接管了系统代理（journal 存在且 owned=true）才允许
-        // 还原/关闭。没有接管凭据 → 不碰注册表——否则会把用户自己（非 ClashEdge）
-        // 的系统代理也关掉（例如用户原本用 10.0.0.5:8080，ClashEdge 从未接管过）。
-        //
-        // 还原语义（与 recover_on_startup 的异常恢复路径保持一致）：
-        // - original.enabled = true  → 还原静态代理 address/bypass + 原 PAC；
-        // - original.enabled = false → ProxyEnable=0，同时写回 original.auto_config_url
-        //   （原 PAC），避免"正常关闭丢 PAC、异常恢复反而保留"的语义不一致；
-        // - original = None          → 还原为"无代理"（ProxyEnable=0）。
-        let journal = data_dir
-            .as_ref()
-            .ok()
-            .and_then(|d| crate::proxy::journal::read_journal(d));
-        match journal.as_ref().filter(|j| j.owned) {
-            Some(j) => match &j.original {
-                Some(orig) if orig.enabled => crate::proxy::system_proxy::set_system_proxy(
-                    true,
-                    &orig.address,
-                    &orig.bypass_list,
-                    orig.auto_config_url.as_deref(),
-                ),
-                Some(orig) => crate::proxy::system_proxy::set_system_proxy(
-                    false,
-                    "",
-                    &[],
-                    orig.auto_config_url.as_deref(),
-                ),
-                None => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None),
-            },
-            // 未接管 → 不碰 Windows Registry（保持用户自己的代理不变）
-            None => Ok(()),
-        }
+        crate::proxy::journal::release_owned_proxy(&data_dir, mixed_port).map(|_| ())
     };
     if let Err(e) = reg_result {
-        // 4. 回滚：注册表改失败 → 还原 config；开启路径下还要清掉刚写的 journal
-        //    （否则它会指向一个未生效的接管，下次启动可能误恢复）。
+        // 3. 回滚配置意图。registry/journal 的安全回滚由统一 helper 负责。
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();
         cfg.general.system_proxy = old;
         let _ = cfg_mgr.set_config(cfg);
-        if enable {
-            if let Ok(dir) = &data_dir {
-                crate::proxy::journal::clear_journal(dir);
-            }
-        }
         error!("apply_system_proxy({}) failed, rolled back: {}", enable, e);
         return Err(e);
-    }
-
-    // 5. 收尾 journal：
-    //    - 接管成功 → journal 已在步骤 2 写好（owned=true）
-    //    - 关闭成功 → journal.original 已被还原为用户原状态，journal 失去意义，删除
-    if !enable {
-        if let Ok(dir) = &data_dir {
-            crate::proxy::journal::clear_journal(dir);
-        }
     }
 
     info!(

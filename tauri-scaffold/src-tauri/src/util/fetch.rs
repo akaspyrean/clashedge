@@ -3,7 +3,7 @@
 //!
 //! 需求：订阅更新、配置更新（geodata）这类"拉取动作"默认走直连；
 //! 直连不通时自动改走应用自身 mihomo 混合端口（`127.0.0.1:{mixed_port}`）
-//! 作为 HTTP 代理重试。软件本身的代理模式（rule/global/direct）不受影响。
+//! 的 SOCKS5 本地解析模式重试。软件本身的代理模式不受影响。
 //!
 //! 判定"直连不通"：直连请求连接失败/超时，或返回非 2xx 状态码
 //! （服务器对直连 IP 限流/屏蔽时常见，走代理可绕过）。
@@ -108,7 +108,7 @@ pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
             host, e
         ))
     })?;
-    let addrs: Vec<SocketAddr> = addrs.collect();
+    let mut addrs: Vec<SocketAddr> = addrs.collect();
     if addrs.is_empty() {
         return Err(Error::InvalidArgument(format!(
             "URL host '{}' resolved to no addresses; rejected",
@@ -125,6 +125,10 @@ pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
             )));
         }
     }
+    // Windows/代理链对 IPv4 的可用性通常更稳定；优先尝试 IPv4，但保留全部
+    // 已验证地址供连接层故障转移。排序不改变 SSRF 结论（所有地址已逐一通过）。
+    addrs.sort_by_key(|addr| addr.is_ipv6());
+    addrs.dedup();
     Ok(addrs)
 }
 
@@ -224,7 +228,7 @@ fn no_redirect_policy() -> Policy {
 /// 流程：
 /// 1. 先用直连 client（`no_proxy`）请求目标 URL；
 /// 2. 直连失败（连接失败/超时/非 2xx）则改用应用自身 mihomo 混合端口
-///    （`http://127.0.0.1:{mixed_port}`）作为 HTTP 代理重试一次；
+///    （`socks5://127.0.0.1:{mixed_port}`）作本地解析的 SOCKS5 代理重试一次；
 /// 3. 返回最终 response（调用方负责消费 body / 检查状态码）。
 ///
 /// 返回的 response 状态码不保证是 2xx——调用方需自行判定；
@@ -283,7 +287,25 @@ async fn get_direct_first_with_timeout(
     )?
     .redirect(no_redirect_policy())
     .build()?;
-    match send_and_follow(&direct, url, FetchRoute::Direct, "").await {
+    // 2. 代理兜底：应用自身 mihomo 混合端口
+    let proxy_url = local_proxy_url(app);
+    let proxied = apply_route(
+        build_client_with_resolved(url, &resolved, total_timeout)?,
+        FetchRoute::LocalProxy,
+        &proxy_url,
+    )?
+    .redirect(no_redirect_policy())
+    .build()?;
+    send_direct_then_proxy(&direct, &proxied, url, &proxy_url).await
+}
+
+async fn send_direct_then_proxy(
+    direct: &reqwest::Client,
+    proxied: &reqwest::Client,
+    url: &str,
+    proxy_url: &str,
+) -> Result<reqwest::Response> {
+    match send_and_follow(direct, url, FetchRoute::Direct, "").await {
         Ok(resp) if resp.status().is_success() => return Ok(resp),
         Ok(resp) => {
             warn!(
@@ -301,26 +323,16 @@ async fn get_direct_first_with_timeout(
         }
     }
 
-    // 2. 代理兜底：应用自身 mihomo 混合端口
-    let proxy_url = local_proxy_url(app);
     info!(
         "Fetching {} via local proxy {}",
         redact_url_for_log(url),
         proxy_url
     );
-    // P2：proxy 模式下 reqwest 的 resolve() 不生效（P1-5 确认）——proxy 收到
-    // 原始域名后自己解析，留下 DNS rebinding TOCTOU 窗口。把 URL host 替换为
-    // 已校验 IP 后（pin_url_host_to_ip），proxy 直接连 IP 不再解析域名，
-    // 彻底关闭该窗口。
-    let pinned_url = pin_url_host_to_ip(url, &resolved)?;
-    let proxied = apply_route(
-        build_client_with_resolved(&pinned_url, &resolved, total_timeout)?,
-        FetchRoute::LocalProxy,
-        &proxy_url,
-    )?
-    .redirect(no_redirect_policy())
-    .build()?;
-    send_and_follow(&proxied, &pinned_url, FetchRoute::LocalProxy, &proxy_url).await
+    // HTTP CONNECT 代理会收到原始 hostname 并自行解析；而把 HTTPS URL 改成 IP
+    // 又会破坏 TLS SNI/证书 hostname 校验。mixed-port 同时支持 SOCKS5：使用
+    // `socks5://`（本地解析，不是 socks5h）+ reqwest resolve pinning，SOCKS 请求
+    // 只携带已验证 IP，同时 URL/Host/SNI 始终保留原 hostname。
+    send_and_follow(proxied, url, FetchRoute::LocalProxy, proxy_url).await
 }
 
 /// 从 URL 提取主机名与已校验地址，构建带 `resolve()` 钉定的 ClientBuilder。
@@ -337,54 +349,15 @@ fn build_client_with_resolved(
         builder = builder.timeout(t);
     }
     if let Some(host) = parsed.host_str() {
-        if let Some(first) = resolved.first() {
+        if !resolved.is_empty() {
             let host_no_brackets = host
                 .strip_prefix('[')
                 .and_then(|h| h.strip_suffix(']'))
                 .unwrap_or(host);
-            builder = builder.resolve(host_no_brackets, *first);
+            builder = builder.resolve_to_addrs(host_no_brackets, resolved);
         }
     }
     Ok(builder)
-}
-
-/// P2：把 URL 的 host 替换为已校验 IP 列表的第一个地址。
-///
-/// P1-5 已确认：reqwest 的 `resolve()` 在 `.proxy(Proxy::all(..))` 模式下
-/// **不生效**——proxy（mihomo）收到的是原始域名，随后自己解析。这留下
-/// DNS rebinding TOCTOU 窗口：`validate_url` 校验时域名是公网 IP（通过），
-/// 直连失败后走 local proxy fallback，proxy 重新解析时域名已被攻击者改为
-/// 127.0.0.1 → mihomo 连回本机（SSRF）。
-///
-/// 修复：把 URL host 替换成已校验 IP 后，proxy 收到的是 IP 而非域名，
-/// 直接连 IP，不再解析域名，彻底关闭 DNS rebinding 窗口。
-///
-/// 权衡：HTTPS 下 reqwest 用 IP 做 SNI，严格校验 SNI 的服务器可能拒绝。
-/// 这是「安全（SSRF 防护）优先于兼容性」的取舍；订阅/geodata 下载目标
-/// 多为 CDN，通常不严格校验 SNI。
-///
-/// `resolved` 为空时原样返回（不改写）。
-fn pin_url_host_to_ip(url: &str, resolved: &[SocketAddr]) -> Result<String> {
-    let Some(first) = resolved.first() else {
-        return Ok(url.to_string());
-    };
-    let ip = first.ip();
-    // IPv6 host 需方括号形式；IPv4 直接字符串
-    let host = match ip {
-        IpAddr::V4(v4) => v4.to_string(),
-        IpAddr::V6(v6) => format!("[{}]", v6),
-    };
-    let port = first.port();
-    let mut parsed =
-        Url::parse(url).map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
-    parsed
-        .set_host(Some(&host))
-        .map_err(|e| Error::Other(format!("Failed to pin URL host to IP: {}", e)))?;
-    // set_port 错误类型为 ()，无 _err 可格式化
-    parsed
-        .set_port(Some(port))
-        .map_err(|()| Error::Other("Failed to pin URL port".to_string()))?;
-    Ok(parsed.to_string())
 }
 
 /// 发送请求并手动处理重定向：每跳做完整异步 SSRF 校验（含 DNS）后
@@ -399,22 +372,15 @@ async fn send_and_follow(
 ) -> Result<reqwest::Response> {
     let mut current_url = start_url.to_string();
     for _hop in 0..=MAX_REDIRECTS {
-        // 每跳（含首跳）都校验：首跳已由调用方校验并（proxy 下）pin 好，
+        // 每跳（含首跳）都校验：首跳已由调用方校验并通过 resolve pin 好，
         // 重定向到的新 URL 需要新校验。
         let resolved = if _hop == 0 {
             Vec::new()
         } else {
             validate_url(&current_url).await?
         };
-        // P2：proxy 模式下 resolve() 不生效，重定向到的新主机也必须 pin 成
-        // 已校验 IP——否则 proxy 对重定向目标自己解析，仍存在 DNS rebinding
-        // 窗口。首跳 start_url 已由调用方 pin 好（get_direct_first proxy 路径）。
-        let req_url = if route == FetchRoute::LocalProxy && !resolved.is_empty() {
-            pin_url_host_to_ip(&current_url, &resolved)?
-        } else {
-            current_url.clone()
-        };
-        // 对于重定向跳，需要用新 URL 的已验地址重新构建请求（req_url 已 pin）；
+        let req_url = current_url.clone();
+        // 对于重定向跳，需要用新 URL 的已验地址重新构建请求；
         // 但 client 是共享的（已钉定首跳主机）。重定向到新主机名时，
         // 我们用独立钉定 client 发送。为关闭 TOCTOU，重定向到新主机时
         // 改用独立钉定 client。
@@ -476,7 +442,8 @@ fn parsed_join(base: &str, location: &str) -> Result<Url> {
     })
 }
 
-/// 应用自身 mihomo 混合端口代理地址（`http://127.0.0.1:{mixed_port}`）。
+/// 应用自身 mihomo mixed-port 的 SOCKS5 地址。`socks5` 表示客户端解析目标域名；
+/// 禁止改成 `socks5h`，后者会让代理端重新 DNS 解析并重开 rebinding 窗口。
 fn local_proxy_url(app: &AppHandle) -> String {
     let port = app
         .state::<crate::AppState>()
@@ -486,7 +453,7 @@ fn local_proxy_url(app: &AppHandle) -> String {
         .get_config()
         .general
         .mixed_port;
-    format!("http://127.0.0.1:{}", port)
+    format!("socks5://127.0.0.1:{}", port)
 }
 
 #[cfg(test)]
@@ -649,109 +616,196 @@ mod tests {
     //   3. proxy（mihomo）重新解析 evil.com → DNS rebinding 返回 127.0.0.1
     //   4. mihomo 连 127.0.0.1（SSRF 成功）
     //
-    // P2 修复：`pin_url_host_to_ip` 把 URL host 替换为已校验 IP，proxy 收到
-    // IP 而非域名，直接连 IP、不再解析域名，彻底关闭 DNS rebinding 窗口。
-    // 下面两个测试验证修复生效：proxy 收到的是 IP，而非域名。
+    // v1.0.5 修复：改用 SOCKS5 本地解析 + resolve pinning。代理收到已验证 IP，
+    // 原 URL hostname 则保留给 HTTP Host / TLS SNI 与证书 hostname 校验。
 
-    /// 单元测试：pin_url_host_to_ip 把域名 host 替换为已校验 IP（IPv4），
-    /// 保留路径/query/port。
-    #[test]
-    fn pin_url_host_to_ip_replaces_domain_with_ip_v4() {
-        let resolved = vec![SocketAddr::new(
-            std::net::Ipv4Addr::new(203, 0, 113, 1).into(),
-            8080,
-        )];
-        let pinned =
-            pin_url_host_to_ip("http://evil.example:8080/path?token=secret", &resolved).unwrap();
-        assert_eq!(pinned, "http://203.0.113.1:8080/path?token=secret");
-    }
-
-    /// 单元测试：pin_url_host_to_ip 处理 IPv6（方括号形式）。
-    #[test]
-    fn pin_url_host_to_ip_replaces_domain_with_ip_v6() {
-        let resolved = vec![SocketAddr::new(
-            "2606:4700:4700::1111"
-                .parse::<std::net::Ipv6Addr>()
-                .unwrap()
-                .into(),
-            443,
-        )];
-        let pinned = pin_url_host_to_ip("https://evil6.example/x", &resolved).unwrap();
-        // url crate 对 scheme 默认端口（https=443）不显式输出，符合预期
-        assert_eq!(pinned, "https://[2606:4700:4700::1111]/x");
-    }
-
-    /// 单元测试：resolved 为空时原样返回（不改写）。
-    #[test]
-    fn pin_url_host_to_ip_returns_original_when_empty() {
-        let pinned = pin_url_host_to_ip("https://example.com/x", &[]).unwrap();
-        assert_eq!(pinned, "https://example.com/x");
-    }
-
-    /// integration：proxy 模式下，发送的请求必须带已校验 IP（而非域名），
-    /// 证明 DNS rebinding 窗口已关闭。
     #[tokio::test]
-    async fn proxy_mode_sends_pinned_ip_not_domain() {
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
+    async fn direct_non_success_retries_through_pinned_socks5_fallback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        // 起一个本地 HTTP proxy，记录收到的请求
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let proxy_port = listener.local_addr().unwrap().port();
-        let received_req: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let req_clone = received_req.clone();
-
-        let proxy_task = tokio::spawn(async move {
-            let (mut conn, _) = listener.accept().await.unwrap();
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut buf = [0u8; 1024];
-            let _ = conn.read(&mut buf).await;
-            let req_text = String::from_utf8_lossy(&buf).to_string();
-            *req_clone.lock().await = Some(req_text);
-            let _ = conn
-                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-                .await;
+        let direct_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let direct_addr = direct_listener.local_addr().unwrap();
+        let direct_task = tokio::spawn(async move {
+            let (mut conn, _) = direct_listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = conn.read(&mut request).await.unwrap();
+            conn.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
         });
 
-        let url = "http://myhost.test:80/";
-        let resolved = vec![SocketAddr::new(
-            std::net::Ipv4Addr::new(203, 0, 113, 1).into(),
-            80,
-        )];
-        // 与 get_direct_first_with_timeout proxy 路径一致：先 pin URL。
-        let pinned_url = pin_url_host_to_ip(url, &resolved).unwrap();
-        let builder =
-            build_client_with_resolved(&pinned_url, &resolved, Some(Duration::from_secs(5)))
+        let socks_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_port = socks_listener.local_addr().unwrap().port();
+        let socks_task = tokio::spawn(async move {
+            let (mut conn, _) = socks_listener.accept().await.unwrap();
+            let mut greeting = [0u8; 2];
+            conn.read_exact(&mut greeting).await.unwrap();
+            let mut methods = vec![0u8; greeting[1] as usize];
+            conn.read_exact(&mut methods).await.unwrap();
+            conn.write_all(&[5, 0]).await.unwrap();
+            let mut header = [0u8; 4];
+            conn.read_exact(&mut header).await.unwrap();
+            assert_eq!(header[3], 1, "fallback must send a pinned IPv4 target");
+            let mut target = [0u8; 6];
+            conn.read_exact(&mut target).await.unwrap();
+            assert_eq!(&target[..4], &[203, 0, 113, 9]);
+            conn.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+                .await
                 .unwrap();
-        let proxy_url = format!("http://127.0.0.1:{}", proxy_port);
+            let mut request = [0u8; 1024];
+            let size = conn.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..size]).contains("fallback.example.test"));
+            conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .await
+                .unwrap();
+        });
+
+        let url = "http://fallback.example.test/resource";
+        let direct = apply_route(
+            build_client_with_resolved(url, &[direct_addr], Some(Duration::from_secs(5))).unwrap(),
+            FetchRoute::Direct,
+            "",
+        )
+        .unwrap()
+        .redirect(no_redirect_policy())
+        .build()
+        .unwrap();
+        let proxy_url = format!("socks5://127.0.0.1:{}", socks_port);
+        let pinned = SocketAddr::new(std::net::Ipv4Addr::new(203, 0, 113, 9).into(), 80);
+        let proxied = apply_route(
+            build_client_with_resolved(url, &[pinned], Some(Duration::from_secs(5))).unwrap(),
+            FetchRoute::LocalProxy,
+            &proxy_url,
+        )
+        .unwrap()
+        .redirect(no_redirect_policy())
+        .build()
+        .unwrap();
+
+        let response = send_direct_then_proxy(&direct, &proxied, url, &proxy_url)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        direct_task.await.unwrap();
+        socks_task.await.unwrap();
+    }
+
+    /// integration：SOCKS5 fallback 必须同时满足：
+    /// 1) SOCKS connect 目标是 validate_url 已验证的 IP（代理端不做 DNS）；
+    /// 2) TLS ClientHello SNI 仍是原 hostname（证书 hostname 校验不被破坏）。
+    #[tokio::test]
+    async fn socks5_fallback_pins_ip_but_preserves_tls_sni() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = listener.local_addr().unwrap().port();
+        let proxy_task = tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut greeting = [0u8; 2];
+            conn.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting[0], 5);
+            let mut methods = vec![0u8; greeting[1] as usize];
+            conn.read_exact(&mut methods).await.unwrap();
+            conn.write_all(&[5, 0]).await.unwrap();
+
+            let mut request = [0u8; 4];
+            conn.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request[..3], &[5, 1, 0]);
+            assert_eq!(
+                request[3], 1,
+                "SOCKS target must be IPv4, not a proxy-resolved domain"
+            );
+            let mut ip_and_port = [0u8; 6];
+            conn.read_exact(&mut ip_and_port).await.unwrap();
+            conn.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+                .await
+                .unwrap();
+
+            let mut client_hello = Vec::new();
+            let mut chunk = [0u8; 2048];
+            for _ in 0..8 {
+                match tokio::time::timeout(Duration::from_millis(250), conn.read(&mut chunk)).await
+                {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(size)) => {
+                        client_hello.extend_from_slice(&chunk[..size]);
+                        if client_hello
+                            .windows(b"tls-name.example.test".len())
+                            .any(|window| window == b"tls-name.example.test")
+                        {
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => panic!("failed reading TLS ClientHello: {}", e),
+                }
+            }
+            (ip_and_port, client_hello)
+        });
+
+        let url = "https://tls-name.example.test/path";
+        let resolved = vec![SocketAddr::new(
+            std::net::Ipv4Addr::new(203, 0, 113, 7).into(),
+            443,
+        )];
+        let builder =
+            build_client_with_resolved(url, &resolved, Some(Duration::from_secs(5))).unwrap();
+        let proxy_url = format!("socks5://127.0.0.1:{}", proxy_port);
         let client = apply_route(builder, FetchRoute::LocalProxy, &proxy_url)
             .unwrap()
             .redirect(no_redirect_policy())
             .build()
             .unwrap();
 
-        let _ = client
-            .get(&pinned_url)
+        let send_result = client
+            .get(url)
             .header(USER_AGENT, user_agent())
             .send()
             .await;
 
-        let _ = tokio::time::timeout(Duration::from_secs(2), proxy_task).await;
+        let (ip_and_port, client_hello) = tokio::time::timeout(Duration::from_secs(3), proxy_task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&ip_and_port[..4], &[203, 0, 113, 7]);
+        assert_eq!(u16::from_be_bytes([ip_and_port[4], ip_and_port[5]]), 443);
+        assert!(
+            client_hello
+                .windows(b"tls-name.example.test".len())
+                .any(|window| window == b"tls-name.example.test"),
+            "TLS ClientHello must preserve the original hostname as SNI (send={:?}, {} bytes: {:02x?})",
+            send_result,
+            client_hello.len(),
+            &client_hello[..client_hello.len().min(96)]
+        );
+    }
 
-        let seen = received_req.lock().await.clone();
-        assert!(seen.is_some(), "proxy should have received a request");
-        let req_text = seen.unwrap();
-        let first_line = req_text.lines().next().unwrap_or("");
-        // P2 修复断言：请求目标必须是 IP（203.0.113.1），而非域名 myhost.test。
-        assert!(
-            first_line.contains("203.0.113.1"),
-            "proxy request target must be the pinned IP, got: {}",
-            first_line
-        );
-        assert!(
-            !first_line.contains("myhost.test"),
-            "proxy request target must NOT be the original domain, got: {}",
-            first_line
-        );
+    /// 手工 Release Gate：通过真实 Mihomo mixed-port 跑生产 fallback 路径，覆盖
+    /// GitHub Release redirect、常见订阅 CDN 与 geodata CDN。默认忽略；执行时
+    /// 设置 CLASHEDGE_TEST_PROXY=socks5://127.0.0.1:<isolated-port>。
+    #[tokio::test]
+    #[ignore = "requires an isolated real Mihomo and internet access"]
+    async fn real_https_fallback_targets_keep_tls_and_redirect_safety() {
+        let proxy_url = std::env::var("CLASHEDGE_TEST_PROXY")
+            .expect("set CLASHEDGE_TEST_PROXY to an isolated Mihomo SOCKS5 mixed-port");
+        for url in [
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+            "https://raw.githubusercontent.com/akaspyrean/external/main/rules/direct.yaml",
+            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
+        ] {
+            let resolved = validate_url(url).await.unwrap();
+            let client = apply_route(
+                build_client_with_resolved(url, &resolved, Some(Duration::from_secs(45))).unwrap(),
+                FetchRoute::LocalProxy,
+                &proxy_url,
+            )
+            .unwrap()
+            .redirect(no_redirect_policy())
+            .build()
+            .unwrap();
+            let response = send_and_follow(&client, url, FetchRoute::LocalProxy, &proxy_url)
+                .await
+                .unwrap_or_else(|e| panic!("real proxy fetch failed for {}: {}", url, e));
+            assert!(response.status().is_success(), "non-success for {}", url);
+        }
     }
 }

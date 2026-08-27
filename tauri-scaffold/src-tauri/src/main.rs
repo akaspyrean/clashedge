@@ -54,9 +54,6 @@ pub struct AppState {
     /// Windows 的入口。见上文结构注释。P0-2。
     pub config_tx: tokio::sync::Mutex<()>,
     pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
-    /// 启动前的系统代理快照，用于退出时还原（None = 启动时无外部代理，退出时直接清除）
-    pub original_system_proxy:
-        std::sync::Mutex<Option<crate::proxy::system_proxy::SystemProxyConfig>>,
     /// 日志流任务句柄（前端日志页启用/停止；std Mutex，abort 为同步调用）
     pub log_stream: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// P1-7：最近一次 mihomo 子进程 PID 缓存（CoreSupervisor 在每次成功 spawn
@@ -80,7 +77,6 @@ impl AppState {
             config_manager: std::sync::Mutex::new(ConfigManager::new()),
             config_tx: tokio::sync::Mutex::new(()),
             tray: std::sync::Mutex::new(None),
-            original_system_proxy: std::sync::Mutex::new(None),
             log_stream: std::sync::Mutex::new(None),
             core_pid_cache: std::sync::atomic::AtomicU32::new(0),
             verified_update: std::sync::Mutex::new(None),
@@ -105,17 +101,11 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        // P1-11：shell plugin 未使用（打开目录等走 Rust command），移除以减少攻击面。
-        // fs plugin 保留但收紧权限：capabilities.json 中移除过宽的 Desktop/Documents/Downloads
-        // 读取权限，仅允许应用自身数据目录（通过 Rust command 完成文件操作）。
-        .plugin(tauri_plugin_fs::init())
+        // 文件选择保留 dialog；fs / notification / clipboard / opener 无真实调用，
+        // 文件读写与打开目录均走受控 Rust command，因此不注册未使用插件。
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_opener::init())
-        // 半成品 Tauri updater 已移除（AUDIT-0.8.7：pubkey 为空、无前端调用、
-        // Release 构建不产 bundle 构件，属于假功能）。更新机制待 Portable
-        // Updater 方案（docs/AUDIT-0.8.7.md Phase 3）落地后再实现。
+        // Tauri updater 半成品已移除；当前更新链是已实现的 Portable Updater
+        //（minisign manifest → SHA256 → staging → Launcher 事务替换）。
         .plugin(init_logging())
         .manage(AppState::new())
         .setup(|app| {
@@ -137,32 +127,26 @@ pub fn run() {
                 let mut config_mgr = state.config_manager.lock().unwrap();
                 config_mgr.init(&data_dir)?;
 
-                // P1-8 Recovery Journal 自愈：上次会话异常结束（强杀/断电）且
-                // 系统代理仍指向本应用端口时，先恢复用户原始代理再继续。
-                if let Some(msg) = crate::proxy::journal::recover_on_startup(&data_dir) {
-                    warn!("Proxy journal recovery: {}", msg);
-                }
-
-                // 快照启动前的系统代理状态，用于退出时还原。
-                // 若当前系统代理恰好指向我们自己的端口（127.0.0.1:<mixed-port>），
-                // 视为上次会话退出异常残留（自愈），退出时直接清除而不是还原，
-                // 避免把残留的死代理指向当作用户原有配置。
-                let cfg = config_mgr.get_config();
-                let ours = format!("127.0.0.1:{}", cfg.general.mixed_port);
-                let current = crate::proxy::system_proxy::get_system_proxy().ok();
-                let original = match &current {
-                    Some(c) if c.enabled && c.address == ours => None,
-                    other => other.clone(),
-                };
-                *state.original_system_proxy.lock().unwrap() = original.clone();
-                match &original {
-                    Some(orig) => info!(
-                        "System proxy snapshot at startup: enabled={}, address={}",
-                        orig.enabled, orig.address
-                    ),
-                    None => info!(
-                        "No original system proxy to restore (or stale from previous session)"
-                    ),
+                // P1-8：异常恢复与手动关闭/正常退出共用同一 ownership helper。
+                // ownership 已被用户/其他软件拿走时，不写注册表，并把配置意图落回
+                // false，避免核心启动后再次覆盖用户的新代理。
+                let port = config_mgr.get_config().general.mixed_port;
+                match crate::proxy::journal::recover_on_startup(&data_dir, port) {
+                    Ok(crate::proxy::journal::ReleaseOutcome::Restored { message, .. }) => {
+                        warn!("Proxy journal recovery: {}", message);
+                    }
+                    Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost) => {
+                        let mut cfg = config_mgr.get_config();
+                        cfg.general.system_proxy = false;
+                        config_mgr.set_config(cfg)?;
+                        warn!(
+                            "Proxy ownership changed after abnormal exit; preserving Windows state and disabling ClashEdge proxy intent"
+                        );
+                    }
+                    Ok(crate::proxy::journal::ReleaseOutcome::NoOwnership) => {}
+                    Err(e) => {
+                        warn!("Proxy journal recovery deferred; journal kept: {}", e);
+                    }
                 }
             }
 
@@ -419,7 +403,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // 挂接 RunEvent 生命周期：退出时清理（杀 mihomo、还原系统代理），
+    // 挂接 RunEvent 生命周期：退出时先安全释放系统代理，再停止 mihomo，
     // 否则 mihomo 变成孤儿进程继续代理、系统代理残留指向死端口，全网断开。
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
@@ -428,15 +412,59 @@ pub fn run() {
     });
 }
 
-/// 退出清理：1) 杀掉 mihomo 子进程；2) 还原启动前快照的系统代理。
-/// 放在 RunEvent::Exit 同步执行（taskkill + 注册表写入，不依赖 async runtime）。
+/// 退出清理严格顺序：确认 ownership → 精确恢复 → 复读确认 → 停止 Mihomo →
+/// 清 journal。恢复/确认失败立即返回，核心与 journal 都保留，避免制造死代理。
 fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
-    // 1. 停止 mihomo：孤儿 mihomo 会让用户以为退出了代理实际还在代理。
+    let state = app_handle.state::<AppState>();
+    let mixed_port = state
+        .config_manager
+        .lock()
+        .unwrap()
+        .get_config()
+        .general
+        .mixed_port;
+    let data_dir = match crate::util::paths::get_app_data_dir(app_handle) {
+        Ok(dir) => dir,
+        Err(e) => {
+            error!(
+                "Exit cleanup aborted before stopping Mihomo: cannot resolve proxy journal directory: {}",
+                e
+            );
+            return;
+        }
+    };
+    match crate::proxy::journal::release_owned_proxy_for_exit(&data_dir, mixed_port) {
+        Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost) => {
+            // 正常退出前已被用户/其他软件接管：本次不写注册表，同时把下次启动的
+            // 自动接管意图关闭，避免 journal 清除后又把外部代理当作新 baseline。
+            let mut cfg_mgr = state.config_manager.lock().unwrap();
+            let mut cfg = cfg_mgr.get_config();
+            if cfg.general.system_proxy {
+                cfg.general.system_proxy = false;
+                if let Err(e) = cfg_mgr.set_config(cfg) {
+                    error!(
+                        "Exit cleanup aborted before stopping Mihomo: failed to persist ownership loss: {}",
+                        e
+                    );
+                    return;
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            error!(
+                "Exit cleanup aborted before stopping Mihomo; proxy restore failed or ownership is ambiguous, journal kept: {}",
+                e
+            );
+            return;
+        }
+    }
+
+    // 复读验证已由 helper 完成。现在才允许停止本会话的 Mihomo。
     //    P1-7：只按 PID 精确清杀自己创建的进程。优先走 core_manager 锁拿
     //    实时 PID；锁被 async 任务占用时退回 supervisor 维护的 PID 缓存。
     //    两者都没有（本会话从未成功启动过核心）就什么都不杀——绝不按
     //    进程名 taskkill，避免误杀用户另行运行的 mihomo。
-    let state = app_handle.state::<AppState>();
     let pid = {
         match state.core_manager.get() {
             Some(core) => core.child_pid(),
@@ -455,9 +483,18 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     });
     if let Some(pid) = pid {
         info!("Killing mihomo (PID {}) on exit", pid);
-        let _ = std::process::Command::new("taskkill")
+        let stopped = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
-            .status();
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !stopped {
+            error!(
+                "Failed to stop Mihomo PID {} during exit; proxy was restored but journal is kept",
+                pid
+            );
+            return;
+        }
     } else {
         info!(
             "No mihomo child recorded this session; skipping kill \
@@ -465,62 +502,8 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
         );
     }
 
-    // 2. 还原系统代理：若启动前用户已有代理则还原之，否则清除我们设置的代理。
-    let original = state.original_system_proxy.lock().unwrap().clone();
-    let restore_result = match original {
-        Some(orig) if orig.enabled => {
-            match crate::proxy::system_proxy::set_system_proxy(
-                true,
-                &orig.address,
-                &orig.bypass_list,
-                orig.auto_config_url.as_deref(),
-            ) {
-                Ok(()) => {
-                    info!(
-                        "System proxy restored to original ({}) on exit",
-                        orig.address
-                    );
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to restore system proxy on exit: {}", e);
-                    Err(e)
-                }
-            }
-        }
-        _ => {
-            // 快照存在但未启用（如用户原本只有 PAC）→ 仍写回其 AutoConfigURL
-            let pac = original.as_ref().and_then(|o| o.auto_config_url.as_deref());
-            match crate::proxy::system_proxy::set_system_proxy(false, "", &[], pac) {
-                Ok(()) => {
-                    info!("System proxy cleared on exit");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to clear system proxy on exit: {}", e);
-                    Err(e)
-                }
-            }
-        }
-    };
-
-    // 3. P1-8：干净关闭路径——无论还原结果如何，本次会话的 journal 已完成
-    //    使命。仅当注册表代理已不再指向我们时才清（还原失败时保留 journal，
-    //    下次启动的自愈仍能依据它把死代理改回来）。
-    if let Ok(data_dir) = crate::util::paths::get_app_data_dir(app_handle) {
-        let ours = {
-            let cfg = state.config_manager.lock().unwrap().get_config();
-            format!("127.0.0.1:{}", cfg.general.mixed_port)
-        };
-        let still_ours = crate::proxy::system_proxy::get_system_proxy()
-            .map(|c| c.enabled && c.address == ours)
-            .unwrap_or(false);
-        if restore_result.is_ok() || !still_ours {
-            crate::proxy::journal::clear_journal(&data_dir);
-        } else {
-            warn!("Proxy journal kept: system proxy still points at us after failed restore");
-        }
-    }
+    // 核心已确认停止，最后清理退出凭据。
+    crate::proxy::journal::clear_journal(&data_dir);
 }
 
 fn main() {

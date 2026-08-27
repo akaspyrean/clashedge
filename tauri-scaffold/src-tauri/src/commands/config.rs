@@ -1,4 +1,4 @@
-﻿// src-tauri/src/commands/config.rs
+// src-tauri/src/commands/config.rs
 //! 配置命令：获取/更新/重置/导入/导出配置
 //!
 //! P0-3/P0-4 事务化（AUDIT-0.8.7）：
@@ -19,7 +19,6 @@
 //! 激活 Profile/语言），因此命令完成后再刷新托盘菜单勾选态与文案。
 
 use crate::config::model::Config;
-use crate::proxy::journal::ProxyJournal;
 use crate::proxy::system_proxy::SystemProxyConfig;
 use crate::util::error::{Error, Result};
 use tauri::{command, AppHandle, State};
@@ -160,33 +159,38 @@ pub async fn pick_import_file(app: AppHandle) -> Result<Option<String>> {
 async fn commit_config_transaction(
     app: &AppHandle,
     state: &State<'_, crate::AppState>,
-    new_config: Config,
+    mut new_config: Config,
 ) -> Result<()> {
     // 0. P0-2：先拿全局配置事务锁，串行整段事务（跨 await 持有至函数返回）
     let _tx = state.config_tx.lock().await;
 
-    // 1. 快照旧配置（回滚基准；mixed_port 单独留存供 Windows 回滚使用）
+    // 1. 快照旧配置（回滚基准）
     let old = { state.config_manager.lock().unwrap().get_config() };
-    let old_port = old.general.mixed_port;
 
-    // 2. P0-1：快照 Windows 系统代理状态（回滚基准；读取失败记为 None，
-    //    回滚时退化为"仍指向本应用端口就关闭"的保守策略）
-    let win_before = crate::proxy::system_proxy::get_system_proxy().ok();
+    // mixed-port 变化或关闭系统代理前，必须先释放旧 ownership 并确认用户基线，
+    // 再停止/重启旧端口的 Mihomo。否则 runtime 先切到新端口的数秒内，Windows
+    // 仍指向已经无人监听的旧端口，会制造短暂断网。
+    let proxy_transition = prepare_proxy_transition(app, &old, &new_config)?;
+    if matches!(proxy_transition, ProxyTransition::OwnershipUnavailable) {
+        // 用户/其他软件已经接管：保留 Windows 状态，并取消新配置的自动接管意图。
+        new_config.general.system_proxy = false;
+    }
 
-    // 3. 持久化新配置（disk-first：落盘成功才提交内存）
+    // 2. 持久化新配置（disk-first：落盘成功才提交内存）
     {
         let mut guard = state.config_manager.lock().unwrap();
         guard.set_config(new_config)?;
     }
 
-    // 4. 应用到运行时：重写 runtime-config.yaml + 热重载/重启运行中的核心。
+    // 3. 应用到运行时：重写 runtime-config.yaml + 热重载/重启运行中的核心。
     //    P0-4：reload 成功与否由真实运行状态健康检查决定，不以 HTTP 200 为准。
     //    核心未运行时 reload_running_core 只重写文件，不会失败于此路径之外。
     if let Err(e) = reload_running_core(state).await {
         error!("Config change failed to apply ({}); rolling back", e);
 
         // 4a. 回滚持久化 + 运行时（内存 + 磁盘恢复旧值，再拉回旧运行态）
-        if let Err(rb) = rollback_config_and_runtime(state, old).await {
+        if let Err(rb) = rollback_config_runtime_and_proxy(app, state, old, &proxy_transition).await
+        {
             return Err(Error::Other(format!(
                 "配置应用失败（{}），且配置回滚也失败：{}",
                 e, rb
@@ -197,12 +201,40 @@ async fn commit_config_transaction(
 
     // 5. P0-1：Windows 副作用同步——注册表必须与新配置意图一致。
     //    失败则完整回滚四层状态，禁止出现「Config=new / runtime=new / Windows=old」。
-    if let Err(e) = sync_windows_side_effects(app, state, win_before.as_ref()).await {
+    if let Err(e) = sync_windows_side_effects(app, state, &proxy_transition).await {
         error!(
             "Config change applied but Windows side-effect failed ({}); rolling back fully",
             e
         );
-        let rb_err = match rollback_config_and_runtime(state, old).await {
+
+        // 新端口 ownership 只有在能安全释放/确认后，才允许回滚 runtime；
+        // 若当前仍指向新端口但字段已被并发修改，必须保留新核心避免死代理。
+        let attempted = { state.config_manager.lock().unwrap().get_config() };
+        let data_dir = crate::util::paths::get_app_data_dir(app)?;
+        let unwind = if attempted.general.system_proxy {
+            match crate::proxy::journal::release_owned_proxy(
+                &data_dir,
+                attempted.general.mixed_port,
+            ) {
+                Ok(crate::proxy::journal::ReleaseOutcome::Restored { restored, .. }) => {
+                    ProxyTransition::Released(restored)
+                }
+                Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost)
+                | Ok(crate::proxy::journal::ReleaseOutcome::NoOwnership) => {
+                    ProxyTransition::OwnershipUnavailable
+                }
+                Err(release_error) => {
+                    return Err(Error::Other(format!(
+                        "系统代理同步失败（{}），且无法安全释放新端口 ownership（{}）；为避免死代理，保留当前 runtime/Mihomo 与 journal",
+                        e, release_error
+                    )));
+                }
+            }
+        } else {
+            proxy_transition.clone()
+        };
+
+        let rb_err = match rollback_config_runtime_and_proxy(app, state, old, &unwind).await {
             Ok(()) => None,
             Err(rb) => {
                 error!(
@@ -212,9 +244,6 @@ async fn commit_config_transaction(
                 Some(rb)
             }
         };
-        if let Err(we) = restore_windows_proxy(win_before.as_ref(), old_port) {
-            error!("Windows proxy rollback failed: {}", we);
-        }
         return Err(match rb_err {
             Some(rb) => Error::Other(format!(
                 "系统代理同步失败（{}），已回滚；但配置回滚也失败：{}",
@@ -244,27 +273,71 @@ async fn rollback_config_and_runtime(
     Ok(())
 }
 
-/// 尽力把 Windows 代理恢复到事务前快照。
-/// 快照缺失（读取失败）时的保守策略：若注册表当前指向本应用旧端口则关闭，
-/// 否则不动用户自己的代理。
-fn restore_windows_proxy(snapshot: Option<&SystemProxyConfig>, old_port: u16) -> Result<()> {
-    match snapshot {
-        Some(s) => crate::proxy::system_proxy::set_system_proxy(
-            s.enabled,
-            &s.address,
-            &s.bypass_list,
-            s.auto_config_url.as_deref(),
-        ),
-        None => {
-            let ours = format!("127.0.0.1:{}", old_port);
-            let cur = crate::proxy::system_proxy::get_system_proxy().ok();
-            if matches!(&cur, Some(c) if c.enabled && c.address == ours) {
-                crate::proxy::system_proxy::set_system_proxy(false, "", &[], None)
-            } else {
-                Ok(())
+#[derive(Debug, Clone)]
+enum ProxyTransition {
+    /// 本次配置变更不需要提前释放旧代理。
+    None,
+    /// 已确认释放旧 ownership，Windows 当前应精确等于该用户基线。
+    Released(SystemProxyConfig),
+    /// ownership 已由用户/其他软件拿走，或缺少可用凭据；不得重新接管。
+    OwnershipUnavailable,
+}
+
+fn prepare_proxy_transition(
+    app: &AppHandle,
+    old: &Config,
+    new: &Config,
+) -> Result<ProxyTransition> {
+    let must_release = old.general.system_proxy
+        && (!new.general.system_proxy || old.general.mixed_port != new.general.mixed_port);
+    if !must_release {
+        return Ok(ProxyTransition::None);
+    }
+    let data_dir = crate::util::paths::get_app_data_dir(app)?;
+    match crate::proxy::journal::release_owned_proxy(&data_dir, old.general.mixed_port)? {
+        crate::proxy::journal::ReleaseOutcome::Restored { restored, .. } => {
+            Ok(ProxyTransition::Released(restored))
+        }
+        crate::proxy::journal::ReleaseOutcome::OwnershipLost
+        | crate::proxy::journal::ReleaseOutcome::NoOwnership => {
+            Ok(ProxyTransition::OwnershipUnavailable)
+        }
+    }
+}
+
+/// 配置/runtime 回滚后，仅凭本事务刚确认的用户基线重新接管旧端口。
+/// ownership 已丢失时把旧配置意图落回 false，绝不覆盖外部代理。
+async fn rollback_config_runtime_and_proxy(
+    app: &AppHandle,
+    state: &State<'_, crate::AppState>,
+    mut old: Config,
+    transition: &ProxyTransition,
+) -> Result<()> {
+    if matches!(transition, ProxyTransition::OwnershipUnavailable) {
+        old.general.system_proxy = false;
+    }
+    let old_port = old.general.mixed_port;
+    let old_proxy_intent = old.general.system_proxy;
+    rollback_config_and_runtime(state, old).await?;
+
+    if old_proxy_intent {
+        if let ProxyTransition::Released(expected_baseline) = transition {
+            crate::core::runtime::ensure_core_serving(app).await?;
+            let data_dir = crate::util::paths::get_app_data_dir(app)?;
+            if let Err(e) = crate::proxy::journal::acquire_system_proxy_if_unchanged(
+                &data_dir,
+                old_port,
+                Some(expected_baseline),
+            ) {
+                crate::core::runtime::mark_system_proxy_failed(app, &e.to_string()).await;
+                return Err(Error::Other(format!(
+                    "旧端口 runtime 已恢复，但系统代理 ownership 无法安全恢复：{}",
+                    e
+                )));
             }
         }
     }
+    Ok(())
 }
 
 /// P0-1/P0-2：让 Windows 注册表与新配置的 system-proxy 意图一致。
@@ -276,73 +349,41 @@ fn restore_windows_proxy(snapshot: Option<&SystemProxyConfig>, old_port: u16) ->
 async fn sync_windows_side_effects(
     app: &AppHandle,
     state: &State<'_, crate::AppState>,
-    win_before: Option<&SystemProxyConfig>,
+    transition: &ProxyTransition,
 ) -> Result<()> {
     let cfg = { state.config_manager.lock().unwrap().get_config() };
     let data_dir = crate::util::paths::get_app_data_dir(app)?;
 
     if cfg.general.system_proxy {
-        // 开启（或 mixed-port 变更后重新指向）：先保证核心真实服务新端口
+        // 开启（或 mixed-port 变更后重新指向）：先保证核心真实服务新端口，
+        // 再通过统一 ownership helper 安全释放旧端口并接管新端口。
         crate::core::runtime::ensure_core_serving(app).await?;
-        let address = format!("127.0.0.1:{}", cfg.general.mixed_port);
-        // P0-1：先写 prepared journal（必须成功），再改注册表。
-        //   journal 是崩溃恢复凭据；旧顺序"改注册表 → 写 journal"在两步之间
-        //   崩溃会留下死代理 + 无 journal。新顺序保证任何时候 journal 都先于
-        //   注册表接管而存在。
-        //   已有 journal 时保留其 original（避免用我们自己写的代理覆盖用户
-        //   真正的原始快照）；无 journal 时用本次事务的 win_before 快照。
-        let existing_original = crate::proxy::journal::read_journal(&data_dir)
-            .and_then(|j| j.original)
-            .or_else(|| win_before.cloned());
-        crate::proxy::journal::write_journal(
-            &data_dir,
-            &ProxyJournal {
-                session_id: format!(
-                    "{:016x}{:016x}",
-                    rand::random::<u64>(),
-                    rand::random::<u64>()
-                ),
-                pid: std::process::id(),
-                mixed_port: cfg.general.mixed_port,
-                original: existing_original,
-                owned: true,
-            },
-        )?;
-        crate::proxy::system_proxy::set_system_proxy(
-            true,
-            &address,
-            &crate::core::runtime::default_bypass(),
-            // 接管：删除用户原有 PAC（原值已随 journal.original 保留）
-            None,
-        )?;
-        info!("Windows system proxy synced to {}", address);
+        match transition {
+            ProxyTransition::Released(expected_baseline) => {
+                crate::proxy::journal::acquire_system_proxy_if_unchanged(
+                    &data_dir,
+                    cfg.general.mixed_port,
+                    Some(expected_baseline),
+                )?;
+            }
+            ProxyTransition::OwnershipUnavailable => {
+                return Err(Error::Other(
+                    "Windows proxy ownership changed; refusing to overwrite the new owner"
+                        .to_string(),
+                ));
+            }
+            ProxyTransition::None => {
+                crate::proxy::journal::acquire_system_proxy(&data_dir, cfg.general.mixed_port)?;
+            }
+        }
+        info!(
+            "Windows system proxy synced to 127.0.0.1:{}",
+            cfg.general.mixed_port
+        );
         Ok(())
     } else {
-        // 配置关闭系统代理：若操作前注册表是开的（无论指向我们还是用户自己的
-        // 代理被 import/reset 关闭），必须同步注册表。
-        let was_enabled = match win_before {
-            Some(s) => s.enabled,
-            None => crate::proxy::system_proxy::get_system_proxy()
-                .map(|c| c.enabled)
-                .unwrap_or(false),
-        };
-        if !was_enabled {
-            return Ok(());
-        }
-        // 优先还原 journal 里记录的用户原始代理；没有则直接关闭
-        let journal_orig = crate::proxy::journal::read_journal(&data_dir)
-            .and_then(|j| j.original)
-            .filter(|o| o.enabled);
-        match journal_orig {
-            Some(orig) => crate::proxy::system_proxy::set_system_proxy(
-                true,
-                &orig.address,
-                &orig.bypass_list,
-                orig.auto_config_url.as_deref(),
-            )?,
-            None => crate::proxy::system_proxy::set_system_proxy(false, "", &[], None)?,
-        }
-        crate::proxy::journal::clear_journal(&data_dir);
+        // old=true 的关闭路径已在 runtime 切换前释放；old=false 时本来就未接管。
+        // 此处不再额外写注册表，避免把没有 ownership 的外部代理当作关闭目标。
         info!("Windows system proxy synced OFF per config intent");
         Ok(())
     }
