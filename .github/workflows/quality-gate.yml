@@ -14,7 +14,7 @@ on:
     inputs:
       node-version:
         type: number
-        default: 20
+        default: 22
 
 # B2：纯检查，只读仓库内容。
 permissions:

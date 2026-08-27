@@ -1,6 +1,6 @@
 # ClashEdge 工作交接日志（HANDOVER）
 
-> 最近更新：2026-08-23　版本：1.0.0　架构：Tauri 2（Rust 后端 + Vue 3 前端）+ Mihomo v1.19.20
+> 最近更新：2026-08-27　版本：1.0.4（dev）　架构：Tauri 2（Rust 后端 + Vue 3 前端）+ Mihomo v1.19.20
 
 ## 1. 项目概览
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | 产品名 | ClashEdge（原 Clash.F.Win 统一更名） |
 | 应用标识 | `com.clashedge.portable` |
-| 版本 | 1.0.0 |
+| 版本 | 1.0.4 |
 | 内核 | clash-edge-core.exe v1.19.20（sidecar） |
 | 前端 | Vue 3.5 + Pinia + Vue Router 4 + Vite 6 + Element Plus + vue-i18n |
 | 后端 | Rust（`tauri::command` + sidecar 进程管理；winreg 直写系统代理） |
@@ -58,6 +58,45 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
 > 脚本注意事项：release 目录变量名为 **`$releaseDir`**。不要改名为 `$rel`——脚本文件清单循环（`Get-ChildItem ... | ForEach-Object`）已占用 `$rel` 作相对路径循环变量，同名会导致 zip 目标路径错乱（曾因此打包失败，已修复）。
 
 ## 4. 修订记录
+
+### 1.0.4（当前 dev，2026-08-27）
+
+定位为 **reliability patch**：收口跨层事务一致性、系统代理恢复、订阅安全边界。公开 Release 仍是 v1.0.3；本版为多次审计驱动的收尾，含两轮标记 v1.0.4 的提交与未发布的事务重构。
+
+**事务一致性**
+- `activate_profile` 拆出内部 `activate_profile_locked`（调用方自行持 `config_tx`）。`rename_profile` / `update_profile_content` / `refresh_subscription` 把文件 rename + activate 序列纳入同一 `config_tx`，消除"文件变化在锁外、与并发激活/刷新交错"的竞争窗口。
+- `rename_profile`：active profile 走"rename → activate(new) → 失败恢复文件 + 重新 activate(old)"；恢复文件也失败时明确报错并保留原文件。
+- `refresh_subscription` / `update_profile_content`：激活失败用 `.bak` 回滚旧内容并重新激活；回滚文件失败时保留备份并提示路径，不再 `let _` 吞错。
+- `delete_profile`：先 rename 为 `.pending-delete`，切换激活成功后才真正删除；失败恢复原文件。
+
+**系统代理 / journal**
+- `stop_core_and_sync_proxy`：**先退系统代理、再停核心**——退代理失败则不停核心，保证用户始终可上网。
+- `apply_system_proxy(false)`：依据 `journal.owned` 判断是否 ClashEdge 接管过；未接管则**不碰注册表**，不会关掉用户自己的代理；还原语义与异常恢复一致（原静态代理还原、原 PAC 写回、原无代理清空）。
+- `recover_on_startup`：注册表读取失败时**保留 journal** 供下次启动重试（修复"读失败却 clear_journal"边界 bug）。
+
+**订阅兼容与防御**
+- 新增 `util/normalizer.rs`（Subscription Normalizer）：识别顶层 `proxies` / `proxy-providers`（http 拉取 / inline / file 本地安全路径），展开为 proxies-only 节点集，维持"订阅只提供节点、应用掌握策略"边界。
+- 资源限制：单订阅 ≤32 providers、单 provider ≤10 MiB、总下载 ≤20 MiB、整次归一化 ≤90s、总计 ≤1000 节点；下载 chunk 期间就累计流量（解析失败也计入）。
+- HTTP provider 走 SSRF 校验；file provider `canonicalize()` 防 symlink/junction 穿越（`Path::starts_with` 仅组件比较）。
+- 节点强制要求非空 `name / type / server`（缺 name 会在 dedupe 中把多个无名单节点折叠成一个）。
+
+**其它**
+- URL 脱敏收敛到单一 `redact_url_for_log`，删除完整 path（path 也可能携带 token），日志/前端不再泄露 path-token。
+- `create_profile` 空模板从"完整 Mihomo 配置"改为 `proxies: []`（与"Profile 只提供节点"架构一致，避免误导用户）。
+- CI/Release 的 Node 版本 20 → **22**（依赖 `vue-i18n` 等要求 Node ≥22）。
+- 前端新增 `stores/profiles.spec.ts`（5）+ `views/ProxiesView.spec.ts`（2）；Rust 新增订阅 fixtures / provider 数量边界 / 事务回滚测试。
+
+**质量**: `cargo fmt --check` / `cargo clippy -D warnings` / `cargo test` / `cargo audit` / `npm audit` / Vitest / `npm run build` 全绿。
+
+### 1.0.3（2026-08-26，已发布）
+
+由 8/27 审计驱动，核心是"订阅兼容 + 边界修复"：
+- `start()` 幂等 + 消除 generation 双重递增导致的 watcher 失效（核心裸奔无 supervisor）。
+- `stop_core` 收敛到 `runtime::stop_core_and_sync_proxy`（不再绕过 `config_tx` 直接改 ConfigManager）。
+- URL 脱敏收敛、去 path-token。
+- Subscription Normalizer 引入（见上）。
+- Profile 删除事务化（`.pending-delete` + 切换激活 + 回滚）。
+- 新增 `auto-update-subscription` 显式设置 + 前端开关。
 
 ### 1.0.0（当前版本，2026-08-23）
 

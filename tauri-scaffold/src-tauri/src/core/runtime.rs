@@ -475,11 +475,25 @@ pub async fn stop_core_and_sync_proxy(app: &AppHandle) -> Result<()> {
 /// 激活 Profile：校验名称合法且文件存在 → 持久化激活名 → 重新生成运行时配置 →
 /// 热重载运行中的核心 → 失败回滚。空内容的 Profile 不阻塞：build_runtime_config
 /// 会回退到内置模板。
+///
+/// 持有 `config_tx` 串行整段事务；需要在一个会话内做额外文件/配置变更的调用方
+/// 应先用 `activate_profile_locked`（自行先持有 `config_tx`），避免嵌套取锁死锁。
 pub async fn activate_profile(app: &AppHandle, name: &str) -> Result<()> {
     let state = app.state::<crate::AppState>();
 
     // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
     let _tx = state.config_tx.lock().await;
+
+    activate_profile_locked(app, name).await
+}
+
+/// 激活 Profile 的事务主体（调用方必须已持有 `config_tx`）。
+///
+/// 语义与 `activate_profile` 相同，但不取 `config_tx`——供
+/// rename/update/refresh 等在一个事务里先做文件变更、再激活的调用方使用，
+/// 避免"文件 rename 在事务锁外、activate 才取锁"的交错窗口。
+pub(crate) async fn activate_profile_locked(app: &AppHandle, name: &str) -> Result<()> {
+    let state = app.state::<crate::AppState>();
 
     // 0. 校验名称（sanitize 防路径穿越）。
     //    "DIRECT" 是内置预设（无对应文件，build_runtime_config 用内置骨架），

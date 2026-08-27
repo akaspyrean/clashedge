@@ -372,23 +372,31 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
         return Err(Error::InvalidArgument("Profile already exists".to_string()));
     }
 
+    // P0-2：整个 rename + activate 序列持有 config_tx。旧实现先 rename 文件、
+    // 再调 activate_profile（内部才取锁）——文件变化发生在事务锁外，可能与并发
+    // 订阅刷新/激活/配置修改交错。改为全程持锁（rename / activate / rollback
+    // 都走 *_locked 变体，避免嵌套取锁死锁）。
+    let state = app.state::<crate::AppState>();
+    let _tx = state.config_tx.lock().await;
+
+    let was_active = active_profile(&app) == old_name;
+    std::fs::rename(&old_path, &new_path)?;
+
     // 非激活 profile：仅重命名文件即可。
-    if active_profile(&app) != old_name {
-        std::fs::rename(&old_path, &new_path)?;
+    if !was_active {
         return Ok(());
     }
 
     // 激活中的 profile：事务化重命名。
-    //  1) rename 文件 old → new
-    //  2) activate_profile(new)：统一持久化 config.profile=new + 重生成运行时 + 重启核心
+    //  1) rename 文件 old → new（已在上方完成）
+    //  2) activate_profile_locked(new)：持久化 config.profile=new + 重生成运行时 + 重启核心
     //     （成功：config=file=core 三者一致，并已刷新托盘/推送事件）
-    //  3) 失败：activate_profile 内部已把 config.profile 回滚到旧名，这里再把
-    //     文件 new → old 恢复，并重新 activate_profile(old) 让核心加载回旧文件。
-    std::fs::rename(&old_path, &new_path)?;
-    if let Err(e) = crate::core::runtime::activate_profile(&app, &new_name).await {
-        // 回滚：config.profile 已被 activate_profile 回滚到旧名；这里恢复文件。
+    //  3) 失败：activate_profile_locked 已把 config.profile 回滚到旧名，这里再把
+    //     文件 new → old 恢复，并重新激活旧名让核心加载回旧文件。
+    if let Err(e) = crate::core::runtime::activate_profile_locked(&app, &new_name).await {
+        // 回滚：config.profile 已被 activate_profile_locked 回滚到旧名；这里恢复文件。
         let restored = std::fs::rename(&new_path, &old_path).is_ok();
-        if let Err(e2) = crate::core::runtime::activate_profile(&app, &old_name).await {
+        if let Err(e2) = crate::core::runtime::activate_profile_locked(&app, &old_name).await {
             warn!("Rename rollback: re-activate '{}' failed: {}", old_name, e2);
         }
         if !restored {
@@ -432,6 +440,10 @@ pub async fn update_profile_content(app: AppHandle, name: String, content: Strin
 
     // 统一校验（与网络导入同一标准）
     validate_subscription_content(&content)?;
+
+    // P0-2：写文件 + 激活序列全程持有 config_tx（文件变化不在事务锁外）。
+    let state = app.state::<crate::AppState>();
+    let _tx = state.config_tx.lock().await;
 
     // 事务式写：旧文件 → .bak，新内容 → target；激活中的 Profile 保存后立即生效，
     // 激活失败回滚 .bak 旧内容（避免"保存成功但运行还是旧节点"的界面≠运行不一致）。
@@ -700,11 +712,12 @@ fn commit_profile_file(temp_path: &Path, target: &Path) -> Result<()> {
 /// 并重新激活旧内容，保证「文件 + config + 运行核心」三者一致。
 ///
 /// 前置：调用方已通过 `commit_profile_file` 把旧文件备份到 `.bak`、新内容写到
-/// target。若激活（重启核心加载新内容）失败，target 上是坏的新版本，`.bak` 里
-/// 是仍能工作的旧版本——这里恢复旧版本并重新激活，避免"磁盘已是坏新版本、运行
-/// 仍是旧状态"的半套状态。
+/// target，且**已持有 `config_tx`**（本函数用 `activate_profile_locked`，不再取
+/// 锁，避免嵌套死锁）。若激活（重启核心加载新内容）失败，target 上是坏的新版本，
+/// `.bak` 里是仍能工作的旧版本——这里恢复旧版本并重新激活，避免"磁盘已是坏新版本、
+/// 运行仍是旧状态"的半套状态。
 async fn activate_with_rollback(app: &AppHandle, name: &str, file_path: &Path) -> Result<()> {
-    if let Err(e) = crate::core::runtime::activate_profile(app, name).await {
+    if let Err(e) = crate::core::runtime::activate_profile_locked(app, name).await {
         // 回滚：用 .bak 恢复旧内容。文件操作必须确认真的成功——若恢复也失败，
         // 要如实上报"操作失败且自动恢复失败"，并保留 backup 供手工恢复，而不是
         // 谎称"已回滚"。rename 在 Windows 上可替换已存在目标；失败则先删再 rename。
@@ -717,7 +730,7 @@ async fn activate_with_rollback(app: &AppHandle, name: &str, file_path: &Path) -
             .is_ok();
 
         if restore_ok {
-            if let Err(e2) = crate::core::runtime::activate_profile(app, name).await {
+            if let Err(e2) = crate::core::runtime::activate_profile_locked(app, name).await {
                 warn!("Rollback re-activate failed for '{}': {}", name, e2);
             }
             return Err(Error::Other(format!(
@@ -817,6 +830,12 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         let _ = std::fs::remove_file(&temp_path);
         return Err(e);
     }
+
+    // P0-2：到这里（下载/校验/归一化已完成）才持有 config_tx，串行「提交文件 +
+    // 激活生效」这一段。网络下载/解析耗时，不应占住全局事务锁。
+    let state = app.state::<crate::AppState>();
+    let _tx = state.config_tx.lock().await;
+
     std::fs::write(&temp_path, final_text.as_bytes())?;
 
     // 事务第二步/第三步：备份旧文件为 .bak，再把临时文件 rename 为正式文件；
@@ -1011,6 +1030,66 @@ mod tests {
         assert!(
             validate_node_protocol(&ok, 4).is_ok(),
             "valid node accepted"
+        );
+    }
+
+    /// 订阅兼容性 fixtures（校验层）：合法 top-level proxies 通过。
+    #[test]
+    fn subscription_fixture_valid_top_level_proxies() {
+        let content = r#"
+proxies:
+  - name: S1
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: a
+  - name: S2
+    type: vless
+    server: 2.2.2.2
+    port: 443
+    uuid: xxx
+"#;
+        assert!(validate_subscription_content(content).is_ok());
+    }
+
+    /// 订阅兼容性 fixtures：非法 YAML 被拒绝。
+    #[test]
+    fn subscription_fixture_bad_yaml_rejected() {
+        assert!(validate_subscription_content(
+            "proxies:\n  - name: x\n    type: ss\n   server: [unclosed"
+        )
+        .is_err());
+    }
+
+    /// 订阅兼容性 fixtures：节点数超限被拒绝（资源预算防滥用）。
+    #[test]
+    fn subscription_fixture_too_many_nodes_rejected() {
+        let mut s = String::from("proxies:\n");
+        for i in 0..=MAX_NODE_COUNT {
+            s.push_str(&format!(
+                "  - name: N{}\n    type: ss\n    server: 1.1.1.1\n    port: 8388\n    cipher: aes-128-gcm\n    password: x\n",
+                i
+            ));
+        }
+        assert!(
+            validate_subscription_content(&s).is_err(),
+            "node count above limit rejected"
+        );
+    }
+
+    /// 订阅兼容性 fixtures：空 proxies 允许（应用零节点兜底 DIRECT），非空注入验证。
+    #[test]
+    fn subscription_fixture_empty_proxies_ok_but_nonempty_provider_shaped() {
+        // 空 proxies 是合法输入（应用兜底 DIRECT），不应被拒绝
+        assert!(validate_subscription_content("proxies: []\n").is_ok());
+        // 缺失字段的节点即使带 proxies 也被拒
+        assert!(
+            validate_subscription_content(
+                "proxies:\n  - type: ss\n    server: 1.1.1.1\n    port: 8388\n    cipher: aes-128-gcm\n    password: x\n"
+            )
+            .is_err(),
+            "node missing name rejected"
         );
     }
 
