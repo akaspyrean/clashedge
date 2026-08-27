@@ -180,12 +180,36 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
     Ok(())
 }
 
-/// 应用 TUN 开关：持久化 → 同步运行时 → PATCH 运行中核心；
-/// PATCH 失败（TUN 常需重启才生效）回退整进程重启；重启也失败则回滚。
+/// 应用 TUN 开关：持久化 → 同步运行时 → PATCH 运行中核心 → 确认实际状态。
+///
+/// 「确认实际结果」是本函数的核心：PATCH /configs 返回 200 不代表 mihomo 真正
+/// 接受并运行了目标 TUN 状态（可能静默跳过非法字段 / 内核未能建立网卡）。因此
+/// PATCH 后必须回读运行中核心的 `tun.enable`，与目标值比对。
+///
+/// 流程（对应验证原则）：
+/// 1. 持久化新 AppConfig；
+/// 2. 重写 runtime-config.yaml；
+/// 3. PATCH 运行中核心；PATCH 失败或回读非目标值 → 回退整进程重启；
+/// 4. 重启后再次回读确认；仍非目标值 → 视为失败；
+/// 5. 失败则完整回滚：恢复旧 AppConfig → 重写旧 runtime-config → 尽力恢复
+///    Mihomo 到旧 TUN 状态（必要时重启）→ 返回错误，不假装成功。
+///
+/// 全程持有 `config_tx` 串行整段事务（见 apply_proxy_mode 注释）。
 pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
 
-    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
+    // 0. 权限预检：开启 TUN 需要管理员权限（Windows 禁止标准用户创建虚拟网卡/
+    //    修改路由）——若不满足，直接给出明确提示，不做任何持久化/半套状态。
+    //    关闭（enable=false）不受限制。仅 Windows 生效；其它平台 is_elevated 恒 true。
+    if enable && !crate::util::elevation::is_elevated() {
+        return Err(Error::Other(
+            "开启 TUN 需要管理员权限：Windows 要求以管理员身份运行才能创建虚拟网卡并接管路由。\
+             请以管理员身份重新运行 ClashEdge 后重试。"
+                .to_string(),
+        ));
+    }
+
+    // P0-2：全程持有 config_tx，串行整段事务。
     let _tx = state.config_tx.lock().await;
 
     // 1. 持久化
@@ -198,7 +222,8 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
         old
     };
 
-    // 2. 运行中：重写 runtime-config.yaml + PATCH；PATCH 失败回退重启
+    // 2. 运行中：重写 runtime-config.yaml + PATCH + 回读确认；PATCH 失败或
+    //    状态回读非目标值 → 回退整进程重启；重启后再确认一次。
     let applied = {
         let core_guard = state.core_manager.get();
         match core_guard.as_ref() {
@@ -206,28 +231,31 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
                 if let Err(e) = core.regen_runtime_config() {
                     Err(e)
                 } else {
-                    match core.apply_tun(enable).await {
+                    let live = live_tun_state(core, enable).await;
+                    match live {
                         Ok(()) => Ok(()),
                         Err(patch_err) => {
                             warn!(
-                                "TUN live apply failed ({}); falling back to restart",
+                                "TUN live apply/confirm failed ({}); falling back to restart",
                                 patch_err
                             );
-                            core.restart().await
+                            // restart 失败也要走下方回滚，不能 `?` 直接返回
+                            match core.restart().await {
+                                Ok(()) => live_tun_state(core, enable).await,
+                                Err(restart_err) => Err(restart_err),
+                            }
                         }
                     }
                 }
             }
-            None => Ok(()),
+            None => Ok(()), // 核心未运行：只持久化文件，下次启动即生效，无需实时确认
         }
     };
 
-    // 3. 失败回滚
+    // 3. 失败则完整回滚：恢复旧 AppConfig → 重写旧 runtime-config → 尽力恢复
+    //    Mihomo 到旧 TUN 状态（PATCH/restart）→ 返回错误，不假装成功。
     if let Err(e) = applied {
-        let mut cfg_mgr = state.config_manager.lock().unwrap();
-        let mut cfg = cfg_mgr.get_config();
-        cfg.tun.enable = old;
-        let _ = cfg_mgr.set_config(cfg);
+        rollback_tun(app, old).await;
         error!("apply_tun({}) failed, rolled back: {}", enable, e);
         return Err(e);
     }
@@ -236,6 +264,79 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
     refresh_tray(app).await?;
     let _ = app.emit("tun-mode-changed", serde_json::json!({ "enable": enable }));
     Ok(())
+}
+
+/// 对运行中核心执行一次「PATCH TUN → 回读确认」。返回 Ok 表示 Mihomo 实际状态
+/// 已等于目标；返回 Err 表示 PATCH 失败或回读确认失败（调用方回退重启）。
+async fn live_tun_state(core: &crate::core::manager::CoreManager, enable: bool) -> Result<()> {
+    // 先确认核心 Running（解决"核心确认 Running"步骤）；
+    // 非 Running → 直接视为无法确认，交给调用方重启。
+    if core.status() != crate::core::manager::CoreStatus::Running {
+        return Err(Error::Other(format!(
+            "core not running while applying TUN (status: {})",
+            core.status()
+        )));
+    }
+    // PATCH；失败直接向上传播（调用方重启）。
+    core.apply_tun(enable).await?;
+    // 回读实际状态；非目标 → 视为失败（调用方再重启）。
+    let actual = core.get_tun_enable().await?;
+    if actual == enable {
+        Ok(())
+    } else {
+        Err(Error::Other(format!(
+            "TUN state mismatch after apply: configured {} but running {}",
+            enable, actual
+        )))
+    }
+}
+
+/// apply_tun 失败后的完整回滚：恢复旧 AppConfig → 重写旧 runtime-config →
+/// 尽力把 Mihomo 恢复旧 TUN 状态（PATCH，失败再整进程重启）。
+///
+/// 回滚本身失败（旧状态恢复不了）不掩盖原始错误——调用方照样返回原始 Err，
+/// 绝不假装成功；core 状态按现有机制进入真实状态。
+async fn rollback_tun(app: &AppHandle, old_enable: bool) {
+    let state = app.state::<crate::AppState>();
+
+    // 1/2. 恢复旧 AppConfig（内存 + 落盘）并重写旧 runtime-config。
+    let restore_ok = {
+        let mut cfg_mgr = state.config_manager.lock().unwrap();
+        let mut cfg = cfg_mgr.get_config();
+        cfg.tun.enable = old_enable;
+        match cfg_mgr.set_config(cfg) {
+            Ok(()) => {
+                if let Some(core) = state.core_manager.get() {
+                    core.regen_runtime_config()
+                } else {
+                    Ok(())
+                }
+            }
+            Err(e) => {
+                error!("TUN rollback failed to restore AppConfig: {}", e);
+                Err(e)
+            }
+        }
+    };
+    if let Err(e) = restore_ok {
+        error!(
+            "TUN rollback could not restore config/runtime-config: {}",
+            e
+        );
+        return;
+    }
+
+    // 3. 尽力把运行中 Mihomo 恢复到旧 TUN 状态；PATCH 失败则整进程重启。
+    let core_guard = state.core_manager.get();
+    if let Some(core) = core_guard.as_ref() {
+        if let Err(e) = live_tun_state(core, old_enable).await {
+            warn!(
+                "TUN rollback live restore to old state {} failed ({}); restarting",
+                old_enable, e
+            );
+            let _ = core.restart().await;
+        }
+    }
 }
 
 /// 应用系统代理：持久化用户意图 → 写 Windows 注册表（真实生效）→ 失败回滚。

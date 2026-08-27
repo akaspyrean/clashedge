@@ -3,6 +3,7 @@
 
 pub mod atomic;
 pub mod autostart;
+pub mod elevation;
 pub mod error;
 pub mod fetch;
 pub mod logging;

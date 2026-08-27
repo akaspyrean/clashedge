@@ -460,6 +460,7 @@ async function onUpdateGeo() {
           </el-form-item>
           <el-form-item :label="$t('tun.stack')">
             <el-select v-model="cfg.tun.stack" style="width: 300px">
+              <el-option value="mixed" :label="$t('tun.stack_mixed')" />
               <el-option value="system" :label="$t('tun.stack_system')" />
               <el-option value="gvisor" :label="$t('tun.stack_gvisor')" />
             </el-select>

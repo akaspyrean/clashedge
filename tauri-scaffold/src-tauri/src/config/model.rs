@@ -305,6 +305,11 @@ pub fn validate_external_controller(addr: &str) -> crate::util::error::Result<()
 }
 
 /// --- TunConfig ---
+///
+/// 面向普通 Windows 用户的默认值：TUN 默认关闭（enable=false），
+/// 用户开启后 stack=mixed（优先同机 Wintun/原生驱动，复杂场景回退用户态栈）、
+/// auto-route / auto-detect-interface 默认开启（开箱即用建立自动路由），
+/// 并内置 DNS 劫持（any:53 + tcp://any:53）保证 TUN 内核接管系统 DNS。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct TunConfig {
@@ -312,21 +317,29 @@ pub struct TunConfig {
     #[serde(default)]
     pub enable: bool,
 
-    /// TUN 网卡类型：system 或 gvisor
+    /// TUN 网卡类型：mihomo 只接受 mixed / system / gvisor。
+    /// 非法值由 `merge_rules`（core/config.rs）归一为 `mixed`。
     #[serde(default = "default_tun_stack")]
     pub stack: String,
 
-    /// 自动路由
-    #[serde(default)]
+    /// 自动路由（开设/取消 Windows 默认路由表条目，交给 TUN 内核接管流量）
+    #[serde(default = "default_tun_auto_route")]
     pub auto_route: bool,
 
-    /// 自动检测网卡
-    #[serde(default)]
+    /// 自动检测网卡（auto-detect-interface；对普通用户免去手动指定网卡）
+    #[serde(default = "default_tun_auto_detect_interface")]
     pub auto_detect_interface: bool,
 
     /// 网卡名称（当 auto_detect_interface 为 false 时使用）
     #[serde(default)]
     pub interface_name: Option<String>,
+
+    /// TUN 内核接管 DNS 的劫持地址列表（mihomo `dns-hijack`）。
+    /// 默认 any:53 + tcp://any:53，接管本机所有 DNS 请求交给 mihomo DNS 处理，
+    /// 否则 TUN 模式下请求会绕过代理直连或产生 DNS 泄漏。
+    /// 正常用户无需编辑；老配置缺该字段时由 default 兜底。
+    #[serde(default = "default_dns_hijack")]
+    pub dns_hijack: Vec<String>,
 }
 
 /// 派生 Default 会让 stack 变成空串，写进 config.yaml 后 mihomo 报
@@ -336,15 +349,25 @@ impl Default for TunConfig {
         Self {
             enable: false,
             stack: default_tun_stack(),
-            auto_route: false,
-            auto_detect_interface: false,
+            auto_route: default_tun_auto_route(),
+            auto_detect_interface: default_tun_auto_detect_interface(),
             interface_name: None,
+            dns_hijack: default_dns_hijack(),
         }
     }
 }
 
-fn default_tun_stack() -> String {
-    "system".to_string()
+pub(crate) fn default_tun_stack() -> String {
+    "mixed".to_string()
+}
+fn default_tun_auto_route() -> bool {
+    true
+}
+fn default_tun_auto_detect_interface() -> bool {
+    true
+}
+fn default_dns_hijack() -> Vec<String> {
+    vec!["any:53".to_string(), "tcp://any:53".to_string()]
 }
 
 /// --- DnsConfig ---
@@ -825,6 +848,49 @@ hosts:
         let config = Config::default();
         assert_eq!(config.proxy.external_controller, "127.0.0.1:9090");
         assert_eq!(config.proxy.secret, "clash-edge-secret");
+    }
+
+    /// A/B/C：TUN 默认值面向普通 Windows 用户——stack=mixed、auto-route=true、
+    /// auto-detect-interface=true（开箱即用），enable 默认关闭。
+    #[test]
+    fn tun_default_stack_is_mixed() {
+        let tun = Config::default().tun;
+        assert_eq!(tun.stack, "mixed");
+        assert!(tun.auto_route, "auto-route must default on");
+        assert!(
+            tun.auto_detect_interface,
+            "auto-detect-interface must default on"
+        );
+        assert!(!tun.enable, "tun must default off");
+        assert_eq!(tun.interface_name, None);
+    }
+
+    /// D：默认 dns-hijack 接管本机 DNS → any:53 + tcp://any:53（TUN 内核不会漏 DNS）。
+    #[test]
+    fn tun_default_dns_hijack() {
+        assert_eq!(
+            TunConfig::default().dns_hijack,
+            vec!["any:53".to_string(), "tcp://any:53".to_string()]
+        );
+    }
+
+    /// 旧配置（/老版本/导入）缺 dns-hijack 字段时反序列化自动补默认，
+    /// 保证 TUN runtime 生成非法；
+    /// 已有合法 dns-hijack 的用户配置必须原样保留（不被默认覆盖）。
+    #[test]
+    fn tun_missing_dns_hijack_fills_default_but_preserves_existing() {
+        // 缺字段：填充默认
+        let config: TunConfig = serde_yaml::from_str("enable: true\nstack: mixed\n").unwrap();
+        assert_eq!(
+            config.dns_hijack,
+            vec!["any:53".to_string(), "tcp://any:53".to_string()]
+        );
+
+        // 已有自定义值：保留
+        let config: TunConfig =
+            serde_yaml::from_str("enable: true\nstack: gvisor\ndns-hijack:\n  - 1.1.1.1:53\n")
+                .unwrap();
+        assert_eq!(config.dns_hijack, vec!["1.1.1.1:53".to_string()]);
     }
 
     /// 内置规则必须随默认配置写盘：rules / proxy-groups / rule-providers
