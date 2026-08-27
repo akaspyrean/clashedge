@@ -1,0 +1,36 @@
+# cargo-audit 项目级豁免配置。
+# 仅当在 src-tauri 目录下执行 `cargo audit` 时生效(cargo-audit 读取 cwd 的
+# .cargo/audit.toml)。发布 Gate 要求:exit 0 且除本清单外无其他警告。
+# 规则:每条豁免必须有书面理由;依赖升级消除警告后应删除对应条目。
+# 2026-08-27 逐条核实(v1.0.5):
+#   - GTK3 族 + proc-macro-error + glib 共 12 条:
+#     `cargo tree -i <crate> --target x86_64-pc-windows-msvc` 均为空,
+#     全部经 tauri→tao/tray-icon/muda/webkit2gtk 的 Linux 专有依赖链引入,
+#     不参与 Windows 产物编译。
+#   - unic 族 5 条:随 Windows 目标发布(tauri-utils→urlpattern 传递依赖),
+#     无已知漏洞;`cargo update --dry-run` 证实 urlpattern/unic 无兼容升级
+#     可消除,待上游(tauri-utils/urlpattern)迁移后删除豁免。
+[advisories]
+ignore = [
+    # ---- GTK3 族:Linux 目标专有,Windows 构建图不可达 ----
+    "RUSTSEC-2024-0411", # gdkwayland-sys unmaintained
+    "RUSTSEC-2024-0412", # gdk unmaintained
+    "RUSTSEC-2024-0413", # atk unmaintained
+    "RUSTSEC-2024-0414", # gdkx11-sys unmaintained
+    "RUSTSEC-2024-0415", # gtk unmaintained
+    "RUSTSEC-2024-0416", # atk-sys unmaintained
+    "RUSTSEC-2024-0417", # gdkx11 unmaintained
+    "RUSTSEC-2024-0418", # gdk-sys unmaintained
+    "RUSTSEC-2024-0419", # gtk3-macros unmaintained
+    "RUSTSEC-2024-0420", # gtk-sys unmaintained
+    # proc-macro-error unmaintained:唯一依赖方 glib-macros(Linux GTK 链)
+    "RUSTSEC-2024-0370",
+    # glib VariantStrIter unsound:同为 Linux GTK 链传递依赖,Windows 不可达
+    "RUSTSEC-2024-0429",
+    # ---- unic 族:随 Windows 目标发布,tauri-utils→urlpattern 传递依赖 ----
+    "RUSTSEC-2025-0075", # unic-char-range unmaintained
+    "RUSTSEC-2025-0080", # unic-common unmaintained
+    "RUSTSEC-2025-0081", # unic-char-property unmaintained
+    "RUSTSEC-2025-0098", # unic-ucd-version unmaintained
+    "RUSTSEC-2025-0100", # unic-ucd-ident unmaintained
+]
