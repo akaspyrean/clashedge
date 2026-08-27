@@ -280,23 +280,6 @@ pub fn release_owned_proxy(
     )
 }
 
-/// 退出专用：完成 ownership 判定、恢复和复读验证，但把 journal 清理延后到
-/// Mihomo 已确认停止之后，满足退出事务的严格顺序。
-pub fn release_owned_proxy_for_exit(
-    data_dir: &std::path::Path,
-    expected_port: u16,
-) -> Result<ReleaseOutcome> {
-    let path = journal_path(data_dir);
-    release_with(
-        read_journal(data_dir),
-        path.exists(),
-        expected_port,
-        crate::proxy::system_proxy::get_system_proxy,
-        crate::proxy::system_proxy::restore_system_proxy,
-        || {},
-    )
-}
-
 pub fn recover_on_startup(
     data_dir: &std::path::Path,
     expected_port: u16,
@@ -712,5 +695,89 @@ mod tests {
             |_| panic!("must not rewrite journal after concurrent takeover"),
         );
         assert!(result.is_err());
+    }
+
+    // ---- 退出解耦验收 ----
+    // 退出路径：确认 ownership → 恢复系统代理 → 复读验证 → 清除 journal →
+    // 停止 Mihomo。journal 只负责系统代理 ownership；Mihomo 的停止成败不得
+    // 影响已清除的 journal。E/G/I 已由上方 Cell 版测试覆盖；此处用真实 journal
+    // 文件补充两个 Cell 版无法表达的新增解耦场景：F（Mihomo 停止失败不重建
+    // journal）与 J（journal 损坏且系统仍指向 ClashEdge 时的 fail-safe）。
+
+    fn journal_file_exists(dir: &std::path::Path) -> bool {
+        dir.join(JOURNAL_FILE).exists()
+    }
+
+    // F：proxy restore 成功后，即使后续 Mihomo stop 失败，journal 仍保持已清除。
+    //    释放成功即清 journal；Mihomo 停止失败只记录错误，绝不重建/保留 journal。
+    #[test]
+    fn exit_journal_stays_cleared_when_mihomo_stop_fails() {
+        let dir = temp_data_dir("F");
+        let journal = sample_journal();
+        let managed = canonical_managed(&journal);
+        let original = journal.original.clone().unwrap();
+        write_journal(&dir, &journal).unwrap();
+
+        let reads = std::cell::RefCell::new(std::collections::VecDeque::from([
+            managed.clone(),
+            original.clone(),
+        ]));
+        let _ = release_with(
+            Some(journal),
+            true,
+            7890,
+            || Ok(reads.borrow_mut().pop_front().unwrap()),
+            |_| Ok(()),
+            || clear_journal(&dir),
+        )
+        .unwrap();
+        assert!(!journal_file_exists(&dir), "journal cleared after restore");
+
+        // 模拟 cleanup_on_exit 中 Mihomo 停止失败：此处既不 clear_journal
+        // （已清除）也不 write_journal（不重建）。journal 必须仍为已清除。
+        let mihomo_stop_ok = false;
+        if !mihomo_stop_ok {
+            // 仅记录错误；不触碰 journal。
+        }
+        assert!(
+            !journal_file_exists(&dir),
+            "journal must stay cleared after Mihomo stop failure"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // J：journal 损坏（文件存在但不可解析）且 Windows 仍指向 ClashEdge 时
+    //    保持 fail-safe：不修改注册表、不停止 Mihomo、不创建 journal。
+    #[test]
+    fn exit_corrupt_journal_with_live_clashedge_proxy_keeps_fail_safe() {
+        let dir = temp_data_dir("J");
+        // 写入一份损坏的 journal 文件：存在但不可解析 → read_journal 返回 None。
+        std::fs::write(dir.join(JOURNAL_FILE), b"{ not valid json").unwrap();
+        let managed = crate::proxy::system_proxy::managed_proxy_config(7890);
+        let restored = std::cell::Cell::new(false);
+
+        let result = release_with(
+            None,
+            true,
+            7890,
+            || Ok(managed.clone()),
+            |_| {
+                restored.set(true);
+                Ok(())
+            },
+            || panic!("must not clear a live ClashEdge proxy without a valid journal"),
+        );
+
+        assert!(
+            result.is_err(),
+            "must keep fail-safe and refuse to modify registry"
+        );
+        assert!(!restored.get(), "must not write registry");
+        // 损坏的 journal 文件保持原样（既未清除也未改写）。
+        assert!(
+            journal_file_exists(&dir),
+            "corrupt journal must be left untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

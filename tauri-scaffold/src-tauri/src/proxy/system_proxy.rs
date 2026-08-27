@@ -24,7 +24,7 @@ pub struct SystemProxyConfig {
     pub enabled: bool,
     /// 代理服务器地址（ProxyServer）
     pub address: String,
-    /// 直连域名列表（ProxyOverride，逗号分隔）
+    /// 直连域名列表（ProxyOverride，标准分号分隔；读取兼容历史逗号）
     pub bypass_list: Vec<String>,
     /// PAC 脚本地址（AutoConfigURL；快照/还原语义下保留原值不覆盖）
     #[serde(default)]
@@ -60,6 +60,29 @@ pub fn disabled_proxy_config() -> SystemProxyConfig {
         bypass_list: Vec::new(),
         auto_config_url: None,
     }
+}
+
+/// Windows ProxyOverride 的标准分隔符。注册表写入统一使用分号，与
+/// Windows Internet Settings 及主流 Clash 系客户端一致；逗号是历史遗留。
+const BYPASS_SEPARATOR: &str = ";";
+
+/// 把绕过列表序列化为 ProxyOverride 字符串（标准分号分隔）。
+fn join_bypass_list(bypass_list: &[String]) -> String {
+    bypass_list.join(BYPASS_SEPARATOR)
+}
+
+/// 解析 ProxyOverride 字符串为绕过列表。
+///
+/// 兼容三种历史形态：标准分号 `;`、遗留逗号 `,`、以及两者混合。
+/// 空字符串返回空列表；各段做 trim 并丢弃空段（容错历史/外部写入的空白）。
+fn parse_bypass_list(raw: &str) -> Vec<String> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    raw.split([';', ','])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// 打开 Internet Settings 注册表键。
@@ -128,7 +151,7 @@ fn apply_to_key(
         let _ = key.delete_value("AutoConfigURL");
         key.set_value("ProxyServer", &address)
             .map_err(|e| Error::Other(format!("Failed to set ProxyServer: {}", e)))?;
-        let bypass_str = bypass_list.join(",");
+        let bypass_str = join_bypass_list(bypass_list);
         key.set_value("ProxyOverride", &bypass_str)
             .map_err(|e| Error::Other(format!("Failed to set ProxyOverride: {}", e)))?;
         key.set_value("ProxyEnable", &1u32)
@@ -153,7 +176,7 @@ fn apply_to_key(
 fn restore_to_key(key: &winreg::RegKey, snapshot: &SystemProxyConfig) -> Result<()> {
     key.set_value("ProxyServer", &snapshot.address)
         .map_err(|e| Error::Other(format!("Failed to restore ProxyServer: {}", e)))?;
-    key.set_value("ProxyOverride", &snapshot.bypass_list.join(","))
+    key.set_value("ProxyOverride", &join_bypass_list(&snapshot.bypass_list))
         .map_err(|e| Error::Other(format!("Failed to restore ProxyOverride: {}", e)))?;
     match snapshot.auto_config_url.as_deref() {
         Some(url) => key
@@ -184,15 +207,7 @@ fn read_from_key(key: &winreg::RegKey) -> Result<SystemProxyConfig> {
     let bypass: String = key.get_value("ProxyOverride").unwrap_or_default();
     let auto_config_url: Option<String> = key.get_value("AutoConfigURL").ok();
 
-    let bypass_list: Vec<String> = if bypass.is_empty() {
-        vec![]
-    } else {
-        bypass
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    };
+    let bypass_list: Vec<String> = parse_bypass_list(&bypass);
 
     Ok(SystemProxyConfig {
         enabled: enabled == 1,
@@ -254,7 +269,99 @@ mod tests {
     #[test]
     fn test_override_bypass_join() {
         let bypass = ["<local>".to_string(), "lan".to_string()];
-        assert_eq!(bypass.join(","), "<local>,lan");
+        assert_eq!(join_bypass_list(&bypass), "<local>;lan");
+    }
+
+    // A：新写入的 ProxyOverride 必须统一使用标准分号分隔。
+    #[test]
+    fn join_bypass_list_uses_semicolon_separator() {
+        let s = join_bypass_list(&[
+            "<local>".to_string(),
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "*.tauri.localhost".to_string(),
+        ]);
+        assert_eq!(s, "<local>;127.0.0.1;localhost;*.tauri.localhost");
+    }
+
+    // A：managed 状态的 bypass 序列化后必须是规范的分号串。
+    #[test]
+    fn managed_proxy_config_bypass_is_canonical_semicolon_form() {
+        let cfg = managed_proxy_config(7890);
+        assert_eq!(
+            join_bypass_list(&cfg.bypass_list),
+            "<local>;127.0.0.1;localhost;*.tauri.localhost"
+        );
+    }
+
+    // A：写→读往返后 bypass_list 与写入一致（注册表层在下面的冒烟测试覆盖）。
+    #[test]
+    fn join_then_parse_roundtrips_bypass_list() {
+        let list = vec![
+            "<local>".to_string(),
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "*.tauri.localhost".to_string(),
+        ];
+        assert_eq!(parse_bypass_list(&join_bypass_list(&list)), list);
+    }
+
+    // B：历史遗留的逗号格式必须仍可读取。
+    #[test]
+    fn parse_bypass_list_reads_legacy_comma_form() {
+        assert_eq!(
+            parse_bypass_list("<local>,127.0.0.1,localhost"),
+            vec![
+                "<local>".to_string(),
+                "127.0.0.1".to_string(),
+                "localhost".to_string()
+            ]
+        );
+    }
+
+    // C：分号与逗号混合的格式必须可读取。
+    #[test]
+    fn parse_bypass_list_reads_mixed_separators() {
+        assert_eq!(
+            parse_bypass_list("<local>;127.0.0.1,localhost"),
+            vec![
+                "<local>".to_string(),
+                "127.0.0.1".to_string(),
+                "localhost".to_string()
+            ]
+        );
+        // 反向混合同样成立。
+        assert_eq!(
+            parse_bypass_list("<local>,127.0.0.1;localhost"),
+            vec![
+                "<local>".to_string(),
+                "127.0.0.1".to_string(),
+                "localhost".to_string()
+            ]
+        );
+    }
+
+    // C：标准分号格式可读取。
+    #[test]
+    fn parse_bypass_list_reads_semicolon_form() {
+        assert_eq!(
+            parse_bypass_list("<local>;127.0.0.1;localhost;*.tauri.localhost"),
+            vec![
+                "<local>".to_string(),
+                "127.0.0.1".to_string(),
+                "localhost".to_string(),
+                "*.tauri.localhost".to_string()
+            ]
+        );
+    }
+
+    // D：空 ProxyOverride 正常处理为空列表。
+    #[test]
+    fn parse_bypass_list_handles_empty_string() {
+        assert!(parse_bypass_list("").is_empty());
+        // 仅分隔符/空白也应被规整为空列表。
+        assert!(parse_bypass_list(";,").is_empty());
+        assert!(parse_bypass_list(" ; ").is_empty());
     }
 
     #[test]
@@ -307,6 +414,11 @@ mod tests {
             None,
         )
         .expect("apply enabled");
+        // A：写入的 ProxyOverride 原始值必须使用标准分号，而非历史逗号。
+        let raw_override: String = key
+            .get_value("ProxyOverride")
+            .expect("read raw ProxyOverride");
+        assert_eq!(raw_override, "<local>;localhost");
         let enabled = read_from_key(&key).expect("read enabled");
         assert!(enabled.enabled);
         assert_eq!(enabled.address, "127.0.0.1:7890");
