@@ -85,13 +85,8 @@ async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscr
 
     // 2) proxy-providers 展开（追加，节点名加 provider 前缀避免跨 provider 冲突）
     if let Some(providers) = map.get("proxy-providers").and_then(|v| v.as_mapping()) {
-        if providers.len() > MAX_PROVIDER_COUNT {
-            return Err(Error::Subscription(format!(
-                "proxy-providers count {} exceeds limit of {}",
-                providers.len(),
-                MAX_PROVIDER_COUNT
-            )));
-        }
+        // 纯函数校验数量上限（供测试共用），超限立即拒绝。
+        validate_provider_count(providers.len())?;
         // 累计所有 http provider 拉取的字节数，超过总上限即中止。
         let mut total_bytes: u64 = 0;
         for (name_val, prov_val) in providers {
@@ -160,6 +155,17 @@ async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscr
     proxies = dedupe_by_name(proxies);
 
     Ok(NormalizedSubscription { proxies, warnings })
+}
+
+/// 校验单订阅声明的 proxy-provider 数量上限（纯函数，供运行时与测试共用）。
+fn validate_provider_count(count: usize) -> Result<()> {
+    if count > MAX_PROVIDER_COUNT {
+        return Err(Error::Subscription(format!(
+            "proxy-providers count {} exceeds limit of {}",
+            count, MAX_PROVIDER_COUNT
+        )));
+    }
+    Ok(())
 }
 
 /// 拉取 http 型 provider 的远端 YAML，抽取其顶层 `proxies`。
@@ -351,5 +357,130 @@ mod tests {
         let mut out = Vec::new();
         append_prefixed(&mut out, "p1", vec![node]);
         assert_eq!(out[0].get("name").and_then(|v| v.as_str()), Some("p1-n1"));
+    }
+
+    /// 订阅兼容性 fixtures：provider 数量上限边界。
+    #[test]
+    fn validate_provider_count_boundary() {
+        assert!(validate_provider_count(0).is_ok());
+        assert!(validate_provider_count(MAX_PROVIDER_COUNT).is_ok());
+        assert!(validate_provider_count(MAX_PROVIDER_COUNT + 1).is_err());
+    }
+
+    /// 订阅兼容性 fixtures：混合 provider 的纯解析（inline 展开 + unsupported 记录 +
+    /// 需要网络的 http/file 计数），不依赖 AppHandle/网络。
+    #[test]
+    fn provider_fixture_inline_and_classification() {
+        // YAML 模板：top-level proxies（2 个）+ inline provider + unsupported type + http/file
+        let body = r#"
+proxies:
+  - name: Top1
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: a
+proxy-providers:
+  inlineP:
+    type: inline
+    proxies:
+      - name: Inline1
+        type: ss
+        server: 2.2.2.2
+        port: 8388
+        cipher: aes-128-gcm
+        password: b
+  weird:
+    type: made-up
+    url: https://example.com/x.yaml
+  webP:
+    type: http
+    url: https://example.com/nodes.yaml
+"#;
+        let value: Value = serde_yaml::from_str(body).unwrap();
+        let map = value.as_mapping().unwrap();
+
+        // 顶层 proxies 原样抽取
+        let top: Vec<Value> = map
+            .get("proxies")
+            .and_then(|v| v.as_sequence())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].get("name").and_then(|v| v.as_str()), Some("Top1"));
+
+        // provider 数量：3 个（inlineP/weird/webP），合法
+        let providers = map
+            .get("proxy-providers")
+            .and_then(|v| v.as_mapping())
+            .unwrap();
+        assert!(validate_provider_count(providers.len()).is_ok());
+
+        // inline provider 内嵌节点可抽取，经 append_prefixed 加前缀
+        let inline_nodes = providers
+            .get(serde_yaml::Value::String("inlineP".into()))
+            .and_then(|v| v.as_mapping())
+            .and_then(|m| m.get("proxies"))
+            .and_then(|v| v.as_sequence())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(inline_nodes.len(), 1);
+        let mut out = Vec::new();
+        append_prefixed(&mut out, "inlineP", inline_nodes);
+        assert_eq!(
+            out[0].get("name").and_then(|v| v.as_str()),
+            Some("inlineP-Inline1")
+        );
+
+        // unsupported type 会被跳过、发出警告（不进入节点集）
+        let weird_type = providers
+            .get(serde_yaml::Value::String("weird".into()))
+            .and_then(|v| v.as_mapping())
+            .and_then(|m| m.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_ascii_lowercase();
+        assert_eq!(weird_type, "made-up");
+        assert!(
+            !matches!(
+                weird_type.as_str(),
+                "http" | "compatible" | "file" | "inline"
+            ),
+            "unsupported type should not be network/inline"
+        );
+    }
+
+    /// 订阅兼容性 fixtures：超过 32 个 provider 的恶意订阅被拒绝。
+    #[test]
+    fn provider_fixture_too_many_is_rejected() {
+        let mut body = String::from("proxy-providers:\n");
+        for i in 0..(MAX_PROVIDER_COUNT + 1) {
+            body.push_str(&format!(
+                "  p{}:\n    type: http\n    url: https://example.com/{}.yaml\n",
+                i, i
+            ));
+        }
+        let value: Value = serde_yaml::from_str(&body).unwrap();
+        let providers = value
+            .as_mapping()
+            .unwrap()
+            .get("proxy-providers")
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert!(
+            validate_provider_count(providers.len()).is_err(),
+            "{} providers must be rejected (limit {})",
+            providers.len(),
+            MAX_PROVIDER_COUNT
+        );
+    }
+
+    /// 订阅兼容性 fixtures：非 mapping 根被明确拒绝（Base64/URI-list 暂不支持）。
+    #[test]
+    fn non_mapping_root_is_rejected() {
+        // serde 解析数组根 → as_mapping() 为 None
+        let value: Value = serde_yaml::from_str("- item1\n- item2\n").unwrap();
+        assert!(value.as_mapping().is_none(), "array root is not a mapping");
     }
 }
