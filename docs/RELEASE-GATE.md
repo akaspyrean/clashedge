@@ -3,14 +3,15 @@
 > 适用版本：自 0.8.8 起的每个候选发布版；1.0 发布前必须全量通过。
 > 规则：每一项都必须在真实 Windows 实机（便携包形态）上执行并勾选，任何一项不通过即阻断发布。
 > 背景与问题定位见 `docs/AUDIT-0.8.7.md`。
-> 当前状态：公开 Release 为 v1.0.3；`main` 已到 v1.0.4（dev）。下表统计数为 `main` 最新值（cargo test 100/100，Vitest 20/20）。
+> 当前状态：v1.0.4 已发布；`main` 为 v1.0.5 候选版。自动化数量与实机结果以本文件最近一次记录为准，不沿用旧版本数字。
+> **2026-08-27 决定**：经用户确认，v1.0.5 本轮**跳过全部实机代理 Gate**（第四节 A–H、第二节实机项、第六节真实升级项维持未勾选），以当前自动化验收结果收尾发布；实机项留待下轮补测，本文件记录如实保留。
 
 ## 当前已知阻断项
 
 - [x] **设置页从文件导入 YAML 的 fs 权限**：已确认修复——前端不再使用 plugin-fs 读文件，统一走后端 Rust command `read_import_file`（前端零 fs 依赖）。2026-08-23 核查。
 
 ## 实测记录（2026-08-23，v1.0.0 便携包，脚本化实机测试）
-> v1.0.3 / v1.0.4 的完整实机 Gate 尚未重跑；下表为 v1.0.0 基线实机记录，供对照。
+> v1.0.4 的完整实机 Gate 尚未留存全量记录；下表为 v1.0.0 基线实机记录，供对照，不能作为 v1.0.5 放行证据。
 
 | 测试 | 结果 | 证据 |
 | --- | --- | --- |
@@ -24,19 +25,23 @@
 
 ## 一、构建与校验
 
+- [x] `cargo fmt --check`（2026-08-27）
+- [x] `cargo clippy --all-targets -- -D warnings`（2026-08-27）
 - [x] `npm run build`（vue-tsc 类型检查 + Vite 生产构建）零错误（2026-08-27，Vitest 20/20、build 成功）
-- [x] `cargo test` 全部通过——**100/100**（2026-08-27，含事务回滚/订阅 fixtures 回归测试）
-- [x] `npm run tauri -- build --no-bundle` 产出真实应用 exe（体积 > 启动器残片阈值）（2026-08-23）
-- [x] `tools/build-portable.ps1` 打包成功：前置校验、csc 编译根启动器、后置断言全部通过——9/9 invariants（2026-08-23）
-- [x] 产物 zip 与 .sha256 一致，SHA256 校验通过（2026-08-23）；v1.0.3 产物含 minisig 签名与 manifest
-- [x] 版本号三处一致：tauri.conf.json / package.json / Cargo.toml = **1.0.4**（2026-08-27）
-- [x] 产物内不含订阅地址、密钥等非程序必需数据（路径泄露扫描通过）（2026-08-23）
+- [x] `cargo test --all-targets`：**106/106 通过，1 个需真实 Mihomo/网络的手工 Gate 默认忽略**（2026-08-27；HKCU 仅使用测试专用子键）
+- [x] `npm run tauri -- build --no-bundle`：原样命令复测**完整通过**（npm 12.0.2，vite 构建 + cargo release 2m36s，产出 `target\release\ClashEdge.exe`，exit 0）；当日早前记录的「npm 错解析 `--no-bundle`」无法复现，`--` 后参数透传实测正常（2026-08-27）
+- [x] `cargo audit`：0 已知漏洞；17 条 unmaintained/unsound 警告已在 `src-tauri/.cargo/audit.toml` 逐条书面豁免（12 条经 `cargo tree -i --target x86_64-pc-windows-msvc` 证实为 Linux 专有链、Windows 构建图不可达；5 条 unic 为 tauri-utils→urlpattern 传递依赖、无已知漏洞且无兼容升级可消除）（2026-08-27）
+- [x] `tools/build-portable.ps1` 打包成功：前置校验、csc 编译根启动器、后置断言全部通过——9/9 invariants（2026-08-27）
+- [x] 产物 zip 与 .sha256 一致，SHA256 校验通过（2026-08-27）
+- [x] 版本号三处一致：tauri.conf.json / package.json / Cargo.toml = **1.0.5**（2026-08-27）
+- [x] 产物绝对路径泄露扫描通过（27 个文件，2026-08-27）
 
 ## 二、核心生命周期与状态一致性
 
 - [x] 空闲端口启动：内核监听正常，无绑定冲突（2026-08-23）
 - [x] **7890 / 9090 / 9053 任一端口被占用时给出明确错误**，UI 呈现 Error，绝不假运行（绑定冲突检测生效）——7890 实测（2026-08-23）
 - [ ] 启动/停止/重启各 10 次，状态机无卡死、无僵尸进程残留
+  - 2026-08-27 仅完成最终包真实 sidecar 的隔离端口 Gate：启动/停止 10 次、重启 10 次、0 僵尸、0 残留监听；不等同于完整 App 状态机 Gate，故保持未勾选。
 - [ ] **多次 restart 后永远只有一个 watcher**（观察事件不重复推送、崩溃后不重复自动重启）
 - [ ] Settings 页修改 mixed-port 并保存：runtime-config.yaml 更新、Mihomo 实际监听新端口、系统代理同步新端口（P0-3 验收）
 - [ ] Mihomo 拒绝配置时（构造非法值）：UI 显示失败，config.yaml 保持旧值
@@ -49,11 +54,12 @@
 
 - [ ] **Task Manager 强杀 ClashEdge 进程，下次启动自动修复系统代理**（Windows 代理不留死端口指向）
 - [ ] **强杀 Mihomo 不断网**：系统代理先关闭，按策略自动重启恢复后再恢复代理
-- [ ] **500MB 恶意订阅内存不暴涨**：流式下载限制生效，超限明确报错（当前 `resp.text()` 全量入内存为已知缺陷，修复后必测）
+- [ ] **500MB 恶意订阅内存不暴涨**：流式下载与大小上限已实现；仍须用真实大响应验证内存曲线和超限错误
 - [ ] **localhost 订阅 URL 全拒绝**（SSRF 校验）
 - [ ] **private 段（10/172.16/192.168 等）订阅 URL 全拒绝**
 - [ ] **DNS rebinding 场景拒绝**（解析结果落私网段的域名订阅源被拒）
 - [ ] **redirect 到 127.0.0.1 的订阅 URL 拒绝**（每跳复检或禁止跨源重定向）
+- [x] HTTPS LocalProxy fallback 保留 Host/SNI/证书 hostname，同时 SOCKS5 仅接收已校验 IP；GitHub Release redirect、raw GitHub 订阅与 jsDelivr geodata 真实链路通过（2026-08-27）
 - [ ] **subscription token 不出现在日志与 UI**（mihomo-stdout/stderr.log、应用日志、错误提示均检查）
 - [ ] 控制器密钥非默认占位值，且不出现在 get_config 返回值与导出文件中
 - [ ] 测速自定义 URL 同样经过 SSRF 禁段校验
@@ -61,6 +67,8 @@
 - [ ] 用户另开一个自己的 Mihomo 进程时，ClashEdge 退出清理**不能误杀该进程**（按 PID/句柄清理，不按进程名）
 
 ## 四、Windows 环境恢复
+
+> 2026-08-27 环境约束：不得改写用户当前真实 Internet Settings 代理键；本节 A-H 代理实机 Gate 未执行，只允许测试专用 HKCU 子键与模拟 ownership 测试，不能作为实机通过证据。
 
 - [ ] 正常退出（托盘 Quit）：系统代理按意图关闭，注册表干净
 - [ ] 异常退出（强杀/断电模拟）：下次启动能确定性恢复或清除系统代理，不留死端口
@@ -73,8 +81,8 @@
 
 ## 五、便携包
 
-- [x] **中文路径**下解压并正常运行——实测 `release/测试 目录 GateA/`（2026-08-23）
-- [x] **路径含空格**正常运行——同上测试路径含空格（2026-08-23）
+- [x] **中文路径**下解压并正常运行——最终候选 ZIP 在 C 盘中文目录启动并显示 v1.0.5（2026-08-27，`system-proxy: false`）
+- [x] **路径含空格**正常运行——同上隔离目录含空格（2026-08-27）
 - [ ] **移动盘符变更**（U 盘换机器盘符变化）后 portable.dat 自愈判定仍生效，内核路径解析正确
 - [ ] Data 目录随包迁移后配置/Profile/规则完整保留
 - [ ] 根 ClashEdge.exe 图标与 App 内应用图标一致
@@ -84,6 +92,8 @@
 ## 六、更新链路（Portable Updater 信任链已实装在 v1.0.3 起；下表为待实机重跑项）
 
 > 现状：v1.0.3 起为完整信任链「编译期公钥 → minisign manifest → manifest SHA256 → ZIP → 暂存 → Launcher 下次启动事务替换」；`download_update()` 无参数、只接受后端刚验签的 manifest，WebView 不能操纵下载。以下仍留待真实升级路径重跑。
+
+- [x] Launcher `--test-recovery`：pending / verified / swapping / committed / 无 journal 共 15 项恢复断言通过（2026-08-27；这是隔离故障注入，不替代真实 v1.0.3 → v1.0.4 升级）
 
 - [ ] **更新中途断电能回滚**：更新事务具备校验点，断电重启后旧版本可用且程序资产一致
 - [ ] **更新到新版本后 Data 完整保留**（配置、Profile、规则、日志均不受影响）

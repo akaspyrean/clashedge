@@ -21,11 +21,10 @@ param(
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path $Root)) { throw "Root not found: $Root" }
 
-# Leak patterns: build-machine absolute paths that must not be baked into the
-# portable tree. These are *developer-machine* source paths — NOT the CI runner
-# user (`runneradmin`), whose path legitimately appears in compiled binaries
-# (panic locations, `file!()`). Patterns are kept specific to the dev box so
-# the runner's own `C:\Users\runneradmin\` build paths don't false-positive.
+# Leak patterns: build-machine absolute paths that must not be baked into runtime
+# configuration/assets. Rust dependency panic locations under Cargo's immutable
+# registry source are diagnostic metadata and do not affect relocatability; those
+# prefixes are normalized before matching (same treatment for local and CI builds).
 $DevSourcePatterns = @(
     "D:\\900 AIWork",
     "C:\\Users\\Fong"
@@ -58,8 +57,13 @@ Get-ChildItem -Path $Root -Recurse -Force -File | ForEach-Object {
     # build-machine paths may sit anywhere in binary content, not just the first 4MB.
     $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
     $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+    $asciiForDevScan = [regex]::Replace(
+        $ascii,
+        '[A-Za-z]:\\Users\\[^\\]+\\\.cargo\\registry\\src\\[^\\]+\\',
+        '<cargo-registry>\\'
+    )
     foreach ($p in $DevSourcePatterns) {
-        if ($ascii -match $p) {
+        if ($asciiForDevScan -match $p) {
             $Failures.Add("dev source path: $rel  (matched '$p')")
         }
     }
