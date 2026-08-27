@@ -412,8 +412,11 @@ pub fn run() {
     });
 }
 
-/// 退出清理严格顺序：确认 ownership → 精确恢复 → 复读确认 → 停止 Mihomo →
-/// 清 journal。恢复/确认失败立即返回，核心与 journal 都保留，避免制造死代理。
+/// 退出清理顺序：确认 ownership → 精确恢复 Windows 系统代理 → 复读验证 →
+/// 清除 proxy journal → 停止 Mihomo。系统代理恢复并验证成功后 journal 立即
+/// 清除；Mihomo 的后续停止与 journal 完全解耦——停止失败只记录错误，绝不
+/// 重新创建或保留 proxy journal。恢复/确认失败立即返回（journal 保留、不
+/// 停止 Mihomo），保持现有 fail-safe。
 fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
     let mixed_port = state
@@ -433,7 +436,7 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
             return;
         }
     };
-    match crate::proxy::journal::release_owned_proxy_for_exit(&data_dir, mixed_port) {
+    match crate::proxy::journal::release_owned_proxy(&data_dir, mixed_port) {
         Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost) => {
             // 正常退出前已被用户/其他软件接管：本次不写注册表，同时把下次启动的
             // 自动接管意图关闭，避免 journal 清除后又把外部代理当作新 baseline。
@@ -460,7 +463,9 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
         }
     }
 
-    // 复读验证已由 helper 完成。现在才允许停止本会话的 Mihomo。
+    // 复读验证与 journal 清除已由 release_owned_proxy 完成：系统代理
+    //    恢复并验证成功后 journal 已被清除。Mihomo 的停止与 journal 完全解耦——
+    //    Mihomo 停止失败只记录错误，绝不重新创建或保留 proxy journal。
     //    P1-7：只按 PID 精确清杀自己创建的进程。优先走 core_manager 锁拿
     //    实时 PID；锁被 async 任务占用时退回 supervisor 维护的 PID 缓存。
     //    两者都没有（本会话从未成功启动过核心）就什么都不杀——绝不按
@@ -489,11 +494,12 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
             .map(|status| status.success())
             .unwrap_or(false);
         if !stopped {
+            // journal 已在代理恢复成功后清除；Mihomo 停止失败只记录错误，
+            // 不得重新创建或保留 proxy journal。
             error!(
-                "Failed to stop Mihomo PID {} during exit; proxy was restored but journal is kept",
+                "Failed to stop Mihomo PID {} during exit; system proxy was restored and journal already cleared, this error is logged only",
                 pid
             );
-            return;
         }
     } else {
         info!(
@@ -501,9 +507,6 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
              (will not touch unrelated mihomo processes)"
         );
     }
-
-    // 核心已确认停止，最后清理退出凭据。
-    crate::proxy::journal::clear_journal(&data_dir);
 }
 
 fn main() {
