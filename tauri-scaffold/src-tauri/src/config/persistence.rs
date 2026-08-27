@@ -339,10 +339,15 @@ mod tests {
             "missing secret:\n{}",
             content
         );
-        // 默认值必须有效：tun.stack 非空、dns nameserver 非空
+        // 默认值必须有效：tun.stack=mixed（含 dns-hijack 默认）、dns nameserver 非空
         assert!(
-            content.contains("stack: system"),
-            "tun.stack should default to system:\n{}",
+            content.contains("stack: mixed"),
+            "tun.stack should default to mixed:\n{}",
+            content
+        );
+        assert!(
+            content.contains("dns-hijack:") && content.contains("any:53"),
+            "tun.dns-hijack should default to any:53 + tcp://any:53:\n{}",
             content
         );
         assert!(

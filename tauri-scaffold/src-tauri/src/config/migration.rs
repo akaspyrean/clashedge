@@ -189,6 +189,11 @@ fn merge_legacy_value(value: &serde_yaml::Value) -> Config {
         if let Some(v) = as_string(field(tun, "interface-name")).filter(|s| !s.is_empty()) {
             config.tun.interface_name = Some(v);
         }
+        if let Some(v) = as_string_list(field(tun, "dns-hijack")) {
+            if !v.is_empty() {
+                config.tun.dns_hijack = v;
+            }
+        }
     }
 
     // --- dns ---
@@ -353,6 +358,30 @@ proxy:
         let migrated = migrate_content(&yaml).unwrap();
         assert_eq!(migrated.general.mixed_port, 7899);
         assert!(migrated.general.allow_lan);
+    }
+
+    /// H：老配置缺 `dns-hijack` 字段时能正常加载（默认补 any:53 + tcp://any:53），
+    /// 已有合法 dns-hijack 的配置则原样保留，不再被默认覆盖。
+    #[test]
+    fn loads_legacy_tun_with_or_without_dns_hijack() {
+        // 老配置缺 dns-hijack → 默认补全
+        let yaml = "mixed-port: 7890\ntun:\n  enable: true\n  stack: gvisor\n";
+        let config = migrate_content(yaml).unwrap();
+        assert_eq!(config.tun.stack, "gvisor");
+        assert_eq!(
+            config.tun.dns_hijack,
+            vec!["any:53".to_string(), "tcp://any:53".to_string()],
+            "missing dns-hijack must default"
+        );
+
+        // 已有合法 dns-hijack → 保留
+        let yaml = "mixed-port: 7890\ntun:\n  enable: true\n  stack: mixed\n  dns-hijack:\n    - 1.1.1.1:53\n";
+        let config = migrate_content(yaml).unwrap();
+        assert_eq!(
+            config.tun.dns_hijack,
+            vec!["1.1.1.1:53".to_string()],
+            "existing dns-hijack must be preserved"
+        );
     }
 
     /// 非 YAML / 根节点非 mapping → 明确报错（绝不返回默认配置冒充成功）

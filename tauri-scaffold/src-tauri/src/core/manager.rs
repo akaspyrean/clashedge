@@ -1125,6 +1125,12 @@ impl CoreManager {
         self.controller.apply_tun(enable).await
     }
 
+    /// 读取运行中核心的实际 TUN 状态（GET /configs → tun.enable）。
+    /// 供编排层 apply_tun 确认「PATCH/restart 后 Mihomo 是否真正接受了目标状态」。
+    pub async fn get_tun_enable(&self) -> Result<bool> {
+        self.controller.get_tun_enable().await
+    }
+
     /// 获取代理组列表（GET /proxies）。
     pub async fn get_proxy_groups(&self) -> Result<Vec<serde_json::Value>> {
         self.controller.get_proxy_groups().await

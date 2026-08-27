@@ -19,6 +19,8 @@ export interface TunConfig {
   "auto-route": boolean;
   "auto-detect-interface": boolean;
   "interface-name": string | null;
+  /** TUN 内核 DNS 劫持列表（any:53 / tcp://any:53）；普通用户无需编辑。 */
+  "dns-hijack"?: string[];
 }
 
 export interface DnsConfig {

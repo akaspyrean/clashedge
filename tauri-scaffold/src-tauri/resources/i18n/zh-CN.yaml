@@ -127,6 +127,7 @@ tun:
   title: "TUN 设置"
   enable: "启用 TUN"
   stack: "协议栈"
+  stack_mixed: "mixed (推荐，Wintun + 兜底)"
   stack_system: "system (Windows 内核栈)"
   stack_gvisor: "gvisor (用户态栈)"
   auto_route: "自动路由"

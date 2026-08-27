@@ -127,6 +127,7 @@ tun:
   title: "TUN Settings"
   enable: "Enable TUN"
   stack: "Stack"
+  stack_mixed: "mixed (Recommended, Wintun + Fallback)"
   stack_system: "system (Windows Kernel Stack)"
   stack_gvisor: "gvisor (User-space Stack)"
   auto_route: "Auto Route"

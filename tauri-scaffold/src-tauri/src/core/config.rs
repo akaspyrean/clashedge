@@ -21,6 +21,10 @@ const VALID_PROXY_MODES: &[&str] = &["rule", "global", "direct"];
 /// 官方模板注释：`# find-process-mode has 3 values: always, strict, off`。
 const VALID_FIND_PROCESS_MODES: &[&str] = &["off", "strict", "always"];
 
+/// mihomo `tun.stack` 合法值（仅这三值；不得增加其他 stack 类型）。
+/// 非法值归一为 `mixed`（对普通 Windows 用户优先原生驱动、复杂场景回退用户态栈）。
+const VALID_TUN_STACKS: &[&str] = &["mixed", "system", "gvisor"];
+
 /// mihomo `log-level` 合法值（官方模板：debug / info / warning / error / silent）
 const VALID_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error", "silent"];
 
@@ -80,6 +84,13 @@ pub(crate) fn merge_rules(config: Config) -> Config {
     {
         config.general.find_process_mode = "off".to_string();
         warn!("Invalid find_process_mode, defaulting to 'off'");
+    }
+
+    // TUN stack 校验：mihomo 只接受 mixed / system / gvisor。
+    // 非法值（空、未知、旧值）一律回退到默认 mixed，保证 TUN runtime 永不非法。
+    if config.tun.stack.is_empty() || !VALID_TUN_STACKS.contains(&config.tun.stack.as_str()) {
+        config.tun.stack = crate::config::model::default_tun_stack();
+        warn!("Invalid tun stack, defaulting to 'mixed'");
     }
 
     // 规则提供者：为空则使用默认订阅源（由订阅管理器填充）
@@ -940,5 +951,98 @@ rule-providers:
             Some("./rules/ai.yaml"),
             "builtin safe relative path must be preserved"
         );
+    }
+
+    /// G：非法 TUN stack（空 / 未知 / 旧值）在 merge_rules 归一为 mixed。
+    #[test]
+    fn merge_rules_normalizes_invalid_tun_stack() {
+        for bad in ["", "unknown", "wintun", "mixed-old"] {
+            let mut app = Config::default();
+            app.tun.stack = bad.to_string();
+            let merged = merge_rules(app);
+            assert_eq!(
+                merged.tun.stack, "mixed",
+                "invalid stack {:?} must normalize to mixed",
+                bad
+            );
+        }
+    }
+
+    /// 合法 TUN stack（mixed / system / gvisor）在 merge_rules 保持不变。
+    #[test]
+    fn merge_rules_preserves_valid_tun_stack() {
+        for good in ["mixed", "system", "gvisor"] {
+            let mut app = Config::default();
+            app.tun.stack = good.to_string();
+            let merged = merge_rules(app);
+            assert_eq!(merged.tun.stack, good);
+        }
+    }
+
+    /// E：build_runtime_config 输出完整 TUN 段——enable/stack/auto-route/
+    /// auto-detect-interface/dns-hijack 全部正确序列化给 mihomo。
+    #[test]
+    fn build_runtime_config_emits_full_tun_section() {
+        let mut app = Config::default();
+        app.tun.enable = true;
+        let runtime = build_runtime_config(&app, None).unwrap();
+        let tun = runtime
+            .as_mapping()
+            .unwrap()
+            .get("tun")
+            .expect("runtime must carry tun")
+            .as_mapping()
+            .expect("tun must be a mapping");
+
+        assert_eq!(
+            tun.get("enable").and_then(|v| v.as_bool()),
+            Some(true),
+            "tun.enable"
+        );
+        assert_eq!(
+            tun.get("stack").and_then(|v| v.as_str()),
+            Some("mixed"),
+            "tun.stack"
+        );
+        assert_eq!(
+            tun.get("auto-route").and_then(|v| v.as_bool()),
+            Some(true),
+            "tun.auto-route"
+        );
+        assert_eq!(
+            tun.get("auto-detect-interface").and_then(|v| v.as_bool()),
+            Some(true),
+            "tun.auto-detect-interface"
+        );
+        let hijack: Vec<&str> = tun
+            .get("dns-hijack")
+            .expect("tun must carry dns-hijack")
+            .as_sequence()
+            .map(|s| s.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(hijack, vec!["any:53", "tcp://any:53"], "tun.dns-hijack");
+    }
+
+    /// F：mixed / system / gvisor 三种 stack 均能正确保存并生成 runtime 配置。
+    #[test]
+    fn build_runtime_config_roundtrips_all_tun_stacks() {
+        for stack in ["mixed", "system", "gvisor"] {
+            let mut app = Config::default();
+            app.tun.stack = stack.to_string();
+            let runtime = build_runtime_config(&app, None).unwrap();
+            let tun = runtime
+                .as_mapping()
+                .unwrap()
+                .get("tun")
+                .unwrap()
+                .as_mapping()
+                .unwrap();
+            assert_eq!(
+                tun.get("stack").and_then(|v| v.as_str()),
+                Some(stack),
+                "stack {} must roundtrip into runtime",
+                stack
+            );
+        }
     }
 }

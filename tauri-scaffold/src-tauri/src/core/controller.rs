@@ -119,6 +119,40 @@ impl ControllerClient {
         }
     }
 
+    /// 读取运行中核心的实际 TUN 状态（GET /configs → tun.enable）。
+    ///
+    /// 「确认实际结果」的核心：PATCH /configs 返回 200 不代表新配置真正生效，
+    /// mihomo 可能静默跳过非法字段或 listen 失败。必须回读当前运行配置核对
+    /// `tun.enable`，与编排层 `apply_tun` 的所需目标值比对。
+    ///
+    /// 厂商约定：mihomo 运行时配置始终携带 `tun` 段（我们 build_runtime_config
+    /// 无条件写 `tun`），`tun.enable` 缺省/异常时视为 false（= 内核未启用 TUN）。
+    pub(crate) async fn get_tun_enable(&self) -> Result<bool> {
+        let url = self.api_url(&["configs"], None)?;
+        let resp = self
+            .api_client
+            .get(url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(Error::Other(format!(
+                "read-back TUN state failed: Controller returned {}",
+                resp.status()
+            )));
+        }
+        let live: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Other(format!("read-back TUN state decode failed: {}", e)))?;
+        Ok(live
+            .get("tun")
+            .and_then(|t| t.get("enable"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false))
+    }
+
     /// 获取代理组列表（GET /proxies）。
     /// mihomo 返回的类型名是大写（Selector / URLTest / Fallback / LoadBalance / Relay），
     /// 旧实现只认小写导致永远匹配不到真实代理组。
@@ -446,5 +480,186 @@ mod tests {
             "base kept: {}",
             s
         );
+    }
+
+    /// 回读 TUN 实际状态（get_tun_enable）：从运行中 mihomo 的 GET /configs
+    /// 解析 tun.enable。用本地 mock HTTP server 验证「开启/关闭/缺 tun 段/
+    /// 非 200 响应」四个分支，确保编排层的「确认实际结果」判定可靠。
+    #[tokio::test]
+    async fn get_tun_enable_reads_live_state_from_controller() {
+        async fn respond(server: tokio::net::TcpListener, body: String, status: u16) {
+            let (mut sock, _) = server.accept().await.unwrap();
+            let request = {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                String::from_utf8_lossy(&buf).to_string()
+            };
+            assert!(
+                request.starts_with("GET /configs"),
+                "expected GET /configs, got: {}",
+                request.lines().next().unwrap_or("")
+            );
+            let res = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                status,
+                body.len(),
+                body
+            );
+            use tokio::io::AsyncWriteExt;
+            let _ = sock.write_all(res.as_bytes()).await;
+        }
+
+        // 每个场景：绑定新端口 → 把地址写回共享 config → spawn 响应器 → 读 TUN 状态。
+        async fn probe(
+            client: &ControllerClient,
+            cfg: &Arc<RwLock<Config>>,
+            body: &str,
+            status: u16,
+        ) -> Result<bool> {
+            let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = server.local_addr().unwrap();
+            cfg.write().proxy.external_controller = format!("{}", addr);
+            let h = tokio::spawn(respond(server, body.to_string(), status));
+            let result = client.get_tun_enable().await;
+            h.await.unwrap();
+            result
+        }
+
+        let cfg = Arc::new(RwLock::new(Config::default()));
+        let client = ControllerClient::new(cfg.clone()).unwrap();
+
+        // 1) tun.enable=true
+        assert!(probe(&client, &cfg, r#"{"tun":{"enable":true}}"#, 200)
+            .await
+            .unwrap());
+        // 2) tun.enable=false
+        assert!(!probe(&client, &cfg, r#"{"tun":{"enable":false}}"#, 200)
+            .await
+            .unwrap());
+        // 3) 缺 tun 段 → 默认 false（内核未启用 TUN）
+        assert!(!probe(&client, &cfg, r#"{"mixed-port":7890}"#, 200)
+            .await
+            .unwrap());
+        // 4) 非 200 → Err（不假成功）
+        assert!(probe(&client, &cfg, r#"{"error":"x"}"#, 500).await.is_err());
+    }
+
+    /// 应用 TUN（apply_tun）：向运行中核心发 PATCH /configs，body 携带完整 tun 段
+    /// 且 enable 取目标值；200 → Ok，非 200 → Err。这是编排层 apply_tun 的 PATCH 分支。
+    #[tokio::test]
+    async fn apply_tun_patches_target_enable_and_checks_status() {
+        // 读取 reqwest 发出的 HTTP 请求：解析请求行 + content-length 对应的 JSON body。
+        async fn read_patch_request(
+            sock: &mut tokio::net::TcpStream,
+        ) -> (String, serde_json::Value) {
+            use tokio::io::AsyncReadExt;
+            let mut head_buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut tmp).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                head_buf.extend_from_slice(&tmp[..n]);
+                if head_buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let s = String::from_utf8_lossy(&head_buf).to_string();
+            let (head, body_part) = match s.split_once("\r\n\r\n") {
+                Some((h, b)) => (h.to_string(), b.to_string()),
+                None => (s, String::new()),
+            };
+            let content_length: usize = head
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|v| v.trim().parse().ok())
+                })
+                .unwrap_or(0);
+            let mut body = body_part;
+            while body.len() < content_length && body.len() < 1_000_000 {
+                let n = sock.read(&mut tmp).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                body.push_str(&String::from_utf8_lossy(&tmp[..n]));
+            }
+            let json = serde_json::from_str(body.trim()).unwrap_or(serde_json::Value::Null);
+            (head, json)
+        }
+
+        async fn respond_patch(
+            server: tokio::net::TcpListener,
+            status: u16,
+        ) -> (String, serde_json::Value) {
+            let (mut sock, _) = server.accept().await.unwrap();
+            let (head, body) = read_patch_request(&mut sock).await;
+            use tokio::io::AsyncWriteExt;
+            let res = format!("HTTP/1.1 {}\r\nContent-Length: 0\r\n\r\n", status);
+            let _ = sock.write_all(res.as_bytes()).await;
+            (head, body)
+        }
+
+        // 每个场景绑定一个新端口写入共享 config，spawn 响应器再调 apply_tun。
+        async fn probe(
+            client: &ControllerClient,
+            cfg: &Arc<RwLock<Config>>,
+            enable: bool,
+            status: u16,
+        ) -> (Result<()>, String, serde_json::Value) {
+            let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = server.local_addr().unwrap();
+            cfg.write().proxy.external_controller = format!("{}", addr);
+            let h = tokio::spawn(respond_patch(server, status));
+            let result = client.apply_tun(enable).await;
+            let (head, body) = h.await.unwrap();
+            (result, head, body)
+        }
+
+        let cfg = Arc::new(RwLock::new(Config::default()));
+        let client = ControllerClient::new(cfg.clone()).unwrap();
+
+        // 1) 开启：PATCH 成功，body 的 tun.enable=true（200 → Ok）
+        {
+            let (res, head, body) = probe(&client, &cfg, true, 200).await;
+            assert!(res.is_ok(), "apply_tun(true, 200) must succeed");
+            assert!(
+                head.starts_with("PATCH /configs"),
+                "expected PATCH /configs, got: {}",
+                head
+            );
+            assert_eq!(
+                body["tun"]["enable"].as_bool(),
+                Some(true),
+                "PATCH body tun.enable must be true:\n{}",
+                body
+            );
+        }
+
+        // 2) 关闭：PATCH body 的 tun.enable=false
+        {
+            let (res, head, body) = probe(&client, &cfg, false, 200).await;
+            assert!(res.is_ok(), "apply_tun(false, 200) must succeed");
+            assert!(
+                head.starts_with("PATCH /configs"),
+                "expected PATCH /configs, got: {}",
+                head
+            );
+            assert_eq!(
+                body["tun"]["enable"].as_bool(),
+                Some(false),
+                "PATCH body tun.enable must be false:\n{}",
+                body
+            );
+        }
+
+        // 3) 非 200 → Err（PATCH 失败，调用方回退重启）
+        {
+            let (res, ..) = probe(&client, &cfg, true, 500).await;
+            assert!(res.is_err(), "apply_tun on 500 must fail");
+        }
     }
 }
