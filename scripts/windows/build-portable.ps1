@@ -25,7 +25,7 @@
 # finds mihomo at App/ClashEdge/sidecar/mihomo-win64.exe via CLASH_EDGE_DATA_DIR.
 #
 # Prerequisites:
-#   1) sidecar files are taken from portable-template (released resources, not in git).
+#   1) sidecar files are taken from packaging/windows/portable (released resources, not in git).
 #   2) .NET Framework csc.exe (C# 5) available under C:\Windows\Microsoft.NET\Framework64.
 #
 # NOTE: keep this file ASCII-only - Windows PowerShell 5.1 reads no-BOM .ps1 as ANSI,
@@ -43,9 +43,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repo   = Split-Path -Parent $PSScriptRoot
-$scaff  = Join-Path $repo "tauri-scaffold"
-$tpl    = Join-Path $repo "portable-template"
+# Repo root = up 2 from this script (script lives at scripts/windows/), so the
+# script remains correct no matter which machine / drive / folder holds the repo.
+$repo   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$scaff  = Join-Path $repo "apps\windows"
+$tpl    = Join-Path $repo "packaging\windows\portable"
 $releaseDir = Join-Path $repo "release"
 $out        = Join-Path $releaseDir "portable-out"
 New-Item -ItemType Directory -Force $releaseDir | Out-Null
@@ -84,7 +86,7 @@ if ($releaseExeLen -lt $MIN_RELEASE_EXE_BYTES) {
 }
 
 # --- Compile the C# launcher (root ClashEdge.exe) ----------------------------
-$launcherSrc  = Join-Path $repo "tools\ClashEdge.Launcher.R8.2.cs"
+$launcherSrc  = Join-Path $repo "packaging\windows\launcher\ClashEdge.Launcher.R8.2.cs"
 if (-not (Test-Path $launcherSrc)) {
     throw "Missing launcher source: $launcherSrc"
 }
@@ -135,7 +137,7 @@ $sidecars = @(
 foreach ($sc in $sidecars) {
     if (-not (Test-Path $sc.src)) {
         throw ("Missing sidecar source: {0} (needed for {1})`n" +
-               "Portable sidecars live under portable-template/App/ClashEdge/resources/static/files/win/") -f `
+               "Portable sidecars live under packaging/windows/portable/App/ClashEdge/resources/static/files/win/") -f `
             $sc.src, $sc.dst
     }
     $shaFile = $sc.src + ".sha256"
@@ -166,8 +168,15 @@ foreach ($sc in $sidecars) {
 }
 
 # 3. Default data + pre-seeded user Data/
+#    DefaultData no longer ships the built-in rule sets (they live in shared/),
+#    so seed rules/ from shared/rules afterwards.
+$sharedRules = Join-Path $repo "shared\rules"
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "App\DefaultData")
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "Data")
+if (Test-Path $sharedRules) {
+    Copy-Item -Recurse (Join-Path $sharedRules "*") (Join-Path $out "App\DefaultData\rules")
+    Copy-Item -Recurse (Join-Path $sharedRules "*") (Join-Path $out "Data\rules")
+}
 
 # 4. Help docs in Other/
 Copy-Item -Recurse (Join-Path $tpl "Other") (Join-Path $out "Other")
@@ -207,7 +216,7 @@ Write-Host "Post-assembly validation passed: $($assertions.Count) invariants OK.
 
 # 5b. Absolute-path leak scan (portable must be fully relocatable)
 Write-Host "==> Absolute-path leak scan ..." -ForegroundColor Cyan
-$ScanScript = Join-Path $repo "tools\scan_portable_paths.ps1"
+$ScanScript = Join-Path $repo "scripts\windows\scan-portable-paths.ps1"
 if (Test-Path $ScanScript) {
     & $ScanScript -Root $out
     if ($LASTEXITCODE -ne 0) {
@@ -221,7 +230,7 @@ if (Test-Path $ScanScript) {
 # Top-level folder "ClashEdge/": extracting the zip yields a ClashEdge directory
 # (matching the user's expectation of a clean folder, not scattered root files).
 #
-# 稳定文件名：不带版本号——与 tools/make_update_manifest.py 的 ZIP_ASSET
+# 稳定文件名：不带版本号——与 scripts/release/make-update-manifest.py 的 ZIP_ASSET
 # ("ClashEdge-portable-win64.zip") 保持一致，Portable Updater 按固定名下载；
 # 版本信息以 portable-manifest.json 与应用「设置→关于」为准。
 $zip = Join-Path $releaseDir "ClashEdge-portable-win64.zip"
