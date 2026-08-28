@@ -15,8 +15,10 @@ component.
 | GeoIP.dat / GeoSite.dat | Rule-set GeoData | See meta-rules-dat notices | https://github.com/MetaCubeX/meta-rules-dat |
 | Country.mmdb | MaxMind GeoLite2 mirror | GeoLite2 EULA / CC BY-SA 4.0 | https://www.maxmind.com/en/geolite2/eula |
 | Built-in rule sets (direct/proxy/media/ai/ad) | Default rules | Derived from rule-set projects; see data file notices | e.g. Loyalsoldier/clash-rules |
-| Tauri 2 (Rust + JS) | App shell framework | MIT / Apache-2.0 (dual) | https://github.com/tauri-apps/tauri |
-| Vue 3, Pinia, Vue Router, Vite, Element Plus, vue-i18n | Frontend libraries | MIT (each project's own license) | https://vuejs.org/ etc. |
+| Tauri 2 (Rust + JS) | App shell framework (Windows) | MIT / Apache-2.0 (dual) | https://github.com/tauri-apps/tauri |
+| Vue 3, Pinia, Vue Router, Vite, Element Plus, vue-i18n | Frontend libraries (Windows) | MIT (each project's own license) | https://vuejs.org/ etc. |
+| Mihomo Android core (AAR / JNI) | Proxy core + TUN adapter (Android) | GPL-3.0 | https://github.com/MetaCubeX/mihomo |
+| Kotlin, Jetpack Compose, AndroidX | Android UI / runtime (Android) | Apache-2.0 (each project's own license) | https://developer.android.com/ |
 
 Notes:
 

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClashEdge</string>
+
+    <!-- Status -->
+    <string name="status_disconnected">已断开</string>
+    <string name="status_connecting">连接中…</string>
+    <string name="status_connected">已连接</string>
+    <string name="status_error">错误</string>
+    <string name="start_proxy">启动</string>
+    <string name="stop_proxy">停止</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">概览</string>
+    <string name="nav_proxies">代理</string>
+    <string name="nav_profiles">配置</string>
+    <string name="nav_logs">日志</string>
+    <string name="nav_settings">设置</string>
+
+    <!-- Mode -->
+    <string name="mode_rule">规则</string>
+    <string name="mode_global">全局</string>
+    <string name="mode_direct">直连</string>
+
+    <!-- Subscription -->
+    <string name="import_subscription">添加订阅</string>
+    <string name="update_subscription">更新</string>
+    <string name="subscription_url_hint">https://…</string>
+    <string name="subscription_imported">订阅导入成功</string>
+    <string name="subscription_import_failed">导入失败：%1$s</string>
+
+    <!-- Errors / safety -->
+    <string name="vpn_permission_required">启动代理需要 VPN 权限</string>
+    <string name="service_killed">代理核心已被系统停止</string>
+    <string name="core_start_failed">代理核心启动失败</string>
+    <string name="config_corrupt">配置已损坏，已自动恢复</string>
+    <string name="network_changed">网络已切换，正在重启代理</string>
+</resources>

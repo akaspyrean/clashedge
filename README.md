@@ -2,18 +2,32 @@
 
 # ClashEdge
 
-**轻量、便携、开箱即用的 Windows Mihomo 客户端**
+**轻量、开箱即用的 Mihomo 客户端（Windows / Android）**
 
 订阅提供节点，ClashEdge 负责分流与策略。内置规则开箱即用，也可自由配置。
 
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-4F6D7A?style=flat-square)
+![Android](https://img.shields.io/badge/Android-8%2B-3DDC84?style=flat-square)
 ![Version](https://img.shields.io/github/v/tag/akaspyrean/clashedge?style=flat-square&label=Version&color=66856A)
-![Portable](https://img.shields.io/badge/Portable-Ready-7D8B74?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-A98652?style=flat-square&label=License)
 
 [下载](../../releases) · [规则库](https://github.com/akaspyrean/external)
 
 </div>
+
+---
+
+## 平台
+
+| | **ClashEdge for Windows** | **ClashEdge for Android** |
+| --- | --- | --- |
+| 定位 | Lightweight / Portable / Windows-first | Lightweight / Simple / Mihomo-based |
+| 内核接入 | Mihomo（sidecar）+ WinTUN | Mihomo（Android AAR / JNI） |
+| 网络方式 | 系统代理 + TUN（Wintun） | Android VpnService（TUN） |
+| 形态 | 便携目录（根启动器 + App/ + Data/） | APK |
+| 前端实现 | Tauri（Rust + Vue 3） | Kotlin + Jetpack Compose |
+
+两个平台共享品牌、产品定位、默认规则体系与相近的信息架构，但平台能力各自独立实现。
 
 ---
 
