@@ -53,7 +53,6 @@ const proxyModes = ["rule", "global", "direct"];
 const geo = ref<GeoDataStatus | null>(null);
 const geoUpdating = ref(false);
 
-const autostart = ref(false);
 const autostartLoading = ref(false);
 
 const tunLoading = ref(false);
@@ -98,20 +97,18 @@ onMounted(async () => {
     geo.value = null;
   }
   try {
-    autostart.value = await utilApi.getAutostart();
+    appStore.autostart = await utilApi.getAutostart();
   } catch {
-    autostart.value = false;
+    appStore.autostart = false;
   }
 
   const onGeoChanged = () => {
     void geodataApi.status().then((s) => (geo.value = s)).catch(() => {});
   };
-  const onAutostartChanged = (e: { payload: { enable: boolean } }) => {
-    autostart.value = e.payload.enable;
-  };
+  // 自启事件改由 main.ts 生命周期级监听写入共享 app store（避免页面级不同步）。
+  // 本页 geodata 更新仍为页面级监听（仅设置页关注）。
   unlisteners = [
     await listen("geodata-updated", onGeoChanged),
-    await listen("autostart-changed", onAutostartChanged),
   ];
 
   // 容器宽度驱动 tabs 布局（ResizeObserver，无需第三方库）。
@@ -178,9 +175,10 @@ async function onAutostartChange(val: boolean) {
   autostartLoading.value = true;
   try {
     await utilApi.setAutostart(val);
+    appStore.autostart = val;
     ElMessage.success(t("common.success"));
   } catch (e) {
-    autostart.value = !val; // 失败回滚
+    appStore.autostart = !val; // 失败回滚
     ElMessage.error(String(e));
   } finally {
     autostartLoading.value = false;
@@ -332,7 +330,7 @@ async function onUpdateGeo() {
               <span class="pref-label">{{ $t("settings.autostart") }}</span>
               <span class="pref-hint">{{ $t("settings.silent_autostart") }}</span>
             </template>
-            <el-switch v-model="autostart" :loading="autostartLoading" @change="onAutostartChange" />
+            <el-switch v-model="appStore.autostart" :loading="autostartLoading" @change="onAutostartChange" />
           </el-form-item>
           <el-form-item :label="$t('general.mixed_port')">
             <el-input-number v-model="cfg['mixed-port']" :min="1" :max="65535" />
