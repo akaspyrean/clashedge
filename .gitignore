@@ -26,7 +26,9 @@ Thumbs.db
 desktop.ini
 
 # ---- 打包产物 ----
-release/
+# 仅忽略仓库根的 release/（构建产物）；不要写成释放所有深度的 `release/`，
+# 否则会误伤 scripts/release/ 等真实源码目录。
+/release/
 portable-out/
 
 # ---- Android ----
@@ -42,6 +44,10 @@ apps/android/.idea/
 cargo-check-out.txt
 cargo-check-tests.txt
 cargo-test-out.txt
+
+# ---- Python ----
+__pycache__/
+*.pyc
 
 # ---- 编辑器 ----
 .vscode/*
