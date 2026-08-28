@@ -5,7 +5,7 @@
   // CSP 的 connect-src 只保留 'self'；object/frame 禁止，style-src 因
   // Element Plus 运行时样式保留 'unsafe-inline'。
   "productName": "ClashEdge",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "identifier": "com.clashedge.portable",
   "build": {
     "beforeDevCommand": "npm run dev",
