@@ -19,7 +19,7 @@
 
 ## 平台
 
-| | **ClashEdge for Windows** | **ClashEdge for Android** |
+| | **ClashEdge for Windows** | **ClashEdge for Android（规划中）** |
 | --- | --- | --- |
 | 定位 | Lightweight / Portable / Windows-first | Lightweight / Simple / Mihomo-based |
 | 内核接入 | Mihomo（sidecar）+ WinTUN | Mihomo（Android AAR / JNI） |
