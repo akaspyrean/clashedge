@@ -208,6 +208,25 @@ type GroupItemsAndMap = (
     crate::tray::TrayMenuMap,
 );
 
+/// 托盘菜单名显示上限（字符数）。菜单是纯文本、不换行，超长会撑宽/裁切。
+const TRAY_NAME_MAX_CHARS: usize = 40;
+
+/// 超长名称「中间省略」：保留头尾、中间替换为 `…`。
+/// 仅影响显示文本；ID 映射中的真实名称不变，选择语义不受影响。
+fn elide_middle(name: &str, max_chars: usize) -> String {
+    let total = name.chars().count();
+    if total <= max_chars {
+        return name.to_string();
+    }
+    let keep = max_chars - 1; // 一个字符留给省略号
+    let head = keep - keep / 2; // 头部略长：地区/序号前缀区分度更高
+    let tail = keep / 2;
+    let mut out: String = name.chars().take(head).collect();
+    out.push('…');
+    out.extend(name.chars().skip(total - tail));
+    out
+}
+
 fn build_proxy_group_items(
     app: &AppHandle,
     proxies: &[ProxyGroupInfo],
@@ -232,18 +251,22 @@ fn build_proxy_group_items(
         if group.subgroups.is_empty() {
             // Simple proxy group - a single checkable item（无子节点，点击不触发 select）
             let id = alloc_id!((group_name.clone(), String::new()));
-            let item = CheckMenuItemBuilder::with_id(id, group_name)
-                .checked(group.is_selected)
-                .build(app)?;
+            let item =
+                CheckMenuItemBuilder::with_id(id, elide_middle(group_name, TRAY_NAME_MAX_CHARS))
+                    .checked(group.is_selected)
+                    .build(app)?;
             items.push(Box::new(item));
         } else {
             // Complex group with subgroups - a nested submenu
             let mut subgroup_items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
             for subgroup in &group.subgroups {
                 let id = alloc_id!((group_name.clone(), subgroup.name.clone()));
-                let sub_item = CheckMenuItemBuilder::with_id(id, &subgroup.name)
-                    .checked(subgroup.is_selected)
-                    .build(app)?;
+                let sub_item = CheckMenuItemBuilder::with_id(
+                    id,
+                    elide_middle(&subgroup.name, TRAY_NAME_MAX_CHARS),
+                )
+                .checked(subgroup.is_selected)
+                .build(app)?;
                 subgroup_items.push(Box::new(sub_item));
             }
 
@@ -252,9 +275,13 @@ fn build_proxy_group_items(
             // 子菜单自身 ID 仅作容器标识，不参与事件分发，同样使用不透明序号。
             let submenu_id = format!("proxy-group-sub-{:04}", next_id);
             next_id += 1;
-            let submenu = SubmenuBuilder::with_id(app, submenu_id, group_name)
-                .items(&subgroup_refs)
-                .build()?;
+            let submenu = SubmenuBuilder::with_id(
+                app,
+                submenu_id,
+                elide_middle(group_name, TRAY_NAME_MAX_CHARS),
+            )
+            .items(&subgroup_refs)
+            .build()?;
             items.push(Box::new(submenu));
         }
     }
@@ -400,4 +427,35 @@ pub fn update_tray_menu(
     // 图标随系统代理状态着色（refresh_tray 每次调用都会刷新）
     tray.set_icon(Some(build_tray_icon(config)?))
         .map_err(crate::util::error::Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::elide_middle;
+
+    #[test]
+    fn short_name_unchanged() {
+        assert_eq!(elide_middle("香港 01", 40), "香港 01");
+        assert_eq!(elide_middle("", 40), "");
+        assert_eq!(elide_middle("x", 1), "x");
+    }
+
+    #[test]
+    fn long_name_elided_to_max_chars() {
+        let name = "a".repeat(100);
+        let out = elide_middle(&name, 40);
+        assert_eq!(out.chars().count(), 40);
+        assert!(out.contains('\u{2026}'));
+        assert_eq!(&out[..20], &"a".repeat(20));
+        assert!(out.ends_with(&"a".repeat(19)));
+    }
+
+    #[test]
+    fn multibyte_counts_chars_not_bytes() {
+        let name = "\u{4e2d}".repeat(60); // 180 bytes / 60 chars
+        let out = elide_middle(&name, 40);
+        assert_eq!(out.chars().count(), 40);
+        assert!(out.starts_with('\u{4e2d}'));
+        assert!(out.ends_with('\u{4e2d}'));
+    }
 }
