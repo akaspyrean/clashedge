@@ -211,7 +211,7 @@ cd apps/windows; npm run tauri -- build --no-bundle
 - **构建仍打包、但运行时未调用的侧车**：`go-tun2socks.exe`（2.8 MB）、`EnableLoopback.exe`（75 KB）。TUN 实际走 mihomo 原生 `tun.enable`（wintun.dll），Rust 从不启动这两个 sidecar。**保留以防 TUN 回归，未删除**；后续确认无用时，可连同 `build-portable.ps1` 的拷贝行一起移除（精简候选）。
 - **启动器说明（重要，勿再误记为"已废弃"）**：便携包**根目录的 `ClashEdge.exe` 就是 C# 启动器**——`scripts/windows/build-portable.ps1` 每次打包都会用 .NET Framework 的 `csc.exe` 把 `packaging/windows/launcher/ClashEdge.Launcher.R8.2.cs` 编译为 `portable-out/ClashEdge.exe`（带 cat.ico 图标），由它拉起 `App/ClashEdge/ClashEdge.exe`（Tauri 应用本体）。2026-08-19 删除的是仓库里残留的历史编译产物 `tools/ClashEdge.exe`（~8.7KB），`.cs` 源码与编译流程至今仍在使用。
 - **开发卫生约定**：终止进程必须 PID + ExecutablePath 双重校验（且仅限测试目录）；任何文件不得残留订阅地址/密钥等非程序必需数据；不允许通过隐藏错误/吞异常/删功能让构建假成功。
-- **托盘约定（2026-08-28）**：托盘与 UI 控制面状态同步问题解决前，**不得向托盘右键菜单新增功能开关**（现状：菜单勾选态仅在整体重建时刷新，与 UI 实时状态存在窗口期不同步）。
+- **托盘约定（2026-08-28）**：新增托盘功能开关前，必须用「共享 store + 生命周期级监听」的同步范式（参照 2026-08-28 开机自启修复：`autostart` 归入共享 app store，`autostart-changed` 在 main.ts 生命周期级监听），确保托盘 ↔ UI 一致。不得新增只靠单一入口/页面级刷新、会与 UI 实时状态出现窗口期不同步的开关。
 - **长名称约定（2026-08-28）**：节点/组名过长时托盘显示层做**中间省略**（保留头尾、中间 `…`，区分信息在两头）；截断仅影响显示，ID → 真名映射中的选择语义必须保持全名。
 
 ## 7. Phase 0 基线（0.8.7 审计与发布门禁）
