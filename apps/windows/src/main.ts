@@ -4,10 +4,11 @@ import { createPinia } from "pinia";
 import ElementPlus from "element-plus";
 import "element-plus/dist/index.css";
 import * as ElementPlusIconsVue from "@element-plus/icons-vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn, type Event } from "@tauri-apps/api/event";
 import App from "./App.vue";
 import router from "./router";
 import { setupI18n } from "./i18n";
+import { useAppStore } from "@/stores/app";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
@@ -24,8 +25,12 @@ setTheme(getTheme());
 const lifecycleListeners: UnlistenFn[] = [];
 let bootstrapStarted = false;
 
-/** 注册一个应用生命周期监听器，失败时记录错误而非静默吞掉。 */
-function registerListener(event: string, handler: () => void): void {
+/** 注册一个应用生命周期监听器，失败时记录错误而非静默吞掉。
+ *  handler 可选择性接收事件载荷（如 autostart-changed 携带 enable）。 */
+function registerListener(
+  event: string,
+  handler: (e: Event<unknown>) => void,
+): void {
   listen(event, handler)
     .then((unlisten) => lifecycleListeners.push(unlisten))
     .catch((e) => console.error(`failed to listen event "${event}"`, e));
@@ -79,6 +84,17 @@ async function bootstrap() {
   registerListener("proxy-group-changed", () => {
     void useProxyStore().loadGroups();
   });
+
+  // 自启开关在托盘与设置页都可能改动；这里做生命周期级监听，把真实状态写进
+  // 共享 app store（设置页从该店读），避免只在设置页挂载时监听导致的「有时不联动」。
+  registerListener("autostart-changed", (e) => {
+    const payload = e.payload as { enable?: boolean } | undefined;
+    if (typeof payload?.enable === "boolean") {
+      useAppStore().autostart = payload.enable;
+    }
+  });
+  // 启动时预取一次自启状态，供设置页/托盘跨入口一致（app store 单一数据源）。
+  void useAppStore().loadAutostart();
 }
 
 void bootstrap();
