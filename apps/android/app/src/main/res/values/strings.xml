@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClashEdge</string>
+
+    <!-- Status -->
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_error">Error</string>
+    <string name="start_proxy">Start</string>
+    <string name="stop_proxy">Stop</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_proxies">Proxies</string>
+    <string name="nav_profiles">Profiles</string>
+    <string name="nav_logs">Logs</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Mode -->
+    <string name="mode_rule">Rule</string>
+    <string name="mode_global">Global</string>
+    <string name="mode_direct">Direct</string>
+
+    <!-- Subscription -->
+    <string name="import_subscription">Add Subscription</string>
+    <string name="update_subscription">Update</string>
+    <string name="subscription_url_hint">https://…</string>
+    <string name="subscription_imported">Subscription imported</string>
+    <string name="subscription_import_failed">Import failed: %1$s</string>
+
+    <!-- Errors / safety -->
+    <string name="vpn_permission_required">VPN permission is required to start the proxy</string>
+    <string name="service_killed">The proxy core was stopped by the system</string>
+    <string name="core_start_failed">Failed to start the proxy core</string>
+    <string name="config_corrupt">Configuration is damaged and has been restored</string>
+    <string name="network_changed">Network changed, restarting proxy</string>
+</resources>

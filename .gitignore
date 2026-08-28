@@ -29,6 +29,15 @@ desktop.ini
 release/
 portable-out/
 
+# ---- Android ----
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/android/local.properties
+apps/android/.idea/
+*.apk
+*.aab
+
 # ---- 构建诊断输出 ----
 cargo-check-out.txt
 cargo-check-tests.txt
