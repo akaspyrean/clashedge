@@ -13,7 +13,7 @@ dist-ssr/
 *.local
 
 # ---- Rust/Tauri 构建缓存 ----
-# 实际路径在 tauri-scaffold/src-tauri/ 下，由其嵌套 .gitignore 覆盖
+# 实际路径在 apps/windows/src-tauri/ 下，由其嵌套 .gitignore 覆盖
 
 # ---- 环境变量与构建诊断 ----
 .env
