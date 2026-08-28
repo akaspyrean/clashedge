@@ -21,13 +21,21 @@
 
 ```
 .
-├── tauri-scaffold/        # Tauri 应用源码
-│   ├── src/               #   前端：views / stores / api / i18n / router
-│   └── src-tauri/src/     #   Rust 后端：commands / config / core / proxy / geodata / tray / util
-├── portable-template/     # 便携模板：侧车二进制 + 默认数据 + 规则集（供打包拷贝）
-├── tools/                 # 构建/打包脚本与图标
-│   ├── build-portable.ps1 #   打包入口（组装便携目录 + zip + SHA256；含前置/后置校验）
-│   └── ClashEdge.Launcher.R8.2.cs  # C# 根启动器源码（build-portable.ps1 每次打包时用 csc.exe 编译为便携包根目录的 ClashEdge.exe，图标取 tauri-scaffold/src-tauri/icons/cat.ico）
+├── apps/
+│   ├── windows/           # Tauri 应用源码
+│   │   ├── src/           #   前端：views / stores / api / i18n / router
+│   │   └── src-tauri/src/ #   Rust 后端：commands / config / core / proxy / geodata / tray / util
+│   └── android/           # Android 客户端（Kotlin + Jetpack Compose + VpnService）
+├── shared/                # 跨平台数据资源
+│   └── rules/             #   内置规则集 direct / proxy / media / ai / ad
+├── packaging/
+│   └── windows/
+│       ├── portable/      # 便携模板：侧车二进制 + 默认数据（供打包拷贝）
+│       └── launcher/      # C# 根启动器源码（build-portable.ps1 每次打包时用 csc.exe 编译为便携包根目录的 ClashEdge.exe，图标取 apps/windows/src-tauri/icons/cat.ico）
+├── scripts/
+│   ├── windows/           # Windows 构建/打包脚本（build-portable.ps1、scan-portable-paths.ps1）
+│   ├── android/           # Android 构建/打包脚本
+│   └── release/           # 发布脚本（make-update-manifest.py）
 ├── docs/                  # 文档
 │   └── HANDOVER.md        #   （本文档）
 ├── release/               # 打包产物（不入库，gitignore）
@@ -41,16 +49,16 @@
 
 ```powershell
 # 前端类型检查 + 生产构建
-cd tauri-scaffold; npm install; npm run build
+cd apps/windows; npm install; npm run build
 
 # Rust 单元测试
-cd tauri-scaffold/src-tauri; cargo test
+cd apps/windows/src-tauri; cargo test
 
 # 发布构建（一次，产物 target/release/ClashEdge.exe）
-cd tauri-scaffold; npm run tauri -- build --no-bundle
+cd apps/windows; npm run tauri -- build --no-bundle
 
 # 打包（产物输出到 release/）
-.\tools\build-portable.ps1
+.\scripts\windows\build-portable.ps1
 ```
 
 打包前约定：`build-portable.ps1` 会先删除 `release/portable-out/`；**运行中的旧测试实例必须先停**（PID + ExecutablePath 双重校验，仅限测试目录下的进程）。
@@ -201,8 +209,10 @@ cd tauri-scaffold; npm run tauri -- build --no-bundle
 - **旧版 Clash.F.Win 端口冲突（重点）**：若旧版 Clash.F.Win（Electron）仍在运行，会占用 `127.0.0.1:7890` 与 DNS `9053`，新内核绑定失败。新版本会如实报错（顶部红条），**不会**再假装运行中。用户需先关闭旧版。
 - **规则集网络刷新**：`direct/proxy/media/ai/ad` 为 HTTP 型 rule-provider，首次用内置本地文件；若机器无法直连 `raw.githubusercontent.com`（无可用代理），刷新会失败但保留本地已加载规则，不影响启动。
 - **构建仍打包、但运行时未调用的侧车**：`go-tun2socks.exe`（2.8 MB）、`EnableLoopback.exe`（75 KB）。TUN 实际走 mihomo 原生 `tun.enable`（wintun.dll），Rust 从不启动这两个 sidecar。**保留以防 TUN 回归，未删除**；后续确认无用时，可连同 `build-portable.ps1` 的拷贝行一起移除（精简候选）。
-- **启动器说明（重要，勿再误记为"已废弃"）**：便携包**根目录的 `ClashEdge.exe` 就是 C# 启动器**——`tools/build-portable.ps1` 每次打包都会用 .NET Framework 的 `csc.exe` 把 `tools/ClashEdge.Launcher.R8.2.cs` 编译为 `portable-out/ClashEdge.exe`（带 cat.ico 图标），由它拉起 `App/ClashEdge/ClashEdge.exe`（Tauri 应用本体）。2026-08-19 删除的是仓库里残留的历史编译产物 `tools/ClashEdge.exe`（~8.7KB），`.cs` 源码与编译流程至今仍在使用。
+- **启动器说明（重要，勿再误记为"已废弃"）**：便携包**根目录的 `ClashEdge.exe` 就是 C# 启动器**——`scripts/windows/build-portable.ps1` 每次打包都会用 .NET Framework 的 `csc.exe` 把 `packaging/windows/launcher/ClashEdge.Launcher.R8.2.cs` 编译为 `portable-out/ClashEdge.exe`（带 cat.ico 图标），由它拉起 `App/ClashEdge/ClashEdge.exe`（Tauri 应用本体）。2026-08-19 删除的是仓库里残留的历史编译产物 `tools/ClashEdge.exe`（~8.7KB），`.cs` 源码与编译流程至今仍在使用。
 - **开发卫生约定**：终止进程必须 PID + ExecutablePath 双重校验（且仅限测试目录）；任何文件不得残留订阅地址/密钥等非程序必需数据；不允许通过隐藏错误/吞异常/删功能让构建假成功。
+- **托盘约定（2026-08-28）**：托盘与 UI 控制面状态同步问题解决前，**不得向托盘右键菜单新增功能开关**（现状：菜单勾选态仅在整体重建时刷新，与 UI 实时状态存在窗口期不同步）。
+- **长名称约定（2026-08-28）**：节点/组名过长时托盘显示层做**中间省略**（保留头尾、中间 `…`，区分信息在两头）；截断仅影响显示，ID → 真名映射中的选择语义必须保持全名。
 
 ## 7. Phase 0 基线（0.8.7 审计与发布门禁）
 

@@ -1,7 +1,7 @@
 # ClashEdge Hybrid Design System
 
 > 版本 1.0 · 适用 ClashEdge 桌面端（Tauri + Element Plus）
-> Token 实现：`tauri-scaffold/src/styles.css`（单一事实来源）
+> Token 实现：`apps/windows/src/styles.css`（单一事实来源）
 
 ---
 

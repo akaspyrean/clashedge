@@ -29,7 +29,7 @@
 
 ### P0-1 配置迁移可能静默丢数据
 
-- 位置：`tauri-scaffold/src-tauri/src/config/persistence.rs` `read_config`（约 163-196 行）；`tauri-scaffold/src-tauri/src/config/migration.rs` `migrate_mixed_format` / `migrate_from_yaml_string` / `is_new_format`
+- 位置：`apps/windows/src-tauri/src/config/persistence.rs` `read_config`（约 163-196 行）；`apps/windows/src-tauri/src/config/migration.rs` `migrate_mixed_format` / `migrate_from_yaml_string` / `is_new_format`
 - 现象：`read_config` 在 YAML 解析失败时调用 `migration::migrate`；一旦迁移失败，直接 `warn!` 后返回 `Ok(Config::default())`（persistence.rs:189-193）。返回值随后会被 `init` → `set_config` 落盘，**用户旧配置被默认配置静默覆盖，无任何用户可见错误**。
 - 加重因素：
   - `migrate_mixed_format`（migration.rs:293-301）是空壳：不读内容、不改文件，却报告"迁移成功"，导致 `read_config` 重读原样内容再次解析失败；
@@ -40,41 +40,41 @@
 
 ### P0-2 ConfigManager 先改内存再落盘，磁盘写失败导致内存/磁盘不一致
 
-- 位置：`tauri-scaffold/src-tauri/src/config/persistence.rs` `set_config`（85-90 行）
+- 位置：`apps/windows/src-tauri/src/config/persistence.rs` `set_config`（85-90 行）
 - 现象：`set_config` 先 `*self.config.write() = config` 再 `save()`。若 `atomic_write` 失败（磁盘满、权限、占用），函数返回 Err 但内存已是新值。此后所有读取（含 CoreManager 共享的同一 Arc）都基于新值，而磁盘仍是旧值；下次启动状态回跳。
 - 影响：违反「用户看到成功意味着最终状态真的成功」与「任意中间步骤失败都恢复到操作前状态」。
 - 修复方向：disk-first（先写盘成功后再提交内存），或落盘失败时回滚内存并向上传播错误。
 
 ### P0-3 Settings 页 update_config 只刷新托盘不重载 Mihomo（"假保存"）
 
-- 位置：`tauri-scaffold/src-tauri/src/commands/config.rs` `update_config`（33-43 行）
+- 位置：`apps/windows/src-tauri/src/commands/config.rs` `update_config`（33-43 行）
 - 现象：Settings 页整包保存走 `update_config` → 落盘 → `refresh_tray`，**不重建 runtime-config.yaml、不 reload 运行中的核心**。修改 mixed-port / DNS / TUN 等字段后 UI 显示已保存，Mihomo 实际仍在旧配置上运行；仅 reset/import 路径有 `reload_running_core`。
 - 影响：直接违反硬原则 1（UI 显示的必须是真实状态）与硬原则 2（成功即真成功）。这是当前最容易被普通用户踩中的 P0。
 - 修复方向：update_config 事务化——持久化成功后统一走 `regen_runtime_config` + `reload_running_core`，失败回滚并报错。
 
 ### P0-4 reset/import 中 reload_running_core 吞掉 reload 错误仍返回成功
 
-- 位置：`tauri-scaffold/src-tauri/src/commands/config.rs` `reload_running_core`（117-125 行）
+- 位置：`apps/windows/src-tauri/src/commands/config.rs` `reload_running_core`（117-125 行）
 - 现象：`core.reload_config().await` 出错时仅 `warn!` 日志，函数正常返回，命令整体返回 Ok。用户看到"重置/导入成功"，但运行中核心可能仍是旧配置甚至处于异常态。
 - 修复方向：把 reload 结果纳入命令返回值；失败时明确告知用户"已写入但生效失败"，并提供重试/重启内核的路径。
 
 ### P0-5 mihomo 崩溃自愈后不恢复 Windows 系统代理
 
-- 位置：`tauri-scaffold/src-tauri/src/core/manager.rs` watcher（约 408-617 行）
+- 位置：`apps/windows/src-tauri/src/core/manager.rs` watcher（约 408-617 行）
 - 现象：watcher 检测到异常退出时，若系统代理开着会立即关闭它（防断网，正确）；但自动重启成功、`wait_ready_and_check_port` 通过后（manager.rs:576-586），**只置 Running + 清零计数，从不按配置意图重新打开系统代理**。用户的配置里 system_proxy=true，实际 Windows 代理保持关闭，直到手动干预。
 - 影响：崩溃一次 = 系统代理永久失效（对用户表现为"代理不好使了"），违反硬原则 5 的对称性要求。
 - 修复方向：自动重启健康检查通过后，按共享配置的 system_proxy 意图恢复注册表设置。
 
 ### P0-6 每次 start() spawn 新 watcher，无 generation/cancel，多 watcher 竞态
 
-- 位置：`tauri-scaffold/src-tauri/src/core/manager.rs` `start()` 尾部 `spawn_watcher()`（约 319 行）
+- 位置：`apps/windows/src-tauri/src/core/manager.rs` `start()` 尾部 `spawn_watcher()`（约 319 行）
 - 现象：每次 `start()` 成功都会再 spawn 一个 watcher 任务，旧 watcher 只在"用户主动停止"时 break。restart 场景下 stop→start 会累积新 watcher；旧 watcher 与新 watcher 同时轮询同一个 child Arc，可能出现重复检测退出、重复触发 Error 事件、重复自动重启。
 - 影响：多次 restart 后行为不可预测，是若干"偶发双事件/双重启"类问题的结构性根因。
 - 修复方向：引入 generation 计数或 CancellationToken，start 时作废旧 watcher；长期应收敛为单一 CoreSupervisor 任务（见 Phase 1 PR-4）。
 
 ### P0-7 自动重启成功即清零计数，短周期崩溃循环永不停止
 
-- 位置：`tauri-scaffold/src-tauri/src/core/manager.rs` watcher 重启成功分支（约 578-579 行）
+- 位置：`apps/windows/src-tauri/src/core/manager.rs` watcher 重启成功分支（约 578-579 行）
 - 现象：`auto_restart_count` 在每次自动重启成功达到 Running 即清零。若 mihomo 以短于退避周期的规律崩溃（例如每 10 秒崩一次），计数永远是 0→1→0→1，`MAX_AUTO_RESTARTS=3` 永远达不到，无限重启循环不会停止。
 - 修复方向：改为时间窗熔断（如 10 分钟窗口内崩溃满 N 次即停止重启并置 Error），窗口不重置已计入的崩溃次数。
 

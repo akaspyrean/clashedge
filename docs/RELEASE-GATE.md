@@ -31,7 +31,7 @@
 - [x] `cargo test --all-targets`：**106/106 通过，1 个需真实 Mihomo/网络的手工 Gate 默认忽略**（2026-08-27；HKCU 仅使用测试专用子键）
 - [x] `npm run tauri -- build --no-bundle`：原样命令复测**完整通过**（npm 12.0.2，vite 构建 + cargo release 2m36s，产出 `target\release\ClashEdge.exe`，exit 0）；当日早前记录的「npm 错解析 `--no-bundle`」无法复现，`--` 后参数透传实测正常（2026-08-27）
 - [x] `cargo audit`：0 已知漏洞；17 条 unmaintained/unsound 警告已在 `src-tauri/.cargo/audit.toml` 逐条书面豁免（12 条经 `cargo tree -i --target x86_64-pc-windows-msvc` 证实为 Linux 专有链、Windows 构建图不可达；5 条 unic 为 tauri-utils→urlpattern 传递依赖、无已知漏洞且无兼容升级可消除）（2026-08-27）
-- [x] `tools/build-portable.ps1` 打包成功：前置校验、csc 编译根启动器、后置断言全部通过——9/9 invariants（2026-08-27）
+- [x] `scripts/windows/build-portable.ps1` 打包成功：前置校验、csc 编译根启动器、后置断言全部通过——9/9 invariants（2026-08-27）
 - [x] 产物 zip 与 .sha256 一致，SHA256 校验通过（2026-08-27）
 - [x] 版本号三处一致：tauri.conf.json / package.json / Cargo.toml = **1.0.5**（2026-08-27）
 - [x] 产物绝对路径泄露扫描通过（27 个文件，2026-08-27）
