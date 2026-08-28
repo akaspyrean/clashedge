@@ -31,50 +31,50 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
           cache: npm
-          cache-dependency-path: tauri-scaffold/package-lock.json
+          cache-dependency-path: apps/windows/package-lock.json
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: tauri-scaffold/src-tauri
+          workspaces: apps/windows/src-tauri
 
       - name: npm ci
-        working-directory: tauri-scaffold
+        working-directory: apps/windows
         run: npm ci
 
       - name: cargo fmt --check
-        working-directory: tauri-scaffold/src-tauri
+        working-directory: apps/windows/src-tauri
         run: cargo fmt --check
 
       - name: cargo clippy (-D warnings)
-        working-directory: tauri-scaffold/src-tauri
+        working-directory: apps/windows/src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
       - name: cargo test
-        working-directory: tauri-scaffold/src-tauri
+        working-directory: apps/windows/src-tauri
         run: cargo test
 
       - name: cargo audit (known vulnerabilities)
         # cargo-audit 检查 Cargo.lock 中已公开的依赖漏洞。
         # 安装一次后缓存由 rust-cache 保留。
         # working-directory 与 fmt/clippy/test 一致（Cargo.lock 在 src-tauri 下）。
-        working-directory: tauri-scaffold/src-tauri
+        working-directory: apps/windows/src-tauri
         run: |
           cargo install cargo-audit --locked 2>$null
           cargo audit
 
       - name: npm audit (high / critical)
         # 仅高优/严重漏洞才阻断 CI；低/中警告仅记录。
-        working-directory: tauri-scaffold
+        working-directory: apps/windows
         run: npm audit --audit-level=high
 
       - name: npm test (Vitest unit + component tests)
         # Pinia store 纯逻辑 + Vue 组件 v-if/v-else 渲染分支
         # （P1-4：补测试体系，避免类似 Connections v-else 回归再次漏入 main）
-        working-directory: tauri-scaffold
+        working-directory: apps/windows
         run: npm test
 
       - name: npm run build
-        working-directory: tauri-scaffold
+        working-directory: apps/windows
         run: npm run build
