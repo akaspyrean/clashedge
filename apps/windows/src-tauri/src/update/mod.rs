@@ -16,7 +16,7 @@
 //!   ↓
 //! 暂存 Data/update-staging/ + 写 pending.json
 //!   ↓
-//! 下次由根启动器在拉起内层前应用（见 tools/ClashEdge.Launcher.R8.2.cs，
+//! 下次由根启动器在拉起内层前应用（见 packaging/windows/launcher/ClashEdge.Launcher.R8.2.cs，
 //! 启动器带更新事务 journal，断电可恢复；Data/ 永不被替换）
 //! ```
 //!
@@ -52,7 +52,7 @@ const MAX_UPDATE_BYTES: u64 = 300 * 1024 * 1024;
 /// 整体下载 deadline
 const DOWNLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(900);
 
-/// 更新清单（tools/make_update_manifest.py 生成的 portable-manifest.json）
+/// 更新清单（scripts/release/make-update-manifest.py 生成的 portable-manifest.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateManifest {
     pub version: String,
