@@ -168,16 +168,19 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           # CLI 自动读取 TAURI_SIGNING_PRIVATE_KEY / _PASSWORD 环境变量
+          # working-directory 是 apps/windows（node_modules 在此）；release/ 在仓库根，
+          # 需 `..\..\release`。旧值 `..\release` 是按平级布局写的（apps/windows 比
+          # 原 tauri-scaffold 多一层），会指向不存在的 apps\release。
           node node_modules/@tauri-apps/cli/tauri.js signer sign `
-            "..\release\portable-manifest.json"
+            "..\..\release\portable-manifest.json"
           if ($LASTEXITCODE -ne 0) { throw "tauri signer sign failed" }
-          $sig = "..\release\portable-manifest.json.sig"
+          $sig = "..\..\release\portable-manifest.json.sig"
           if (-not (Test-Path $sig)) { throw "signature file was not produced" }
           # Tauri .sig = 整个 minisign 签名文件的一层 base64；解包为标准文本
           $raw = Get-Content $sig -Raw
           $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw.Trim()))
           if ($decoded -notmatch 'untrusted comment') { throw "unexpected signature format" }
-          Set-Content -Path "..\release\portable-manifest.json.minisig" -Value $decoded -NoNewline
+          Set-Content -Path "..\..\release\portable-manifest.json.minisig" -Value $decoded -NoNewline
           Write-Host "Manifest signed and unwrapped to portable-manifest.json.minisig"
 
       # P0-5/P0-6 dry-run 校验：manifest、签名、SHA256、attest、upload
