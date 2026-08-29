@@ -126,6 +126,9 @@ impl ConfigManager {
         self.ensure_secure_secret(&mut config);
         write_config(&self.config_path(), &config)?;
         *self.config.write() = config;
+        // A successful explicit write replaces the corrupt source file and exits
+        // degraded mode for the lifetime of this manager.
+        self.degraded.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -270,6 +273,27 @@ fn backup_corrupt_config(config_path: &Path) {
             e
         ),
     }
+}
+
+/// 查找最近一次损坏配置备份（`config.yaml.corrupt-*.bak`），供前端提示用户
+/// 备份位置。无备份返回 None。
+pub fn find_corrupt_backup(config_path: &Path) -> Option<String> {
+    let dir = config_path.parent()?;
+    let file_name = config_path.file_name()?.to_string_lossy().to_string();
+    let prefix = format!("{}.corrupt-", file_name);
+    let mut backups: Vec<PathBuf> = dir
+        .read_dir()
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .collect();
+    backups.sort();
+    backups.last().map(|p| p.to_string_lossy().to_string())
 }
 
 /// 原子写入配置文件：先写临时文件再重命名
@@ -590,6 +614,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 损坏配置备份查找：read_config 生成的 .corrupt-*.bak 能被 find_corrupt_backup
+    /// 定位，供前端提示"原文件已备份到何处"。
+    #[test]
+    fn find_corrupt_backup_locates_latest_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "clash-edge-findbak-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "app: [unclosed\n  broken").unwrap();
+        assert!(read_config(&path).is_err());
+
+        let backup = find_corrupt_backup(&path);
+        assert!(
+            backup.is_some(),
+            "a .corrupt-*.bak backup must be discoverable"
+        );
+        let backup_path = std::path::PathBuf::from(backup.unwrap());
+        assert!(
+            backup_path.exists() && backup_path.is_file(),
+            "reported backup must actually exist"
+        );
+        assert!(
+            backup_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("config.yaml.corrupt-"),
+            "backup name must follow the .corrupt-<ts>.bak pattern"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// P0-1：init 遇到坏配置进入降级模式——内存为默认值（应用可用），
     /// 磁盘上的原始文件保持不动。
     #[test]
@@ -614,6 +674,14 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             garbage,
             "degraded mode must not overwrite the original file"
+        );
+
+        let mut replacement = mgr.get_config();
+        replacement.general.mixed_port = 7891;
+        mgr.set_config(replacement).unwrap();
+        assert!(
+            !mgr.is_degraded(),
+            "explicit successful save exits degraded mode"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

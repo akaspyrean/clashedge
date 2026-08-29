@@ -28,6 +28,9 @@ internal static class ClashEdgeLauncher
     private static extern bool CloseHandle(IntPtr hObject);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FlushFileBuffers(IntPtr hFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool DeviceIoControl(
         IntPtr hDevice,
         int dwIoControlCode,
@@ -172,10 +175,17 @@ internal static class ClashEdgeLauncher
     //   swapping    新 App 已复制到 App.new-xxx 并验证完整，
     //               journal 已持久化——下一步是原子目录交换
     //   committed   交换完成、备份已删除
+    //   launcher-stage       新 launcher 已复制为 ClashEdge.exe.new-<txid>，
+    //                        根 exe 未被触碰
+    //   launcher-swap-old    journal 记录 launcher_old/launcher_new 后，
+    //                        根 exe 可能已改名走（.old-<txid> 存在）
+    //   launcher-commit      新 launcher 已 rename 到位，仅剩清理
     //
     // 恢复语义：
     //   pending / verified / committed → App 未被动过或已完成，清暂存即可
     //   swapping → App 有效则交换已完成（删备份）；App 无效则从备份恢复
+    //   launcher-* → 必须先于 ClashEdge.exe.old-* 全局清理处理，
+    //               保证任何断电点之后至少存在一个可启动 launcher
     //
     // 硬约束：
     //   - journal 必须在破坏性操作之前持久化（写失败即中止）
@@ -187,18 +197,78 @@ internal static class ClashEdgeLauncher
         return Path.Combine(root, "Data", "update-journal.json");
     }
 
-    /// 原子写 journal。写失败必须抛出——进入 swapping 后 journal 是恢复链
-    /// 的唯一依据，不能 catch{} 静默吞掉。
+    /// 原子写 journal（写穿持久化）。写失败必须抛出——进入 swapping /
+    /// launcher-* 后 journal 是恢复链的唯一依据，不能 catch{} 静默吞掉。
     private static void WriteUpdateJournal(string root, string state)
+    {
+        WriteUpdateJournal(root, state, null, null, null);
+    }
+
+    /// 带 launcher 自更新字段的 journal 写入。
+    /// launcher_old / launcher_new / launcher_sha 由 ExtractJsonField 解析。
+    private static void WriteUpdateJournal(string root, string state,
+        string launcherOld, string launcherNew, string launcherSha)
     {
         string path = UpdateJournalPath(root);
         Directory.CreateDirectory(Path.GetDirectoryName(path));
         string tmp = path + ".tmp";
-        File.WriteAllText(tmp,
-            "{\n  \"state\": \"" + state + "\",\n  \"time\": \""
-            + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\"\n}\n");
-        if (File.Exists(path)) File.Delete(path);
-        File.Move(tmp, path);
+
+        var sb = new StringBuilder();
+        sb.Append("{\n  \"state\": \"").Append(state).Append("\"");
+        sb.Append(",\n  \"time\": \"").Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")).Append("\"");
+        if (launcherOld != null)
+            sb.Append(",\n  \"launcher_old\": \"").Append(launcherOld).Append("\"");
+        if (launcherNew != null)
+            sb.Append(",\n  \"launcher_new\": \"").Append(launcherNew).Append("\"");
+        if (launcherSha != null)
+            sb.Append(",\n  \"launcher_sha\": \"").Append(launcherSha).Append("\"");
+        sb.Append("\n}\n");
+
+        // 写穿：File.WriteAllText 的内容可能滞留 OS 缓存，断电即丢。
+        // FileStream + Flush(true) 强制内容与元数据落盘。
+        using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush(true);
+        }
+
+        // File.Replace 是原子元数据操作：断电后 journal 要么是旧内容要么是
+        // 新内容，不会出现"已删除、rename 未完成"的 journal 缺失窗口。
+        if (File.Exists(path))
+        {
+            try { File.Replace(tmp, path, null); }
+            catch (IOException)
+            {
+                // 非 NTFS 等不支持 Replace 的文件系统：回退 delete+move
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(tmp, path);
+            }
+        }
+        else
+        {
+            File.Move(tmp, path);
+        }
+
+        // 尽力刷新目录项使 rename/replace 持久；不可行时文件内容已写穿兜底
+        FlushDirectoryEntries(Path.GetDirectoryName(path));
+    }
+
+    /// 尽力而为：刷新目录句柄让目录项（rename 结果）落盘。
+    /// 打不开写句柄（权限不足/文件系统不支持）时静默跳过。
+    private static void FlushDirectoryEntries(string directory)
+    {
+        try
+        {
+            const uint GenericWrite = 0x40000000;
+            const uint FileFlagBackupSemantics = 0x02000000;
+            IntPtr handle = CreateFile(directory, GenericWrite, 7, IntPtr.Zero, 3,
+                FileFlagBackupSemantics, IntPtr.Zero);
+            if (handle.ToInt64() == -1) return;
+            try { FlushFileBuffers(handle); }
+            finally { CloseHandle(handle); }
+        }
+        catch { }
     }
 
     private static void ClearUpdateJournal(string root)
@@ -206,14 +276,15 @@ internal static class ClashEdgeLauncher
         try { File.Delete(UpdateJournalPath(root)); } catch { }
     }
 
+    private static string ReadUpdateJournalRaw(string root)
+    {
+        try { return File.ReadAllText(UpdateJournalPath(root)); }
+        catch { return ""; }
+    }
+
     private static string ReadUpdateJournalState(string root)
     {
-        try
-        {
-            var json = File.ReadAllText(UpdateJournalPath(root));
-            return ExtractJsonField(json, "state") ?? "";
-        }
-        catch { return ""; }
+        return ExtractJsonField(ReadUpdateJournalRaw(root), "state") ?? "";
     }
 
     private static string ExtractJsonField(string json, string field)
@@ -349,8 +420,81 @@ internal static class ClashEdgeLauncher
         return temp;
     }
 
+    /// Launcher 自更新事务的恢复。必须在任何全局清理（特别是
+    /// ClashEdge.exe.old-* 无条件删除）之前调用——根 exe 可能已改名走，
+    /// .old-<txid> 是恢复依据，先删就永远无法启动了。
+    /// 保证：本方法正常返回后根目录一定存在一个可启动的 launcher。
+    private static void RecoverLauncherUpdate(string root, string state, bool silent)
+    {
+        var json = ReadUpdateJournalRaw(root);
+        string oldPath = ExtractJsonField(json, "launcher_old");
+        string newPath = ExtractJsonField(json, "launcher_new");
+        string newSha = ExtractJsonField(json, "launcher_sha");
+        string rootExe = Path.Combine(root, "ClashEdge.exe");
+
+        if (state == "launcher-stage")
+        {
+            // 阶段1 后断电：旧 launcher 尚未移动，根 exe 完好，清 .new 暂存即可
+        }
+        else if (state == "launcher-swap-old" || state == "launcher-replace")
+        {
+            if (!File.Exists(rootExe))
+            {
+                // 根 exe 已改名走：优先用 SHA256 校验通过的 .new 恢复为新版；
+                // .new 缺失/损坏时从 .old 恢复旧版。
+                // 两个文件都不会在本事务中被提前删除，因此至少有一个可用。
+                string promote = null;
+                if (newPath != null && File.Exists(newPath))
+                {
+                    bool shaOk = true;
+                    if (!string.IsNullOrEmpty(newSha))
+                    {
+                        try
+                        {
+                            shaOk = string.Equals(Sha256OfFile(newPath), newSha,
+                                StringComparison.OrdinalIgnoreCase);
+                        }
+                        catch { shaOk = false; }
+                    }
+                    if (shaOk) promote = newPath;
+                }
+                if (promote == null && oldPath != null && File.Exists(oldPath))
+                    promote = oldPath;
+                if (promote == null)
+                    throw new InvalidOperationException(
+                        "launcher 恢复失败：根 exe 缺失且无可用备份");
+                File.Move(promote, rootExe);
+                if (!silent)
+                    MessageBox.Show("检测到上次更新未完成，已自动恢复启动器。",
+                        "更新恢复", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            // 根 exe 存在：swap-old 尚未执行，或 swap-new 已完成——
+            // 两种情况根 exe 都可启动，仅需清理残留
+        }
+        else if (state == "launcher-commit")
+        {
+            // 新 launcher 已 rename 到位：仅剩 .old 备份清理
+        }
+
+        // 清理 launcher 残留（journal 记录 + 通配兜底）
+        try { if (oldPath != null && File.Exists(oldPath)) File.Delete(oldPath); } catch { }
+        try { if (newPath != null && File.Exists(newPath)) File.Delete(newPath); } catch { }
+        try
+        {
+            foreach (var f in Directory.GetFiles(root, "ClashEdge.exe.old-*"))
+                File.Delete(f);
+        }
+        catch { }
+        try
+        {
+            foreach (var f in Directory.GetFiles(root, "ClashEdge.exe.new-*"))
+                File.Delete(f);
+        }
+        catch { }
+    }
+
     /// P0：启动自愈——上次更新中断时先恢复到确定可运行状态。
-    /// 必须在检查 ClashEdge.exe 是否存在之前执行（App/ 可能被改名走）。
+    /// 必须在检查 ClashEdge.exe 是否存在之前执行（App/ 或根 launcher 可能被改名走）。
     private static void RecoverInterruptedUpdate(string root, bool silent)
     {
         string state = ReadUpdateJournalState(root);
@@ -363,7 +507,13 @@ internal static class ClashEdgeLauncher
 
         try
         {
-            if (state == "swapping")
+            // P0：launcher 事务恢复必须先于 App 恢复与任何全局清理——
+            // 后置的 ClashEdge.exe.old-* 无条件删除会销毁恢复依据。
+            if (state.StartsWith("launcher-", StringComparison.Ordinal))
+            {
+                RecoverLauncherUpdate(root, state, silent);
+            }
+            else if (state == "swapping")
             {
                 if (AppDirValid(root))
                 {
@@ -390,6 +540,13 @@ internal static class ClashEdgeLauncher
             try
             {
                 foreach (var f in Directory.GetFiles(root, "ClashEdge.exe.old-*"))
+                    File.Delete(f);
+            }
+            catch { }
+            // launcher stage 阶段断电（journal 仍为 committed）遗留的 .new 暂存
+            try
+            {
+                foreach (var f in Directory.GetFiles(root, "ClashEdge.exe.new-*"))
                     File.Delete(f);
             }
             catch { }
@@ -515,21 +672,22 @@ internal static class ClashEdgeLauncher
             WriteUpdateJournal(root, "committed");
             try { Directory.Delete(backup, true); } catch { }
 
-            // Launcher 自更新放在 App commit 之后（避免混合版本状态）
+            // Launcher 自更新放在 App commit 之后（避免混合版本状态）。
+            // P0：四阶段断电安全事务——每个断电点之后根目录
+            // 至少存在一个可启动的 launcher。
             try
             {
-                string newLauncher = Path.Combine(appRoot, "ClashEdge.exe");
-                string selfExe = System.Reflection.Assembly.GetExecutingAssembly().Location;
-                if (File.Exists(newLauncher) && File.Exists(selfExe)
-                    && !string.Equals(Sha256OfFile(newLauncher), Sha256OfFile(selfExe),
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    var selfOld = selfExe + ".old-" + txid;
-                    File.Move(selfExe, selfOld);
-                    File.Copy(newLauncher, selfExe, true);
-                }
+                ApplyLauncherSelfUpdate(root, appRoot, txid);
             }
-            catch { }
+            catch
+            {
+                // 尽力就地恢复；恢复失败必须传播到外层，保留 journal/staging
+                // 供旧 Launcher 下次启动继续处理，不能伪装成更新成功。
+                string launcherState = ReadUpdateJournalState(root);
+                if (!launcherState.StartsWith("launcher-", StringComparison.Ordinal))
+                    throw;
+                RecoverLauncherUpdate(root, launcherState, true);
+            }
 
             Directory.Delete(staging, true);
             ClearUpdateJournal(root);
@@ -540,9 +698,10 @@ internal static class ClashEdgeLauncher
         }
         catch (Exception ex)
         {
-            // 进入 swapping 后不清 journal——让下次启动恢复
+            // 进入 swapping / launcher-* 后不清 journal——让下次启动恢复
             string state = ReadUpdateJournalState(root);
-            if (state != "swapping")
+            if (state != "swapping"
+                && !state.StartsWith("launcher-", StringComparison.Ordinal))
             {
                 try { Directory.Delete(staging, true); } catch { }
                 ClearUpdateJournal(root);
@@ -551,6 +710,46 @@ internal static class ClashEdgeLauncher
                 MessageBox.Show("更新应用失败，已保留当前版本。\n\n" + ex.Message,
                     "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    /// Launcher 自更新：先准备新文件，再用系统原子替换保持根入口始终存在。
+    /// 替换失败时保留旧 Launcher 并由调用方保留 journal；不再执行
+    /// “先把正在运行的根 exe 改名，再把新 exe 移入”的可启动性空窗。
+    private static void ApplyLauncherSelfUpdate(string root, string appRoot, string txid)
+    {
+        string newLauncher = Path.Combine(appRoot, "ClashEdge.exe");
+        string selfExe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+        if (!File.Exists(newLauncher) || string.IsNullOrEmpty(selfExe)
+            || !File.Exists(selfExe)) return;
+        if (string.Equals(Sha256OfFile(newLauncher), Sha256OfFile(selfExe),
+            StringComparison.OrdinalIgnoreCase)) return;
+
+        string stagedNew = Path.Combine(root, "ClashEdge.exe.new-" + txid);
+        string stagedOld = selfExe + ".old-" + txid;
+
+        // 阶段1 stage：复制新 launcher（复制失败不影响任何现有文件）
+        string newSha;
+        try
+        {
+            File.Copy(newLauncher, stagedNew, true);
+            newSha = Sha256OfFile(stagedNew);
+            WriteUpdateJournal(root, "launcher-stage", null, stagedNew, newSha);
+        }
+        catch
+        {
+            try { File.Delete(stagedNew); } catch { }
+            return; // journal 仍是 committed：根 exe 完好，无物需恢复
+        }
+
+        // 原子替换：目标根文件不会先被移走。若系统不支持替换运行中的
+        // executable，调用方会保留旧 Launcher 并清理/重试，而不会制造空窗。
+        WriteUpdateJournal(root, "launcher-replace", stagedOld, stagedNew, newSha);
+        File.Replace(stagedNew, selfExe, stagedOld, true);
+        WriteUpdateJournal(root, "launcher-commit", stagedOld, null, null);
+
+        // 阶段4 cleanup：删旧版备份（运行中进程可能锁定，失败留给下次启动清理）
+        try { File.Delete(stagedOld); } catch { }
+        ClearUpdateJournal(root);
     }
 
     // --- 故障注入测试 ---------------------------------------------------------
@@ -568,8 +767,36 @@ internal static class ClashEdgeLauncher
         return dir;
     }
 
+    private static string ReadText(string path)
+    {
+        try { return File.ReadAllText(path); }
+        catch { return null; }
+    }
+
+    // The recovery checks historically only printed FAIL and still returned 0,
+    // which let CI publish a broken launcher. Track assertion output so the
+    // process exit code reflects every failed check without duplicating 48 calls.
+    private sealed class FailureTrackingWriter : TextWriter
+    {
+        private readonly TextWriter inner;
+        public int Failures { get; private set; }
+
+        public FailureTrackingWriter(TextWriter inner) { this.inner = inner; }
+        public override Encoding Encoding { get { return inner.Encoding; } }
+        public override void Write(char value) { inner.Write(value); }
+        public override void WriteLine(string value)
+        {
+            if (value != null && value.IndexOf("FAIL", StringComparison.Ordinal) >= 0)
+                Failures++;
+            inner.WriteLine(value);
+        }
+    }
+
     private static int RunRecoveryTests()
     {
+        var originalOut = Console.Out;
+        var trackingOut = new FailureTrackingWriter(originalOut);
+        Console.SetOut(trackingOut);
         int total = 0;
 
         // 1. pending 状态
@@ -655,8 +882,155 @@ internal static class ClashEdgeLauncher
             Directory.Delete(root, true);
         }
 
-        Console.WriteLine("\n" + total + " assertions passed.");
-        return 0;
+        // T-l1 阶段1 后断电：journal=launcher-stage，根 exe 完好，.new 残留存在
+        {
+            var root = TestCreateRoot("l1-stage");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            File.WriteAllText(rootExe, "old-launcher");
+            string stagedNew = Path.Combine(root, "ClashEdge.exe.new-111");
+            File.WriteAllText(stagedNew, "new-launcher");
+            WriteUpdateJournal(root, "launcher-stage", null, stagedNew, Sha256OfFile(stagedNew));
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l1 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l1 root content: " + (ReadText(rootExe) == "old-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l1 new residue cleaned: " + (!File.Exists(stagedNew) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l1 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-l2 阶段2 后断电：journal=launcher-swap-old，根 exe 已改名走，
+        // .old-* 存在，无 .new → 从 .old 恢复旧版
+        {
+            var root = TestCreateRoot("l2-swapold-no-new");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            string stagedOld = Path.Combine(root, "ClashEdge.exe.old-222");
+            File.WriteAllText(stagedOld, "old-launcher");
+            WriteUpdateJournal(root, "launcher-swap-old", stagedOld,
+                Path.Combine(root, "ClashEdge.exe.new-222"), null);
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l2 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l2 root content (old restored): " + (ReadText(rootExe) == "old-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l2 old consumed: " + (!File.Exists(stagedOld) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l2 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-l3 阶段2 后断电且 .new 已复制：根 exe 不存在，.old 与 .new 都存在
+        // → .new SHA 校验通过，恢复为新版
+        {
+            var root = TestCreateRoot("l3-swapold-both");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            string stagedOld = Path.Combine(root, "ClashEdge.exe.old-333");
+            string stagedNew = Path.Combine(root, "ClashEdge.exe.new-333");
+            File.WriteAllText(stagedOld, "old-launcher");
+            File.WriteAllText(stagedNew, "new-launcher");
+            WriteUpdateJournal(root, "launcher-swap-old", stagedOld, stagedNew, Sha256OfFile(stagedNew));
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l3 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l3 root content (new): " + (ReadText(rootExe) == "new-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l3 old cleaned: " + (!File.Exists(stagedOld) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l3 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-l4 复制中断：.new 截断损坏，journal=launcher-swap-old 且根 exe 仍在
+        // → 根 exe 原样保留，残留清理
+        {
+            var root = TestCreateRoot("l4-truncated-new");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            File.WriteAllText(rootExe, "old-launcher");
+            string stagedOld = Path.Combine(root, "ClashEdge.exe.old-444");
+            string stagedNew = Path.Combine(root, "ClashEdge.exe.new-444");
+            File.WriteAllText(stagedOld, "old-launcher");
+            File.WriteAllText(stagedNew, "new"); // 截断
+            WriteUpdateJournal(root, "launcher-swap-old", stagedOld, stagedNew,
+                Sha256OfFile(stagedNew)); // journal 记录的是损坏后的实际摘要
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l4 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l4 root content unchanged: " + (ReadText(rootExe) == "old-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l4 new residue cleaned: " + (!File.Exists(stagedNew) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l4 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-l5 复制后断电：根 exe 已是新版（swap-new 完成但 journal 未推进），
+        // journal=launcher-swap-old，.old 存在 → 根 exe 保留新版，.old 清理
+        {
+            var root = TestCreateRoot("l5-swapnew-done");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            File.WriteAllText(rootExe, "new-launcher");
+            string stagedOld = Path.Combine(root, "ClashEdge.exe.old-555");
+            string stagedNew = Path.Combine(root, "ClashEdge.exe.new-555");
+            File.WriteAllText(stagedOld, "old-launcher");
+            WriteUpdateJournal(root, "launcher-swap-old", stagedOld, stagedNew, null);
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l5 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l5 root content (new kept): " + (ReadText(rootExe) == "new-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l5 old cleaned: " + (!File.Exists(stagedOld) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l5 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-l6 清理前断电：journal=launcher-commit，根 exe=新版，
+        // .old 与 .new 残留 → 仅根 exe 保留，残留清理，journal 清空
+        {
+            var root = TestCreateRoot("l6-commit");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            File.WriteAllText(rootExe, "new-launcher");
+            string stagedOld = Path.Combine(root, "ClashEdge.exe.old-666");
+            string stagedNew = Path.Combine(root, "ClashEdge.exe.new-666");
+            File.WriteAllText(stagedOld, "old-launcher");
+            File.WriteAllText(stagedNew, "garbage");
+            WriteUpdateJournal(root, "launcher-commit", stagedOld, null, null);
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l6 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l6 root content (new): " + (ReadText(rootExe) == "new-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l6 old cleaned: " + (!File.Exists(stagedOld) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l6 new residue cleaned: " + (!File.Exists(stagedNew) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l6 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-l7 组合：App 交换已 committed + launcher 处于 swap-old（根 exe 已改名走）
+        // → 一次性恢复后 App 与根 exe 都有效
+        {
+            var root = TestCreateRoot("l7-app-committed");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            string stagedOld = Path.Combine(root, "ClashEdge.exe.old-777");
+            File.WriteAllText(stagedOld, "old-launcher");
+            WriteUpdateJournal(root, "launcher-swap-old", stagedOld,
+                Path.Combine(root, "ClashEdge.exe.new-777"), null);
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l7 app valid: " + (AppDirValid(root) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l7 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l7 root content: " + (ReadText(rootExe) == "old-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l7 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-l8 附加：根 exe 缺失且 .new 损坏（SHA 不符）→ 拒绝升级到损坏文件，
+        // 从 .old 恢复旧版
+        {
+            var root = TestCreateRoot("l8-corrupt-new");
+            string rootExe = Path.Combine(root, "ClashEdge.exe");
+            string stagedOld = Path.Combine(root, "ClashEdge.exe.old-888");
+            string stagedNew = Path.Combine(root, "ClashEdge.exe.new-888");
+            File.WriteAllText(stagedOld, "old-launcher");
+            File.WriteAllText(stagedNew, "corrupt");
+            WriteUpdateJournal(root, "launcher-swap-old", stagedOld, stagedNew,
+                Sha256OfFile(Path.Combine(root, "App", "ClashEdge", "ClashEdge.exe"))); // 与 .new 不符
+            RecoverInterruptedUpdate(root, true);
+            Console.WriteLine(++total + ". T-l8 root exe exists: " + (File.Exists(rootExe) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l8 root content (old fallback): " + (ReadText(rootExe) == "old-launcher" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l8 corrupt new cleaned: " + (!File.Exists(stagedNew) ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-l8 journal cleared: " + (ReadUpdateJournalState(root) == "" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        int exitCode = trackingOut.Failures == 0 ? 0 : 1;
+        Console.SetOut(originalOut);
+        originalOut.WriteLine("\n" + total + " assertions checked; failures: " + trackingOut.Failures + ".");
+        return exitCode;
     }
 
     [STAThread]

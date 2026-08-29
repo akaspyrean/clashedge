@@ -3,7 +3,7 @@
 #
 #   Usage:
 #     build-portable.ps1            assemble only (requires pre-built release exe)
-#     build-portable.ps1 -Build     also run npm run tauri -- build --no-bundle first
+#     build-portable.ps1 -Build     also run the local Tauri CLI build first
 #
 #   Output:
 #     <repo>/release/portable-out/                        assembled portable directory
@@ -56,7 +56,7 @@ if ($Build) {
     Write-Host "==> Running frontend + tauri release build (--no-bundle) ..."
     Push-Location $scaff
     try {
-        npm run tauri -- build --no-bundle
+        node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
         if ($LASTEXITCODE -ne 0) { throw "tauri build failed (exit $LASTEXITCODE)" }
     } finally {
         Pop-Location
@@ -71,7 +71,7 @@ if (-not (Test-Path $releaseExe)) {
     if (Test-Path $releaseExeOld) {
         $releaseExe = $releaseExeOld
     } else {
-        throw "Missing release binary: $releaseExe (run: npm run tauri -- build --no-bundle)"
+        throw "Missing release binary: $releaseExe (run the local Tauri CLI build first)"
     }
 }
 
@@ -81,7 +81,7 @@ $MIN_RELEASE_EXE_BYTES = 5MB
 $releaseExeLen = (Get-Item $releaseExe).Length
 if ($releaseExeLen -lt $MIN_RELEASE_EXE_BYTES) {
     throw ("Release binary looks like a stale launcher stub ({0:N0} B < {1:N0} B): {2}`n" +
-           "Build the real app first: npm run tauri -- build --no-bundle") -f `
+           "Build the real app first with the local Tauri CLI") -f `
         $releaseExeLen, $MIN_RELEASE_EXE_BYTES, $releaseExe
 }
 

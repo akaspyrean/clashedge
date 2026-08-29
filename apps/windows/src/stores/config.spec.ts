@@ -152,3 +152,80 @@ describe("config store / diffFromBaseline (P0-3 深比较)", () => {
   });
 });
 
+describe("config store / degraded mode (P0 损坏配置降级提示)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    invokeMock.mockReset();
+  });
+
+  it("loadDegradedInfo 拉取降级状态与备份路径", async () => {
+    const store = useConfigStore();
+    invokeMock.mockResolvedValueOnce({
+      degraded: true,
+      backup_file: "C:\\data\\config.yaml.corrupt-1700000000.bak",
+      message: "config.yaml is corrupted",
+    });
+
+    const degraded = await store.loadDegradedInfo();
+
+    expect(degraded).toBe(true);
+    expect(store.degraded).toBe(true);
+    expect(store.degradedBackupFile).toBe(
+      "C:\\data\\config.yaml.corrupt-1700000000.bak",
+    );
+    expect(invokeMock).toHaveBeenCalledWith("get_config_degraded");
+  });
+
+  it("非降级时 loadDegradedInfo 清空降级状态", async () => {
+    const store = useConfigStore();
+    store.degraded = true;
+    store.degradedBackupFile = "old";
+    invokeMock.mockResolvedValueOnce({
+      degraded: false,
+      backup_file: null,
+      message: "",
+    });
+
+    await store.loadDegradedInfo();
+
+    expect(store.degraded).toBe(false);
+    expect(store.degradedBackupFile).toBeNull();
+  });
+
+  it("降级模式且未确认时 save() 仍调用后端，由后端兜底拦截（acknowledge=false）",
+    async () => {
+      const store = useConfigStore();
+      primeStore(store, baseConfig());
+      store.degraded = true;
+      if (store.config) store.config["mixed-port"] = 7892;
+
+      // updateFields 成功 → save() 末尾 load() 再拉一次 get_config
+      invokeMock
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(baseConfig());
+
+      await store.save(); // 默认 acknowledgeCorruptConfig=false
+
+      const [cmd, args] = invokeMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(cmd).toBe("update_config_fields");
+      expect(args.acknowledgeCorruptConfig).toBe(false);
+    });
+
+  it("降级模式且已确认时 save() 传递 acknowledge=true", async () => {
+    const store = useConfigStore();
+    primeStore(store, baseConfig());
+    store.degraded = true;
+    if (store.config) store.config["mixed-port"] = 7893;
+
+    invokeMock
+      .mockResolvedValueOnce(undefined) // updateFields
+      .mockResolvedValueOnce(baseConfig()); // load() 的 get_config
+
+    await store.save(true);
+
+    const [cmd, args] = invokeMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(cmd).toBe("update_config_fields");
+    expect(args.acknowledgeCorruptConfig).toBe(true);
+  });
+});
+

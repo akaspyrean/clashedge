@@ -192,11 +192,61 @@ impl CoreManager {
     /// 改用该缓存做按 PID 精确清杀（取代旧的按进程名 taskkill 误杀风险）。
     fn record_pid_cache(&self) {
         if let Some(pid) = self.child_pid() {
-            let state = self.app_handle.state::<crate::AppState>();
-            state
-                .core_pid_cache
-                .store(pid, std::sync::atomic::Ordering::SeqCst);
+            self.set_pid_cache(pid);
         }
+    }
+
+    /// 把 PID 写入全局缓存（P0-8：子进程确认退出后必须立即清空，防止 PID
+    /// 被系统复用后误杀无关进程；stop 失败时保留以支持退出清理追踪）。
+    fn set_pid_cache(&self, pid: u32) {
+        let state = self.app_handle.state::<crate::AppState>();
+        state
+            .core_pid_cache
+            .store(pid, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 清空全局 PID 缓存（0 = 本会话未持有任何子进程）。
+    fn clear_pid_cache(&self) {
+        let state = self.app_handle.state::<crate::AppState>();
+        state
+            .core_pid_cache
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 进入可解释的 Error 状态并推送 `core-status-changed`。
+    /// 所有启动/停止失败路径都必须以本方法收尾，保证 UI 绝不呈现
+    /// 假运行 / 假停止 / 永久 Starting（P0 启动状态一致性）。
+    fn transition_to_error_and_emit(&self, err: Error) -> Error {
+        let text = err.to_string();
+        *self.status.lock().unwrap() = CoreStatus::Error(text.clone());
+        let _ = self.app_handle.emit(
+            "core-status-changed",
+            serde_json::json!({ "status": format!("error: {}", text) }),
+        );
+        err
+    }
+
+    /// 轮询 try_wait 直到子进程确认退出或超时。try_wait 可重复调用
+    /// （wait() 在超时取消后不能可靠二次调用），用于 stop_locked /
+    /// 自动重启失败清理后确认进程确实消失（P0 停止假成功防护）。
+    async fn confirm_child_exit(&self, child: &mut Child, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// 当前 mihomo 二进制路径（供退出清理做 PID → 映像路径所有权校验）
+    pub fn mihomo_binary_path(&self) -> PathBuf {
+        self.mihomo_path.clone()
     }
 
     /// 获取配置快照（克隆，调用方自由持有）
@@ -288,20 +338,26 @@ impl CoreManager {
 
         // 初始化阶段已判定内核缺失：直接给出可操作提示（便携模式提示检查
         // App/clash-edge-core.exe；安装版提示 sidecar 打包），而不是裸路径。
+        // 所有启动失败路径都必须进入可解释的 Error 并推送 core-status-changed
+        // （P0 启动状态一致性：不得永久停在 Starting / 假运行 / 假停止）。
         if let Some(hint) = self.init_error.clone() {
-            *self.status.lock().unwrap() = CoreStatus::Error(hint.clone());
-            return Err(Error::NotFound(hint));
+            let err = Error::NotFound(hint);
+            return Err(self.transition_to_error_and_emit(err));
         }
 
         if !mihomo_path.exists() {
             let hint = crate::util::paths::mihomo_missing_hint(&self.app_handle);
-            *self.status.lock().unwrap() = CoreStatus::Error(hint.clone());
-            return Err(Error::NotFound(hint));
+            let err = Error::NotFound(hint);
+            return Err(self.transition_to_error_and_emit(err));
         }
 
-        // 用当前配置（含激活 Profile）生成运行时配置
+        // 用当前配置（含激活 Profile）生成运行时配置。
+        // 写盘失败（磁盘只读/空间不足等）绝不能停留在 Starting：
+        // 转为 Error 并推送事件。
         let config = self.config();
-        self.write_runtime_config(&config)?;
+        if let Err(e) = self.write_runtime_config(&config) {
+            return Err(self.transition_to_error_and_emit(e));
+        }
 
         let runtime_config = self.runtime_config_path();
         let mut cmd = tokio::process::Command::new(&mihomo_path);
@@ -325,20 +381,26 @@ impl CoreManager {
             }
         }
 
-        let stdout_file = std::fs::File::create(&stdout_path).map_err(|e| {
-            Error::Io(std::io::Error::other(format!(
-                "create {}: {}",
-                stdout_path.display(),
-                e
-            )))
-        })?;
-        let stderr_file = std::fs::File::create(&stderr_path).map_err(|e| {
-            Error::Io(std::io::Error::other(format!(
-                "create {}: {}",
-                stderr_path.display(),
-                e
-            )))
-        })?;
+        // 日志文件创建失败（磁盘只读/权限）同属启动失败：进入 Error 并推送事件，
+        // 不因 `?` 直接返回而停留在 Starting。
+        let stdout_file = std::fs::File::create(&stdout_path)
+            .map_err(|e| {
+                Error::Io(std::io::Error::other(format!(
+                    "create {}: {}",
+                    stdout_path.display(),
+                    e
+                )))
+            })
+            .map_err(|e| self.transition_to_error_and_emit(e))?;
+        let stderr_file = std::fs::File::create(&stderr_path)
+            .map_err(|e| {
+                Error::Io(std::io::Error::other(format!(
+                    "create {}: {}",
+                    stderr_path.display(),
+                    e
+                )))
+            })
+            .map_err(|e| self.transition_to_error_and_emit(e))?;
         cmd.stdout(std::process::Stdio::from(stdout_file))
             .stderr(std::process::Stdio::from(stderr_file));
 
@@ -352,8 +414,8 @@ impl CoreManager {
         let child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                *self.status.lock().unwrap() = CoreStatus::Error(e.to_string());
-                return Err(Error::from(e));
+                let err = Error::from(e);
+                return Err(self.transition_to_error_and_emit(err));
             }
         };
         *self.child.lock().unwrap() = Some(child);
@@ -368,13 +430,8 @@ impl CoreManager {
                 // 系统代理指向 127.0.0.1:7890 便随之失效——必须显式报错，而非假 Running
                 // （坚持「界面状态 = Mihomo 实际状态」）。
                 if let Err(bind_err) = self.detect_bind_conflict() {
-                    let _ = self.stop_locked().await; // 清掉僵尸进程（stop_locked 会把状态置 Stopped）
-                    *self.status.lock().unwrap() = CoreStatus::Error(bind_err.to_string());
-                    let _ = self.app_handle.emit(
-                        "core-status-changed",
-                        serde_json::json!({ "status": format!("error: {}", bind_err) }),
-                    );
-                    return Err(bind_err);
+                    let _ = self.stop_locked().await; // 清掉僵尸进程（stop_locked 先置 Stopping/Stopped）
+                    return Err(self.transition_to_error_and_emit(bind_err));
                 }
                 *self.status.lock().unwrap() = CoreStatus::Running;
                 // 缓存版本（REST 优先；失败回退 `-v`）
@@ -399,9 +456,12 @@ impl CoreManager {
                 Ok(())
             }
             Err(e) => {
-                *self.status.lock().unwrap() = CoreStatus::Error(e.to_string());
+                // P0 顺序修正：旧实现先置 Error、再调 stop_locked()——后者无条件
+                // 覆盖成 Stopped，UI 呈现"假停止"且丢失失败原因。改为先清理僵尸
+                // 进程（stop_locked 可能置 Stopping/Stopped，也可能因杀不掉置 Error），
+                // 最后统一以 Error + core-status-changed 收尾。
                 let _ = self.stop_locked().await; // 清掉起不来的僵尸进程
-                Err(e)
+                Err(self.transition_to_error_and_emit(e))
             }
         }
     }
@@ -522,6 +582,15 @@ impl CoreManager {
 
                 // 置 child 为 None，is_running() 随之返回 false
                 child_handle.lock().unwrap().take();
+                // P0-8：子进程确认退出后立即清空 PID 缓存——旧实现这里只取走
+                // child、不清缓存，崩溃/熔断/重启失败后旧 PID 可能被系统复用，
+                // 应用退出清理会 taskkill 掉无关进程（PID 误杀风险）。
+                {
+                    let state = app_handle.state::<crate::AppState>();
+                    state
+                        .core_pid_cache
+                        .store(0, std::sync::atomic::Ordering::SeqCst);
+                }
 
                 // 用户主动停止 / 正在停止：不重启，watcher 退出
                 {
@@ -799,6 +868,12 @@ impl CoreManager {
                                 let zombie = child_handle.lock().unwrap().take();
                                 if let Some(mut c) = zombie {
                                     let _ = c.kill().await;
+                                    // P0-8：僵尸进程被取走并清理后，PID 缓存必须清空，
+                                    // 否则旧 PID 残留、应用退出时可能误杀被复用的进程。
+                                    let state = app_handle.state::<crate::AppState>();
+                                    state
+                                        .core_pid_cache
+                                        .store(0, std::sync::atomic::Ordering::SeqCst);
                                 }
                                 // 继续循环：下一次 gone 检测会再记一次崩溃并重试，
                                 // 直至熔断窗口打开
@@ -848,6 +923,11 @@ impl CoreManager {
     }
 
     /// stop 实现体（调用方必须已持有 lifecycle 锁，见 start_locked 注释）。
+    ///
+    /// P0 停止假成功防护：必须确认进程确实退出才能返回 Ok。`child.kill()` 的
+    /// 错误、`taskkill` 的启动/退出码都逐一检查；杀不掉时**不**置 Stopped，
+    /// 而是保留可追踪的 PID 在 `core_pid_cache`（供退出清理继续追踪）并进入
+    /// Error + 推送 core-status-changed。绝不按进程名杀进程。
     async fn stop_locked(&self) -> Result<()> {
         // P0-6：递增 generation 使旧 watcher 失效（防止它把本次主动停止
         // 当成崩溃处理）；P1-7：标记用户主动停止双保险
@@ -855,47 +935,102 @@ impl CoreManager {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.user_stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        // P1-7：子进程即将被取走，清空 PID 缓存
-        {
-            let state = self.app_handle.state::<crate::AppState>();
-            state
-                .core_pid_cache
-                .store(0, std::sync::atomic::Ordering::SeqCst);
-        }
         let child = self.child.lock().unwrap().take();
-        if let Some(mut child) = child {
-            // 先记下 PID：kill 后 wait 超时需要按 PID 精确兜底清杀
-            let pid = child.id();
-            info!("Stopping mihomo (PID {})", pid.unwrap_or(0));
-            *self.status.lock().unwrap() = CoreStatus::Stopping;
-            // 先温和 kill，再兜底 taskkill（防句柄未回收导致杀不掉）
-            let _ = child.kill().await;
-            if tokio::time::timeout(Duration::from_secs(3), child.wait())
-                .await
-                .is_err()
-            {
-                // kill 之后 wait 仍超时：进程可能残留为孤儿，按 PID 强杀。
-                // 参考 main.rs 退出清理的写法；taskkill 也失败才记录告警放弃。
-                match pid {
-                    Some(pid) => {
-                        warn!(
-                            "mihomo did not exit after kill; taskkill fallback (PID {})",
-                            pid
-                        );
-                        if let Err(e) = std::process::Command::new("taskkill")
-                            .args(["/PID", &pid.to_string(), "/F"])
-                            .status()
-                        {
-                            warn!("taskkill fallback failed for PID {}: {}", pid, e);
+        let Some(mut child) = child else {
+            // 无子进程：除非已处于 Error，否则回到 Stopped 并清空缓存。
+            let is_error = matches!(*self.status.lock().unwrap(), CoreStatus::Error(_));
+            if !is_error {
+                *self.status.lock().unwrap() = CoreStatus::Stopped;
+            }
+            self.clear_pid_cache();
+            return Ok(());
+        };
+
+        // 先记下 PID：kill 后未能确认退出时需要按 PID 精确兜底清杀
+        let pid = child.id();
+        info!("Stopping mihomo (PID {})", pid.unwrap_or(0));
+        *self.status.lock().unwrap() = CoreStatus::Stopping;
+
+        // 1. 温和 kill（错误不立即失败——可能进程刚好已退出；交由确认轮询判定）
+        let kill_result = child.kill().await;
+        if let Err(e) = &kill_result {
+            debug!("kill() reported error (may already be gone): {}", e);
+        }
+
+        // 2. 确认是否真正退出（轮询 try_wait，不依赖可能被取消的 wait()）
+        let mut stopped = self
+            .confirm_child_exit(&mut child, Duration::from_secs(3))
+            .await;
+        let mut failure_reason: Option<String> = None;
+
+        // 3. 未退出：taskkill /PID /F 强杀，且检查其退出码与进程是否真消失
+        if !stopped {
+            match pid {
+                Some(pid) => {
+                    warn!(
+                        "mihomo did not exit after kill; taskkill fallback (PID {})",
+                        pid
+                    );
+                    match std::process::Command::new("taskkill")
+                        .args(["/PID", &pid.to_string(), "/F"])
+                        .status()
+                    {
+                        Ok(status) if status.success() => {
+                            // taskkill 退出码 0 只代表它发出了终止请求，仍需确认进程消失
+                            stopped = self
+                                .confirm_child_exit(&mut child, Duration::from_secs(2))
+                                .await;
+                            if !stopped {
+                                failure_reason = Some(format!(
+                                    "taskkill /PID {} exited 0 but process is still alive",
+                                    pid
+                                ));
+                            }
+                        }
+                        Ok(status) => {
+                            failure_reason = Some(format!(
+                                "taskkill /PID {} failed with exit code {}",
+                                pid,
+                                status.code().unwrap_or(-1)
+                            ));
+                        }
+                        Err(e) => {
+                            failure_reason =
+                                Some(format!("taskkill /PID {} could not be started: {}", pid, e));
                         }
                     }
-                    None => warn!("mihomo did not exit after kill and no PID available"),
+                }
+                None => {
+                    failure_reason =
+                        Some("child has no PID and did not exit after kill".to_string());
                 }
             }
         }
-        *self.status.lock().unwrap() = CoreStatus::Stopped;
-        info!("mihomo stopped");
-        Ok(())
+
+        if stopped {
+            // P0-8：进程确认退出后立即清空 PID 缓存，防止 PID 被系统复用后误杀
+            self.clear_pid_cache();
+            *self.status.lock().unwrap() = CoreStatus::Stopped;
+            info!("mihomo stopped");
+            Ok(())
+        } else {
+            // 停止失败：保留可追踪的 PID（供退出清理兜底），进入 Error 并推送事件
+            if let Some(pid) = pid {
+                self.set_pid_cache(pid);
+            }
+            // Keep the handle so a subsequent user-initiated stop can retry the
+            // termination instead of clearing the last PID while the process lives.
+            *self.child.lock().unwrap() = Some(child);
+            let msg = format!(
+                "failed to stop mihomo (PID {}): {}",
+                pid.map(|p| p.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                failure_reason.unwrap_or_else(|| "unknown reason".to_string())
+            );
+            error!("{msg}");
+            let err = Error::Other(msg);
+            Err(self.transition_to_error_and_emit(err))
+        }
     }
 
     /// 重启 mihomo
