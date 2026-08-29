@@ -90,6 +90,10 @@ settings:
   open_data_dir: "打开数据目录"
   core_version: "核心版本"
   check_update: "检查更新"
+  degraded_banner: "检测到 config.yaml 损坏且自动迁移失败，应用正在使用默认配置运行（降级模式）。原文件未被覆盖，已备份到：{path}"
+  degraded_backup_fallback: "（备份位置见数据目录，文件名 config.yaml.corrupt-*.bak）"
+  degraded_confirm: "我确认备份位置无误，保存时覆盖损坏的 config.yaml"
+  degraded_save_blocked: "config.yaml 已损坏。请在降级提示中确认备份位置并勾选「我确认覆盖损坏的配置文件」后再保存。"
 
 general:
   title: "常规设置"

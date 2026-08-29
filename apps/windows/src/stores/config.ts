@@ -12,6 +12,11 @@ export const useConfigStore = defineStore("config", {
     /** load 成功时的基线快照：save() 只提交与它的顶层键差异，避免整包回传
      *  覆盖用户停留设置页期间托盘等其他入口改过的字段。 */
     baseline: null as ClashConfig | null,
+    /** P0 降级模式：config.yaml 损坏且迁移失败时后端以默认配置运行。UI 必须
+     *  明确告知用户并阻止无确认的普通保存（后端同时二次拦截）。 */
+    degraded: false,
+    degradedBackupFile: null as string | null,
+    degradedMessage: "",
   }),
   getters: {
     mixedPort: (s) => s.config?.["mixed-port"] ?? 7890,
@@ -33,6 +38,21 @@ export const useConfigStore = defineStore("config", {
       this.baseline = JSON.parse(JSON.stringify(this.config));
       return this.config;
     },
+    /** 拉取降级模式信息（独立于 config 本体，避免把 degraded 字段混入
+     *  config.yaml 序列化）。 */
+    async loadDegradedInfo() {
+      try {
+        const info = await configApi.getConfigDegraded();
+        this.degraded = info.degraded;
+        this.degradedBackupFile = info.backup_file;
+        this.degradedMessage = info.message;
+      } catch {
+        this.degraded = false;
+        this.degradedBackupFile = null;
+        this.degradedMessage = "";
+      }
+      return this.degraded;
+    },
     /** 计算当前配置相对基线的顶层键差异。
      *  顶层键含 tun/dns 等嵌套对象：structuredClone 出来的 baseline 与 config 是
      *  两个独立对象引用，`!==` 恒为 true，会让"只改一个普通字段保存"也把 tun/dns
@@ -53,20 +73,20 @@ export const useConfigStore = defineStore("config", {
       }
       return patch;
     },
-    async save() {
+    async save(acknowledgeCorruptConfig = false) {
       // 失败时由调用方捕获处理；此处不修改内存状态。
       if (!this.config) return;
       const patch = this.diffFromBaseline();
       if (Object.keys(patch).length === 0) return;
-      await configApi.updateFields(patch);
+      await configApi.updateFields(patch, acknowledgeCorruptConfig);
       // 成功后重新 load 刷新内存与基线（后端可能还有校验修正）。
       await this.load();
     },
     /** 就地修改部分字段后仅提交这些顶层键（update_config_fields 浅合并）。
      *  先调后端，成功后再改内存与基线，失败时抛错且内存不变（避免假保存）。 */
-    async patch(partial: Partial<ClashConfig>) {
+    async patch(partial: Partial<ClashConfig>, acknowledgeCorruptConfig = false) {
       if (!this.config) return;
-      await configApi.updateFields(partial);
+      await configApi.updateFields(partial, acknowledgeCorruptConfig);
       const next = { ...this.config, ...partial };
       this.config = next;
       if (this.baseline) {

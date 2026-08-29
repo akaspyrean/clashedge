@@ -164,14 +164,21 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
         }
     };
 
-    // 3. 失败回滚
+    // 3. 失败回滚。回滚持久化失败不得静默吞掉——否则 config.yaml 停在
+    //    新值而运行时是旧值，违反五态一致。返回合并错误让调用方与用户感知。
     if let Err(e) = applied {
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();
-        cfg.general.proxy_mode = old_mode;
-        let _ = cfg_mgr.set_config(cfg);
+        cfg.general.proxy_mode = old_mode.clone();
+        let rb = cfg_mgr.set_config(cfg);
         error!("apply_proxy_mode({}) failed, rolled back: {}", mode, e);
-        return Err(e);
+        return Err(match rb {
+            Ok(()) => e,
+            Err(rb_err) => Error::Other(format!(
+                "apply_proxy_mode({}) failed ({}), and rollback also failed: {}",
+                mode, e, rb_err
+            )),
+        });
     }
 
     info!("Proxy mode set to {}", mode);
@@ -400,12 +407,19 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     };
     if let Err(e) = reg_result {
         // 3. 回滚配置意图。registry/journal 的安全回滚由统一 helper 负责。
+        //    回滚持久化失败不得静默吞掉（五态一致）。
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();
         cfg.general.system_proxy = old;
-        let _ = cfg_mgr.set_config(cfg);
+        let rb = cfg_mgr.set_config(cfg);
         error!("apply_system_proxy({}) failed, rolled back: {}", enable, e);
-        return Err(e);
+        return Err(match rb {
+            Ok(()) => e,
+            Err(rb_err) => Error::Other(format!(
+                "apply_system_proxy({}) failed ({}), and rollback also failed: {}",
+                enable, e, rb_err
+            )),
+        });
     }
 
     info!(
@@ -504,14 +518,20 @@ pub(crate) async fn activate_profile_locked(app: &AppHandle, name: &str) -> Resu
         }
     };
 
-    // 3. 失败回滚
+    // 3. 失败回滚。回滚持久化失败不得静默吞掉（五态一致）。
     if let Err(e) = applied {
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();
-        cfg.general.profile = old;
-        let _ = cfg_mgr.set_config(cfg);
+        cfg.general.profile = old.clone();
+        let rb = cfg_mgr.set_config(cfg);
         error!("activate_profile({}) failed, rolled back: {}", safe, e);
-        return Err(e);
+        return Err(match rb {
+            Ok(()) => e,
+            Err(rb_err) => Error::Other(format!(
+                "activate_profile({}) failed ({}), and rollback also failed: {}",
+                safe, e, rb_err
+            )),
+        });
     }
 
     info!("Profile activated: {}", safe);

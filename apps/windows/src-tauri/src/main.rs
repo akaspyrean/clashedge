@@ -345,6 +345,7 @@ pub fn run() {
             crate::commands::core::reload_config,
             // Config commands
             crate::commands::config::get_config,
+            crate::commands::config::get_config_degraded,
             crate::commands::config::update_config,
             crate::commands::config::update_config_fields,
             crate::commands::config::reset_config,
@@ -463,6 +464,24 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
         }
     }
 
+    // A1：尽力卸载 TUN，避免强杀 mihomo 后 wintun 虚拟网卡/接管路由残留。
+    // 仅在配置开启了 TUN 且核心仍在运行时，向 mihomo 控制器发
+    // PATCH /configs {tun:{enable:false}} 让其优雅拆除虚拟网卡/路由；
+    // 2s 硬超时，任何失败都不阻断退出（随后仍会按 PID taskkill 兜底）。
+    // CoreManager::apply_tun 是纯 REST PATCH（不持久化、不重启），适合退出路径。
+    let tun_enabled = state.config_manager.lock().unwrap().get_config().tun.enable;
+    if tun_enabled {
+        if let Some(core) = state.core_manager.get() {
+            if core.is_running() {
+                let _ = tauri::async_runtime::block_on(async {
+                    tokio::time::timeout(std::time::Duration::from_secs(2), core.apply_tun(false))
+                        .await
+                });
+                info!("Best-effort TUN disable sent before exit kill");
+            }
+        }
+    }
+
     // 复读验证与 journal 清除已由 release_owned_proxy 完成：系统代理
     //    恢复并验证成功后 journal 已被清除。Mihomo 的停止与 journal 完全解耦——
     //    Mihomo 停止失败只记录错误，绝不重新创建或保留 proxy journal。
@@ -470,6 +489,8 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     //    实时 PID；锁被 async 任务占用时退回 supervisor 维护的 PID 缓存。
     //    两者都没有（本会话从未成功启动过核心）就什么都不杀——绝不按
     //    进程名 taskkill，避免误杀用户另行运行的 mihomo。
+    //    P0-8：按 PID 杀之前必须做所有权校验（映像路径匹配），防止 PID 被
+    //    系统复用后误杀无关进程。
     let pid = {
         match state.core_manager.get() {
             Some(core) => core.child_pid(),
@@ -487,19 +508,32 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
         }
     });
     if let Some(pid) = pid {
-        info!("Killing mihomo (PID {}) on exit", pid);
-        let stopped = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
-        if !stopped {
-            // journal 已在代理恢复成功后清除；Mihomo 停止失败只记录错误，
-            // 不得重新创建或保留 proxy journal。
+        let expected_path = state
+            .core_manager
+            .get()
+            .map(|c| c.mihomo_binary_path())
+            .or_else(|| crate::util::paths::get_mihomo_path(app_handle).ok());
+        if !owns_pid(&pid, expected_path.as_deref()) {
+            // PID 所有权无法确认（映像路径不匹配/解析失败）→ 宁可不动，绝不误杀。
             error!(
-                "Failed to stop Mihomo PID {} during exit; system proxy was restored and journal already cleared, this error is logged only",
+                "Refusing to kill PID {} on exit: image path does not match ClashEdge's mihomo binary (ownership cannot be confirmed). This PID may have been reused.",
                 pid
             );
+        } else {
+            info!("Killing mihomo (PID {}) on exit (ownership verified)", pid);
+            let stopped = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !stopped {
+                // journal 已在代理恢复成功后清除；Mihomo 停止失败只记录错误，
+                // 不得重新创建或保留 proxy journal。
+                error!(
+                    "Failed to stop Mihomo PID {} during exit; system proxy was restored and journal already cleared, this error is logged only",
+                    pid
+                );
+            }
         }
     } else {
         info!(
@@ -507,6 +541,59 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
              (will not touch unrelated mihomo processes)"
         );
     }
+}
+
+/// P0-8：PID 所有权校验——该 PID 对应进程的映像路径是否确认为 ClashEdge
+/// 的 mihomo 二进制。用 OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) +
+/// QueryFullProcessImageNameW 读取映像路径，与期望路径（canonicalize 归一）
+/// 比对。任一环节失败（进程已不存在/权限不足/路径解析失败）一律返回 false
+/// ——fail-closed，绝不误杀无关进程。
+#[cfg(target_os = "windows")]
+fn owns_pid(pid: &u32, expected_path: Option<&std::path::Path>) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let Some(expected_path) = expected_path else {
+        return false;
+    };
+    let expected =
+        std::fs::canonicalize(expected_path).unwrap_or_else(|_| expected_path.to_path_buf());
+    let expected_upper = expected.to_string_lossy().to_uppercase();
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, *pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if ok == 0 {
+            return false;
+        }
+        let image = String::from_utf16_lossy(&buf[..size as usize]);
+        let image_path = std::path::PathBuf::from(&image);
+        let image_canonical = std::fs::canonicalize(&image_path).unwrap_or(image_path);
+        let image_norm = image_canonical.to_string_lossy().to_uppercase();
+        let matched = image_norm == expected_upper;
+        if !matched {
+            warn!(
+                "PID {} image path '{}' does not match expected mihomo '{}'; ownership rejected",
+                pid,
+                image,
+                expected.display()
+            );
+        }
+        matched
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn owns_pid(_pid: &u32, _expected_path: Option<&std::path::Path>) -> bool {
+    // 非 Windows 平台无 taskkill；退出清理路径本就不该杀进程，直接拒绝。
+    false
 }
 
 fn main() {

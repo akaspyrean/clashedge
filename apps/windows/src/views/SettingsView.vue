@@ -57,6 +57,10 @@ const autostartLoading = ref(false);
 
 const tunLoading = ref(false);
 
+/** P0 降级模式：用户确认备份位置并同意覆盖损坏 config.yaml 后，保存才放行
+ * （后端同样二次拦截未确认的保存）。 */
+const degradedConfirmed = ref(false);
+
 const allowLanAdvancedOpen = ref<string[]>([]);
 
 /** 局域网 CIDR 白名单：输入框逗号/换行分隔文本 <-> string[]。 */
@@ -91,6 +95,8 @@ let unlisteners: UnlistenFn[] = [];
 
 onMounted(async () => {
   if (!configStore.config) await configStore.load();
+  // P0 降级模式：损坏配置下提示用户备份位置（独立于 config 本体）。
+  await configStore.loadDegradedInfo();
   try {
     geo.value = await geodataApi.status();
   } catch {
@@ -138,7 +144,13 @@ function errText(e: unknown): string {
 
 async function onSave() {
   try {
-    await configStore.save();
+    // P0：降级模式下普通保存必须带用户确认（勾选降级横幅中的复选框）。
+    // 后端在未确认时同样拒绝，前端这里提前给可操作的错误提示。
+    if (configStore.degraded && !degradedConfirmed.value) {
+      ElMessage.error(t("settings.degraded_save_blocked"));
+      return;
+    }
+    await configStore.save(degradedConfirmed.value);
     ElMessage.success(t("common.success"));
   } catch (e) {
     ElMessage.error(errText(e));
@@ -300,6 +312,31 @@ async function onUpdateGeo() {
 <template>
   <div v-if="configStore.config" ref="pageEl" class="page">
     <h2 class="page-title">{{ $t("settings.title") }}</h2>
+
+    <!-- P0 降级模式横幅：config.yaml 损坏时明确告知用户并阻止无确认保存 -->
+    <el-alert
+      v-if="configStore.degraded"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="degraded-alert"
+      :title="configStore.degradedMessage"
+    >
+      <template #default>
+        <div class="degraded-body">
+          <div>
+            {{
+              configStore.degradedBackupFile
+                ? $t("settings.degraded_banner", { path: configStore.degradedBackupFile })
+                : $t("settings.degraded_backup_fallback")
+            }}
+          </div>
+          <el-checkbox v-model="degradedConfirmed">
+            {{ $t("settings.degraded_confirm") }}
+          </el-checkbox>
+        </div>
+      </template>
+    </el-alert>
 
     <el-tabs :tab-position="compactTabs ? 'top' : 'left'" class="settings-tabs">
       <!-- 常规 -->
@@ -534,6 +571,19 @@ async function onUpdateGeo() {
 </template>
 
 <style scoped>
+.degraded-alert {
+  margin-bottom: 14px;
+  max-width: 680px;
+}
+
+.degraded-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+
 .settings-form {
   max-width: 680px;
 }

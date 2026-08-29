@@ -90,6 +90,10 @@ settings:
   open_data_dir: "Open Data Directory"
   core_version: "Core Version"
   check_update: "Check for Updates"
+  degraded_banner: "config.yaml is corrupted and auto-migration failed; the app is running in degraded mode with default settings. Your original file was NOT overwritten and is backed up at: {path}"
+  degraded_backup_fallback: "(backup location is under the data directory as config.yaml.corrupt-*.bak)"
+  degraded_confirm: "I have confirmed the backup location; overwrite the corrupted config.yaml when saving"
+  degraded_save_blocked: "config.yaml is corrupted. Confirm the backup location in the degraded-mode notice and tick “I confirm overwriting the corrupted config.yaml” before saving."
 
 general:
   title: "General Settings"

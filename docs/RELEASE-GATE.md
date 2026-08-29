@@ -3,15 +3,15 @@
 > 适用版本：自 0.8.8 起的每个候选发布版；1.0 发布前必须全量通过。
 > 规则：每一项都必须在真实 Windows 实机（便携包形态）上执行并勾选，任何一项不通过即阻断发布。
 > 背景与问题定位见 `docs/AUDIT-0.8.7.md`。
-> 当前状态：v1.0.4 已发布；`main` 为 v1.0.5 候选版。自动化数量与实机结果以本文件最近一次记录为准，不沿用旧版本数字。
-> **2026-08-27 决定**：经用户确认，v1.0.5 本轮**跳过全部实机代理 Gate**（第四节 A–H、第二节实机项、第六节真实升级项维持未勾选），以当前自动化验收结果收尾发布；实机项留待下轮补测，本文件记录如实保留。
+> 当前状态：`main` 为 v1.0.7（commit `6a1ed446e6bbb078a526a4eeee13da0d934f71a3`；本文档更新日期 2026-08-28）。**旧版本（≤ v1.0.6，含 v1.0.5 本轮跳过 Gate 的决定）的自动化/实机结果不作为 v1.0.7+ 的放行证据**，以下历史记录仅作对照。
+> **2026-08-27 决定**：经用户确认，v1.0.5 本轮**跳过全部实机代理 Gate**（第四节 A–H、第二节实机项、第六节真实升级项维持未勾选），以当前自动化验收结果收尾发布；实机项留待下轮补测，本文件记录如实保留。**该决定仅适用于 v1.0.5，不适用于后续版本。**
 
 ## 当前已知阻断项
 
 - [x] **设置页从文件导入 YAML 的 fs 权限**：已确认修复——前端不再使用 plugin-fs 读文件，统一走后端 Rust command `read_import_file`（前端零 fs 依赖）。2026-08-23 核查。
 
 ## 实测记录（2026-08-23，v1.0.0 便携包，脚本化实机测试）
-> v1.0.4 的完整实机 Gate 尚未留存全量记录；下表为 v1.0.0 基线实机记录，供对照，不能作为 v1.0.5 放行证据。
+> v1.0.4 的完整实机 Gate 尚未留存全量记录；下表为 v1.0.0 基线实机记录，供对照，不能作为 v1.0.5 放行证据，亦不能作为 v1.0.7 放行证据。
 
 | 测试 | 结果 | 证据 |
 | --- | --- | --- |
@@ -25,16 +25,20 @@
 
 ## 一、构建与校验
 
-- [x] `cargo fmt --check`（2026-08-27）
-- [x] `cargo clippy --all-targets -- -D warnings`（2026-08-27）
-- [x] `npm run build`（vue-tsc 类型检查 + Vite 生产构建）零错误（2026-08-27，Vitest 20/20、build 成功）
-- [x] `cargo test --all-targets`：**106/106 通过，1 个需真实 Mihomo/网络的手工 Gate 默认忽略**（2026-08-27；HKCU 仅使用测试专用子键）
-- [x] `npm run tauri -- build --no-bundle`：原样命令复测**完整通过**（npm 12.0.2，vite 构建 + cargo release 2m36s，产出 `target\release\ClashEdge.exe`，exit 0）；当日早前记录的「npm 错解析 `--no-bundle`」无法复现，`--` 后参数透传实测正常（2026-08-27）
-- [x] `cargo audit`：0 已知漏洞；17 条 unmaintained/unsound 警告已在 `src-tauri/.cargo/audit.toml` 逐条书面豁免（12 条经 `cargo tree -i --target x86_64-pc-windows-msvc` 证实为 Linux 专有链、Windows 构建图不可达；5 条 unic 为 tauri-utils→urlpattern 传递依赖、无已知漏洞且无兼容升级可消除）（2026-08-27）
-- [x] `scripts/windows/build-portable.ps1` 打包成功：前置校验、csc 编译根启动器、后置断言全部通过——9/9 invariants（2026-08-27）
-- [x] 产物 zip 与 .sha256 一致，SHA256 校验通过（2026-08-27）
-- [x] 版本号三处一致：tauri.conf.json / package.json / Cargo.toml = **1.0.5**（2026-08-27）
-- [x] 产物绝对路径泄露扫描通过（27 个文件，2026-08-27）
+> 下表 2026-08-27 各项为上一轮（v1.0.5 候选）自动化验收记录。**2026-08-28 已对 v1.0.7 逐一复验**，复验结果以本表下方新增记录为准；任何项在当前 v1.0.7 未复验前不构成放行证据。
+
+- [x] `cargo fmt --check`：**v1.0.7 复验通过**（2026-08-28，含本轮全部改动后 clean）
+- [x] `cargo clippy --all-targets -- -D warnings`：**v1.0.7 复验通过**（2026-08-28，0 warnings）
+- [x] `npm run build`（vue-tsc 类型检查 + Vite 生产构建）：**v1.0.7 复验通过**（2026-08-28，零错误，产物含降级横幅改动）
+- [x] `cargo test --all-targets`：**v1.0.7 复验：136/136 通过，1 个需真实 Mihomo/网络的手工 Gate 默认忽略**（2026-08-28；新增：fetch SSRF 白名单/重定向 deadline、update_config_fields 并发、degraded 备份查找等测试；HKCU 仅使用测试专用子键）
+- [x] `node node_modules/@tauri-apps/cli/tauri.js build --no-bundle`：**v1.0.7 复验通过**，产出 `target\release\ClashEdge.exe`（2026-08-28）
+- [x] `cargo audit`：**v1.0.7 复验：1226 条 RustSec 公告，0 已知漏洞，exit 0**（2026-08-28；17 条 unmaintained/unsound 警告已在 `src-tauri/.cargo/audit.toml` 逐条书面豁免，见上轮记录；本机因 libgit2 不走 git CLI 代理，需注入 `HTTPS_PROXY` 环境变量完成拉取——CI 直连无此问题）
+- [x] `npm audit --audit-level=high`：**v1.0.7 复验：0 vulnerabilities**（2026-08-28，官方 registry https://registry.npmjs.org）
+- [x] `scripts/windows/build-portable.ps1` 打包成功：**v1.0.7 复验——9/9 invariants + 绝对路径泄露扫描 27 文件 OK**（2026-08-28）
+- [x] 产物 zip 与 .sha256 一致，SHA256 校验通过：**v1.0.7** `ClashEdge-portable-win64.zip` = `6e167da704a434a3c27651d9c6fff46d9eb9e345d158a056686eb89c3694d8b5`（2026-08-28）
+- [x] Launcher 故障注入 `--test-recovery`：**v1.0.7 复验——48/48 断言 PASS**（2026-08-28；含新增 launcher 自更新断电点 T-l1~T-l8）
+- [x] 版本号三处一致：tauri.conf.json / package.json / Cargo.toml = **1.0.7**（2026-08-28 复验一致）
+- [x] 产物绝对路径泄露扫描通过（27 个文件，2026-08-28 复验 OK）
 
 ## 二、核心生命周期与状态一致性
 
@@ -112,8 +116,16 @@
 
 ---
 
+
+## Android 平台范围说明
+
+- Android 为**实验性/规划中**，**不在本 Gate 范围内**：当前缺少 gradle wrapper（无可执行的 `gradlew` / `gradlew.bat`）、Mihomo AAR/JNI 为占位实现（无真实 VPN 内核集成）、无 release 签名配置，因此无法提供真实 VPN 服务。现状与进入发布范围的前置条件清单见 `apps/android/README.md`。
+
+---
+
 ## 通过标准
 
 - 「当前已知阻断项」必须解决；
 - 第一至第五、七节全部勾选；
-- 第六节在 Phase 3 完成后纳入硬性门槛，1.0 必须全量通过。
+- 第六节在 Phase 3 完成后纳入硬性门槛，1.0 必须全量通过；
+- Android 不在本 Gate 范围内（实验性/规划中，见 `apps/android/README.md`）；Windows 便携包为唯一正式发布形态。

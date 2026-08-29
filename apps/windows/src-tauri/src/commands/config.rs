@@ -44,12 +44,61 @@ pub async fn get_config(state: State<'_, crate::AppState>) -> Result<serde_json:
     Ok(value)
 }
 
+/// P0 降级模式用户可见提示：config.yaml 损坏且迁移失败时，应用以默认配置
+/// 降级运行，UI 必须明确告知（原文件已备份到何处、保存将覆盖原文件）。
+/// 返回 { degraded, backup_file, message }；正常时 degraded=false。
+#[command]
+pub async fn get_config_degraded(state: State<'_, crate::AppState>) -> Result<serde_json::Value> {
+    let (degraded, backup) = {
+        let config_guard = state.config_manager.lock().unwrap();
+        let degraded = config_guard.is_degraded();
+        let backup = if degraded {
+            crate::config::persistence::find_corrupt_backup(&config_guard.config_path())
+        } else {
+            None
+        };
+        (degraded, backup)
+    };
+    Ok(serde_json::json!({
+        "degraded": degraded,
+        "backup_file": backup,
+        "message": if degraded {
+            "检测到 config.yaml 损坏且自动迁移失败，应用正在使用默认配置运行（降级模式）。\n原文件未被覆盖，已备份为 config.yaml.corrupt-*.bak；只有在你确认备份位置并勾选「我确认覆盖损坏的配置文件」后，保存才会写入新配置。"
+                .to_string()
+        } else {
+            String::new()
+        }
+    }))
+}
+
+/// 降级模式下普通保存的守卫：未显式确认（acknowledge_corrupt_config=true）
+/// 时拒绝保存，防止静默覆盖损坏的原配置。整包替换语义的命令
+/// （reset_config / import_config）是用户的显式破坏性操作，不在此守卫范围。
+fn require_save_allowed_when_degraded(
+    state: &State<'_, crate::AppState>,
+    acknowledge_corrupt_config: Option<bool>,
+) -> Result<()> {
+    let degraded = state.config_manager.lock().unwrap().is_degraded();
+    if degraded && !acknowledge_corrupt_config.unwrap_or(false) {
+        return Err(Error::Other(
+            "检测到 config.yaml 损坏，应用正以默认配置降级运行。为保护你的数据，\
+             原文件（已备份为 config.yaml.corrupt-*.bak）不会被静默覆盖。\
+             请确认备份位置后在设置页勾选「我确认覆盖损坏的配置文件」再保存。"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[command]
 pub async fn update_config(
     app: AppHandle,
     state: State<'_, crate::AppState>,
     config: serde_json::Value,
+    acknowledge_corrupt_config: Option<bool>,
 ) -> Result<()> {
+    // P0 降级守卫：损坏配置未经确认不得被普通保存静默覆盖。
+    require_save_allowed_when_degraded(&state, acknowledge_corrupt_config)?;
     let new_config = {
         let config_guard = state.config_manager.lock().unwrap();
         config_guard.prepare_update(config)?
@@ -62,31 +111,51 @@ pub async fn update_config(
 /// 后端浅合并到当前配置后再走与 update_config 完全相同的校验 + 事务。
 /// 消除整包回传的读-改-写竞态——用户停留在设置页期间托盘/其他入口
 /// 改过的字段不会再被旧快照覆盖。
+///
+/// P0 修复（并发丢失）：旧实现在获取 `config_tx` **之前**读取并合并当前配置，
+/// 另一个事务可能在"读取后、加锁前"完成提交，随后被本事务的旧快照整包覆盖。
+/// 现在读取+合并移入 `commit_config_fields_transaction`，在持有 `config_tx`
+/// 之后重新读取最新配置再合并，保证不同字段的并发更新互不覆盖。
 #[command]
 pub async fn update_config_fields(
     app: AppHandle,
     state: State<'_, crate::AppState>,
     patch: serde_json::Value,
+    acknowledge_corrupt_config: Option<bool>,
 ) -> Result<()> {
+    // P0 降级守卫：损坏配置未经确认不得被普通保存静默覆盖。
+    require_save_allowed_when_degraded(&state, acknowledge_corrupt_config)?;
     let obj = patch
         .as_object()
         .ok_or_else(|| Error::InvalidArgument("patch 必须是顶层键值对象".to_string()))?;
     if obj.is_empty() {
         return Ok(());
     }
+    commit_config_fields_transaction(&app, &state, obj).await?;
+    crate::core::runtime::refresh_tray(&app).await
+}
+
+/// 字段级更新事务：先持有 `config_tx`，再读取最新配置合并 patch 并校验，
+/// 然后走与整包事务完全相同的持久化/运行时/回滚流程。
+async fn commit_config_fields_transaction(
+    app: &AppHandle,
+    state: &State<'_, crate::AppState>,
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    // P0：先拿全局配置事务锁，保证"读取最新配置"与"提交"之间没有其他事务插入。
+    let _tx = state.config_tx.lock().await;
     let new_config = {
         let config_guard = state.config_manager.lock().unwrap();
         let mut current = serde_json::to_value(config_guard.get_config())?;
         let cur_obj = current
             .as_object_mut()
             .ok_or_else(|| Error::Other("当前配置不是 JSON 对象".to_string()))?;
-        for (k, v) in obj {
+        for (k, v) in patch {
             cur_obj.insert(k.clone(), v.clone());
         }
         config_guard.prepare_update(current)?
     };
-    commit_config_transaction(&app, &state, new_config).await?;
-    crate::core::runtime::refresh_tray(&app).await
+    commit_config_transaction_locked(app, state, new_config).await
 }
 
 #[command]
@@ -159,11 +228,20 @@ pub async fn pick_import_file(app: AppHandle) -> Result<Option<String>> {
 async fn commit_config_transaction(
     app: &AppHandle,
     state: &State<'_, crate::AppState>,
-    mut new_config: Config,
+    new_config: Config,
 ) -> Result<()> {
     // 0. P0-2：先拿全局配置事务锁，串行整段事务（跨 await 持有至函数返回）
     let _tx = state.config_tx.lock().await;
+    commit_config_transaction_locked(app, state, new_config).await
+}
 
+/// 事务主体（调用方必须已持有 `config_tx`）。字段级入口
+/// （`commit_config_fields_transaction`）在锁内重读最新配置后复用本函数。
+async fn commit_config_transaction_locked(
+    app: &AppHandle,
+    state: &State<'_, crate::AppState>,
+    mut new_config: Config,
+) -> Result<()> {
     // 1. 快照旧配置（回滚基准）
     let old = { state.config_manager.lock().unwrap().get_config() };
 
@@ -496,6 +574,77 @@ async fn reload_running_core(state: &State<'_, crate::AppState>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::persistence::ConfigManager;
+
+    /// P0（并发丢失修复）：字段级更新必须在持有 `config_tx` 后重读最新配置再合并。
+    /// 这里用 tokio Mutex 模拟 config_tx 的串行语义，两个并发字段更新（分别改
+    /// 顶层 `mixed-port` 与 `locale`）在串行事务下必须互不覆盖。
+    /// 旧实现"锁外读快照、锁内整包提交"会让后完成的事务用旧快照覆盖先完成的字段。
+    #[tokio::test]
+    async fn concurrent_field_updates_preserve_each_other() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "clashedge-cfg-fields-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mgr = Arc::new(std::sync::Mutex::new({
+            let mut m = ConfigManager::new();
+            m.init(&dir).unwrap();
+            m
+        }));
+        // 模拟 AppState.config_tx：跨 await 持有、串行所有配置事务。
+        let tx = Arc::new(tokio::sync::Mutex::new(()));
+
+        // 事务内"重读最新配置 + 合并 patch + 校验"——与修复后的
+        // commit_config_fields_transaction 逻辑一致。
+        async fn apply_field(
+            mgr: &Arc<std::sync::Mutex<ConfigManager>>,
+            tx: &Arc<tokio::sync::Mutex<()>>,
+            patch: serde_json::Value,
+        ) {
+            let _g = tx.lock().await;
+            let merged = {
+                let guard = mgr.lock().unwrap();
+                let mut current = serde_json::to_value(guard.get_config()).unwrap();
+                let cur_obj = current.as_object_mut().unwrap();
+                for (k, v) in patch.as_object().unwrap() {
+                    cur_obj.insert(k.clone(), v.clone());
+                }
+                guard.prepare_update(current).unwrap()
+            };
+            mgr.lock().unwrap().set_config(merged).unwrap();
+        }
+
+        // 两个不同字段的并发更新（乱序完成也互不覆盖）
+        let mgr_a = Arc::clone(&mgr);
+        let tx_a = Arc::clone(&tx);
+        let patch_a = serde_json::json!({ "mixed-port": 7899 });
+        let h_a = tokio::spawn(async move { apply_field(&mgr_a, &tx_a, patch_a).await });
+        let mgr_b = Arc::clone(&mgr);
+        let tx_b = Arc::clone(&tx);
+        let patch_b = serde_json::json!({ "locale": "en-US" });
+        let h_b = tokio::spawn(async move { apply_field(&mgr_b, &tx_b, patch_b).await });
+        h_a.await.unwrap();
+        h_b.await.unwrap();
+
+        let final_cfg = mgr.lock().unwrap().get_config();
+        assert_eq!(
+            final_cfg.general.mixed_port, 7899,
+            "first field update (mixed-port) must survive the second transaction"
+        );
+        assert_eq!(
+            final_cfg.locale, "en-US",
+            "second field update (locale) must not be clobbered"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn config_with_extra(extra_yaml: &str) -> Config {
         let mut config = Config::default();

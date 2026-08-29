@@ -84,11 +84,23 @@ export interface ClashConfig {
 
 export const configApi = {
   get: () => invoke<ClashConfig>("get_config"),
-  update: (config: ClashConfig) => invoke<void>("update_config", { config }),
+  /** 降级模式信息：config.yaml 损坏时 degraded=true，backup_file 给出备份路径。
+   *  前端据此展示横幅并阻止无确认的普通保存（P0）。 */
+  getConfigDegraded: () =>
+    invoke<{
+      degraded: boolean;
+      backup_file: string | null;
+      message: string;
+    }>("get_config_degraded"),
+  /** 整包保存。acknowledgeCorruptConfig=true 表示用户已在降级横幅中确认备份位置
+   *  并明确同意覆盖损坏的 config.yaml；未确认时后端拒绝保存（P0 数据保护）。 */
+  update: (config: ClashConfig, acknowledgeCorruptConfig?: boolean) =>
+    invoke<void>("update_config", { config, acknowledgeCorruptConfig }),
   /** 浅合并保存：仅提交 patch 中出现的顶层键（kebab-case），其余键保持后端现值。
-   *  用于避免整包回传把用户停留期间其他入口（托盘等）修改的字段覆盖回去。 */
-  updateFields: (patch: Record<string, unknown>) =>
-    invoke<void>("update_config_fields", { patch }),
+   *  用于避免整包回传把用户停留期间其他入口（托盘等）修改的字段覆盖回去。
+   *  acknowledgeCorruptConfig 语义同 update()。 */
+  updateFields: (patch: Record<string, unknown>, acknowledgeCorruptConfig?: boolean) =>
+    invoke<void>("update_config_fields", { patch, acknowledgeCorruptConfig }),
   reset: () => invoke<void>("reset_config"),
   export: () => invoke<string>("export_config"),
   import: (yaml: string) => invoke<void>("import_config", { yaml }),

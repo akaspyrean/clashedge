@@ -35,6 +35,13 @@ jobs:
     steps:
       # B2：所有 action 固定到官方 commit SHA，防止 tag 劫持。
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # Immutable release guard 需要在本地把 refs/tags/<tag>^{commit} 与
+        # github.sha 比对（禁止移动/复用已发布标签）。默认浅克隆（depth=1）
+        # 下 tag 对象图不完整、解析不可靠；本仓库体量小，fetch-depth: 0
+        # 全量拉取成本可忽略，比守卫内按需 fetch 更简单可靠（守卫脚本
+        # 仍保留按需 fetch / GitHub API 兜底，供浅克隆环境本地运行使用）。
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -60,6 +67,32 @@ jobs:
           }
           Write-Host "tag trigger confirmed: $env:GITHUB_REF"
 
+      # B1：Immutable release guard —— 发布不可变守卫，位于一切外部副作用之前。
+      # 判定逻辑在 scripts/release/Protect-ReleaseTag.ps1（由
+      # scripts/release/test-release-guards.ps1 单元测试覆盖），防止三类
+      # 发布安全事故：
+      #   1) 重跑已正式发布（非 draft）的 tag —— 旧实现会先删除公开 Release，
+      #      属于破坏性覆盖，现已禁止；
+      #   2) 标签移动/复用 —— 同一 tag 必须永远指向同一 commit：
+      #      refs/tags/<tag>^{commit} 必须等于 github.sha，否则立即失败；
+      #   3) 既有 draft 与本次构建 commit 不一致 —— 不允许跨 commit 恢复。
+      # 本步骤以 -WhatIfOnly 只读判定并把 decision 写入 GITHUB_OUTPUT，
+      # 实际的 draft 删除重建只发生在后面的 "Create draft release" 步骤
+      # （守卫步骤本身零副作用）。
+      - name: Immutable release guard
+        id: release-guard
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          .\scripts\release\Protect-ReleaseTag.ps1 `
+            -Tag "${{ github.ref_name }}" `
+            -Sha "${{ github.sha }}" `
+            -Repo "${{ github.repository }}" `
+            -WhatIfOnly `
+            -SetGitHubOutput
+
       - name: Read version
         id: meta
         shell: pwsh
@@ -80,9 +113,8 @@ jobs:
           }
           Write-Host "tag $tag matches config version $ver OK"
 
-      # P0-6：签名是强制的。私钥或公钥缺失 => 立即失败，
-      # 绝不允许降级成"纯 SHA256 无身份校验"的自动更新发布。
-      # B3：secrets 通过 env 注入，不插值进脚本文本（避免被 shell 日志/回显展开）。
+      # P0-6：更新清单签名是强制的。私钥或公钥缺失 => 立即失败，
+      # 防止发布无法被客户端验签的更新包。
       - name: Require signing keys (mandatory)
         shell: pwsh
         env:
@@ -99,15 +131,21 @@ jobs:
 
       # B1：创建 draft release 是外部副作用，仅允许 v* tag 触发。
       # 放在 quality gate 之后：quality 失败时不会留下空 draft。
+      # 无条件 delete 已移除：仅当 Immutable release guard 判定既有 draft
+      # 与本次构建指向同一 commit（decision=DELETE_RECREATE_DRAFT）时才删除
+      # 重建（失败重跑的安全恢复场景）；已正式发布的 Release 绝不可能走到
+      # 这里——守卫步骤已 exit 1。
       - name: Create draft release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Idempotent: wipe any stale release (failed-run draft) for this tag, then create fresh.
-          if (gh release view ${{ github.ref_name }} 2>$null) {
+          $decision = "${{ steps.release-guard.outputs.decision }}"
+          if ($decision -eq 'DELETE_RECREATE_DRAFT') {
             gh release delete ${{ github.ref_name }} --yes
+          } elseif ($decision -ne 'CREATE') {
+            throw "Immutable release guard decision is '$decision' — refusing to create a release"
           }
           gh release create ${{ github.ref_name }} `
             --target ${{ github.sha }} `
@@ -124,7 +162,7 @@ jobs:
         working-directory: apps/windows
         env:
           CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
-        run: npm run tauri -- build --no-bundle
+        run: node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
       - name: Assemble portable package + SHA256
         run: .\scripts\windows\build-portable.ps1

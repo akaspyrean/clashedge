@@ -55,7 +55,7 @@ cd apps/windows; npm install; npm run build
 cd apps/windows/src-tauri; cargo test
 
 # 发布构建（一次，产物 target/release/ClashEdge.exe）
-cd apps/windows; npm run tauri -- build --no-bundle
+cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
 # 打包（产物输出到 release/）
 .\scripts\windows\build-portable.ps1
