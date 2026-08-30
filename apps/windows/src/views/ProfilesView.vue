@@ -5,8 +5,10 @@
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { ArrowDown, MoreFilled } from "@element-plus/icons-vue";
 import { profilesApi } from "@/api/profiles";
 import { useProfilesStore } from "@/stores/profiles";
+import { friendlyError } from "@/errors";
 
 const { t } = useI18n();
 const profilesStore = useProfilesStore();
@@ -37,7 +39,7 @@ async function onSubscribe() {
     subscribeUrl.value = "";
     subscribeName.value = "";
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     submitting.value = false;
   }
@@ -60,7 +62,7 @@ async function onCreate() {
     newName.value = "";
     newContent.value = "";
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     submitting.value = false;
   }
@@ -84,7 +86,7 @@ async function onImport() {
     importName.value = "";
     importContent.value = "";
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     submitting.value = false;
   }
@@ -109,7 +111,7 @@ async function onExport() {
   try {
     exportContent.value = await profilesApi.export(name);
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     submitting.value = false;
   }
@@ -121,7 +123,7 @@ async function onActivate(name: string) {
     await profilesStore.activate(name);
     ElMessage.success(t("common.success"));
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 
@@ -132,7 +134,7 @@ async function onUpdate(name: string) {
     await profilesStore.list();
     ElMessage.success(t("common.success"));
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 
@@ -158,7 +160,7 @@ async function onRename() {
     ElMessage.success(t("common.success"));
     renameVisible.value = false;
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     submitting.value = false;
   }
@@ -180,7 +182,7 @@ async function onEditDialogOpen() {
   try {
     editContent.value = await profilesApi.getContent(editing.value);
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 
@@ -193,7 +195,7 @@ async function onEditSave() {
     ElMessage.success(t("common.success"));
     editVisible.value = false;
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     submitting.value = false;
   }
@@ -214,7 +216,7 @@ async function onDelete(name: string) {
     await profilesStore.remove(name);
     ElMessage.success(t("common.success"));
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 </script>
@@ -223,20 +225,30 @@ async function onDelete(name: string) {
   <div class="page">
     <h2 class="page-title">{{ $t("profiles.title") }}</h2>
 
-    <!-- 工具栏：订阅管理 / 新建配置 / 导入配置 / 导出配置 -->
+    <!-- 工具栏：新建（主动作）/ 订阅管理 / 更多（导入/导出收进菜单） -->
     <div class="toolbar">
-      <el-button type="primary" @click="subscribeVisible = true">
-        {{ $t("profiles.subscribe_manage") }}
-      </el-button>
-      <el-button @click="newVisible = true">
+      <el-button type="primary" @click="newVisible = true">
         {{ $t("profiles.new") }}
       </el-button>
-      <el-button @click="importVisible = true">
-        {{ $t("profiles.import") }}
+      <el-button @click="subscribeVisible = true">
+        {{ $t("profiles.subscribe_manage") }}
       </el-button>
-      <el-button @click="onExportOpen">
-        {{ $t("profiles.export") }}
-      </el-button>
+      <el-dropdown trigger="click">
+        <el-button>
+          {{ $t("profiles.more") }}
+          <el-icon class="toolbar-caret"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item @click="importVisible = true">
+              {{ $t("profiles.import") }}
+            </el-dropdown-item>
+            <el-dropdown-item @click="onExportOpen">
+              {{ $t("profiles.export") }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
     </div>
 
     <el-empty
@@ -279,15 +291,24 @@ async function onDelete(name: string) {
           >
             {{ $t("profiles.update") }}
           </el-button>
-          <el-button size="small" @click="onRenameOpen(profile.name)">
-            {{ $t("profiles.rename") }}
-          </el-button>
-          <el-button size="small" @click="onEditOpen(profile.name)">
-            {{ $t("profiles.raw_edit") }}
-          </el-button>
-          <el-button size="small" type="danger" plain @click="onDelete(profile.name)">
-            {{ $t("profiles.delete") }}
-          </el-button>
+          <el-dropdown trigger="click">
+            <el-button size="small" :title="$t('profiles.more')" class="card-more-btn">
+              <el-icon><MoreFilled /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item @click="onRenameOpen(profile.name)">
+                  {{ $t("profiles.rename") }}
+                </el-dropdown-item>
+                <el-dropdown-item @click="onEditOpen(profile.name)">
+                  {{ $t("profiles.raw_edit") }}
+                </el-dropdown-item>
+                <el-dropdown-item divided class="danger-item" @click="onDelete(profile.name)">
+                  {{ $t("profiles.delete") }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           </div>
         </div>
       </el-card>
@@ -442,14 +463,12 @@ async function onDelete(name: string) {
   --el-card-padding: var(--space-3) var(--space-4);
   --el-card-border-radius: var(--r-md);
   border: 1px solid var(--card-border);
-  transition:
-    border-color 0.18s ease,
-    box-shadow 0.18s ease;
+  transition: border-color 0.18s ease;
 }
 
+/* 靠底色与描边分层即可，无阴影（设计系统：卡片默认无阴影）。 */
 .profile-card:hover {
   border-color: var(--border-subtle);
-  box-shadow: 0 2px 12px rgba(16, 24, 40, 0.06);
 }
 
 /* 单卡内：名称/徽标居左，操作按钮居右，紧凑单行 */
@@ -494,6 +513,20 @@ async function onDelete(name: string) {
 
 .card-actions .el-button {
   border-radius: var(--r-sm);
+}
+
+/* ⋯ 按钮与工具栏下拉箭头：紧凑、去多余内边距。 */
+.card-more-btn {
+  padding: 5px 8px;
+}
+
+.toolbar-caret {
+  margin-left: 4px;
+}
+
+/* 下拉菜单中的删除项：语义红但不使用实心底（Quiet Power）。 */
+.card-actions :global(.danger-item) {
+  color: var(--error);
 }
 
 .edit-textarea,

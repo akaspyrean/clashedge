@@ -114,6 +114,7 @@ general:
   auto_update_subscription: "自动更新订阅"
   find_process_mode: "进程查找模式"
   proxy_mode: "代理模式"
+  proxy_mode_hint: "全局 / 规则 / 直连，实时生效"
   profile: "配置文件"
   manage_profiles: "管理配置文件"
 
@@ -177,6 +178,7 @@ profiles:
   new: "新建配置"
   import: "导入配置"
   export: "导出配置"
+  more: "更多"
   subscribe: "订阅"
   subscribe_manage: "订阅管理"
   subscribe_url: "订阅地址"
@@ -283,3 +285,6 @@ common:
   success: "成功"
   warning: "警告"
   info: "信息"
+errors:
+  network: "网络请求失败。请检查网络或代理后重试"
+  port_busy: "端口被占用。请在设置中更换混合端口后重试"

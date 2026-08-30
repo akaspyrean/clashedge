@@ -8,6 +8,7 @@ import { resolveGroupId } from "@/constants/groups";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
+import { friendlyError } from "@/errors";
 
 const proxyStore = useProxyStore();
 const configStore = useConfigStore();
@@ -28,7 +29,7 @@ async function onModeChange(mode: string) {
     await proxyApi.setProxyMode(mode);
     if (configStore.config) configStore.config.mode = mode;
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 
@@ -39,7 +40,7 @@ async function onSelectNode(group: string, proxy: string) {
   try {
     await proxyStore.select(group, proxy);
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     selecting.value = false;
   }
@@ -52,7 +53,7 @@ async function onTestGroup(group: string) {
   try {
     await proxyStore.testOne(group);
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     testingGroups.value.delete(group);
   }
@@ -179,7 +180,6 @@ watch(
         <template #title>
           <div class="group-title">
             <span class="group-name">{{ g.name }}</span>
-            <el-tag size="small" effect="plain">{{ g.type }}</el-tag>
             <span class="group-now">{{ g.now }}</span>
             <el-tag v-if="delayOf(g.name)" size="small" type="info" effect="plain">
               {{ $t("proxies.latency") }} {{ delayOf(g.name) }}

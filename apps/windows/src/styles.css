@@ -428,8 +428,7 @@ html[data-theme="dark"] {
   --el-dialog-bg-color: var(--bg-surface);
 }
 
-/* 页签（Settings 左侧标签）：选中项底色与文字层级统一；
- * 左侧布局收敛导航列宽，标签项高度更紧凑。 */
+/* 页签（Settings）：选中项用强调色 + 中字重，与侧边导航一致。 */
 .el-tabs__item {
   color: var(--text-secondary);
   transition: color var(--dur-fast) ease;
@@ -438,17 +437,6 @@ html[data-theme="dark"] {
 .el-tabs__item.is-active {
   color: var(--accent);
   font-weight: 500;
-}
-
-.el-tabs--left .el-tabs__nav-wrap {
-  margin-right: 24px;
-}
-
-.el-tabs--left .el-tabs__item {
-  height: 40px;
-  line-height: 40px;
-  text-align: left;
-  justify-content: flex-start;
 }
 
 /* 描述列表（About）：底色随 surface，分隔更含蓄。 */

@@ -9,6 +9,7 @@ import { proxyApi } from "@/api/proxy";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
+import { friendlyError } from "@/errors";
 
 const core = useCoreStore();
 const config = useConfigStore();
@@ -68,8 +69,22 @@ const currentGroup = computed(() => {
 });
 const currentNode = computed(() => {
   if (config.proxyMode === "direct") return "—";
-  return currentGroup.value?.now ?? "—";
+  return resolveNodeName(currentGroup.value?.now);
 });
+
+/** 组链解析：`now` 可能指向另一个代理组（如 扶梯出行 → 人工优选 → 节点），
+ *  沿链下钻直到真实节点；防环 + 深度上限，解析不出原样返回。 */
+function resolveNodeName(name: string | undefined, depth = 0): string {
+  if (!name) return "—";
+  const groups = proxyStore.groups;
+  const group = groups.find((g) => g.name === name);
+  if (!group || depth >= 5) return name;
+  if (!group.now || PLACEHOLDER_NODES.has(group.now)) return name;
+  if (groups.some((g) => g.name === group.now)) {
+    return resolveNodeName(group.now, depth + 1);
+  }
+  return group.now;
+}
 /** 当前节点延迟：有数据时显示，无数据时 template 完全不渲染。 */
 const currentLatency = computed(() => {
   const g = currentGroup.value;
@@ -85,7 +100,7 @@ async function onSystemProxyChange(val: boolean) {
     await proxyApi.setSystemProxy(val);
     if (config.config) config.config["system-proxy"] = val;
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 
@@ -95,7 +110,7 @@ async function onRestart() {
   try {
     await core.restart();
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     coreActionBusy.value = false;
   }
@@ -107,7 +122,7 @@ async function onReload() {
   try {
     await core.reload();
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   } finally {
     coreActionBusy.value = false;
   }
@@ -117,7 +132,7 @@ async function onStart() {
   try {
     await core.start();
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 
@@ -125,7 +140,7 @@ async function onStop() {
   try {
     await core.stop();
   } catch (e) {
-    ElMessage.error(String(e));
+    ElMessage.error(friendlyError(e));
   }
 }
 </script>
@@ -164,7 +179,8 @@ async function onStop() {
         </div>
       </div>
 
-      <!-- 核心控制与状态同卡，均分三列：启动/停止 → 重启核心 → 重载配置 -->
+      <!-- 核心控制：主动作（启动/停止）突出，重载/重启降为次级文字按钮。
+           停止是高频常规操作而非破坏性操作，用中性色，不制造警觉。 -->
       <div class="core-actions">
         <el-button
           v-if="!running"
@@ -177,7 +193,6 @@ async function onStop() {
         </el-button>
         <el-button
           v-else
-          type="danger"
           plain
           class="core-btn"
           :loading="core.stopping"
@@ -185,12 +200,24 @@ async function onStop() {
         >
           {{ $t("dashboard.stop") }}
         </el-button>
-        <el-button class="core-btn" :loading="coreActionBusy" :disabled="!running || coreActionBusy" @click="onRestart">
-          {{ $t("dashboard.restart") }}
-        </el-button>
-        <el-button class="core-btn" :loading="coreActionBusy" :disabled="!running || coreActionBusy" @click="onReload">
-          {{ $t("dashboard.reload") }}
-        </el-button>
+        <div class="core-secondary">
+          <el-button
+            text
+            :disabled="!running || coreActionBusy"
+            :loading="coreActionBusy"
+            @click="onRestart"
+          >
+            {{ $t("dashboard.restart") }}
+          </el-button>
+          <el-button
+            text
+            :disabled="!running || coreActionBusy"
+            :loading="coreActionBusy"
+            @click="onReload"
+          >
+            {{ $t("dashboard.reload") }}
+          </el-button>
+        </div>
       </div>
     </el-card>
 
@@ -289,21 +316,25 @@ async function onStop() {
 
 .core-actions {
   margin-top: 20px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-}
-
-/* 小窗口（~560px）下三列按钮过窄：换行为自动列宽，避免文案截断。 */
-@media (max-width: 640px) {
-  .core-actions {
-    grid-template-columns: 1fr;
-  }
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .core-btn {
   width: 100%;
   margin-left: 0 !important;
+}
+
+/* 次级动作：文字按钮一行，视觉权重明显低于主动作。 */
+.core-secondary {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.core-secondary .el-button + .el-button {
+  margin-left: 8px;
 }
 
 .settings-card {

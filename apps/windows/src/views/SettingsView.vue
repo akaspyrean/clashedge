@@ -1,7 +1,9 @@
 <!-- src/views/SettingsView.vue - 设置：常规 / 代理 / TUN / 高级 / 关于
      直接绑定 configStore.config 的字段，点"保存"统一提交。
      需要立即实时生效的开关（系统代理 / 代理模式）走统一编排层命令
-     （proxyApi.setSystemProxy / setProxyMode），而不是等"保存"。 -->
+     （proxyApi.setSystemProxy / setProxyMode），而不是等"保存"。
+     布局：偏好行式（标题+副文本 居左、控件 居右），与概览页同一套范式；
+     低频技术项（日志级别/地理数据/进程查找）归位「高级」页。 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -49,6 +51,14 @@ const geodataModes = ["manual", "use-external", "remote", "metax", "v2ray"];
 const findProcessModes = ["off", "strict", "always"];
 // mihomo 官方模板仅这三值；script 是 Clash Premium 遗留，后端会拒绝。
 const proxyModes = ["rule", "global", "direct"];
+
+// 语言下拉显示本地化名称（简体中文 / English），不显示 locale 代码。
+const localeNames: Record<string, string> = {
+  "zh-CN": "简体中文",
+  "en-US": "English",
+  en: "English",
+};
+const localeLabel = (loc: string): string => localeNames[loc] ?? loc;
 
 const geo = ref<GeoDataStatus | null>(null);
 const geoUpdating = ref(false);
@@ -339,220 +349,314 @@ async function onUpdateGeo() {
     </el-alert>
 
     <el-tabs :tab-position="compactTabs ? 'top' : 'left'" class="settings-tabs">
-      <!-- 常规 -->
+      <!-- 常规：高频偏好。低频技术项（日志/地理数据/进程查找）在「高级」。 -->
       <el-tab-pane :label="$t('settings.tabs.general')">
-        <el-form label-width="150px" class="settings-form">
-          <el-form-item :label="$t('settings.language')" class="pref-select">
-            <el-select
-              :model-value="cfg.locale"
-              @change="onLocaleChange"
-            >
-              <el-option
-                v-for="loc in appStore.locales"
-                :key="loc"
-                :label="loc"
-                :value="loc"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item :label="$t('settings.theme')">
-            <el-radio-group v-model="theme">
-              <el-radio-button value="system">{{ $t("settings.theme_system") }}</el-radio-button>
-              <el-radio-button value="light">{{ $t("settings.theme_light") }}</el-radio-button>
-              <el-radio-button value="dark">{{ $t("settings.theme_dark") }}</el-radio-button>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item class="pref-switch">
-            <template #label>
-              <span class="pref-label">{{ $t("settings.autostart") }}</span>
-              <span class="pref-hint">{{ $t("settings.silent_autostart") }}</span>
-            </template>
-            <el-switch v-model="appStore.autostart" :loading="autostartLoading" @change="onAutostartChange" />
-          </el-form-item>
-          <el-form-item :label="$t('general.mixed_port')">
-            <el-input-number v-model="cfg['mixed-port']" :min="1" :max="65535" />
-          </el-form-item>
-          <el-form-item class="pref-switch" :label="$t('general.allow_lan')">
-            <el-switch
-              :model-value="cfg['allow-lan']"
-              @change="onAllowLanChange"
-            />
-          </el-form-item>
+        <div class="pref-list">
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("settings.language") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-select :model-value="cfg.locale" style="width: 160px" @change="onLocaleChange">
+                <el-option v-for="loc in appStore.locales" :key="loc" :label="localeLabel(loc)" :value="loc" />
+              </el-select>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("settings.theme") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-radio-group v-model="theme">
+                <el-radio-button value="system">{{ $t("settings.theme_system") }}</el-radio-button>
+                <el-radio-button value="light">{{ $t("settings.theme_light") }}</el-radio-button>
+                <el-radio-button value="dark">{{ $t("settings.theme_dark") }}</el-radio-button>
+              </el-radio-group>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("settings.autostart") }}</div>
+              <div class="pref-hint">{{ $t("settings.silent_autostart") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="appStore.autostart" :loading="autostartLoading" @change="onAutostartChange" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.mixed_port") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-input-number v-model="cfg['mixed-port']" :min="1" :max="65535" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.allow_lan") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch :model-value="cfg['allow-lan']" @change="onAllowLanChange" />
+            </div>
+          </div>
           <!-- 高级限制：仅局域网连接开启时才显示/可设置 -->
           <el-collapse v-if="cfg['allow-lan']" v-model="allowLanAdvancedOpen" class="lan-advanced">
             <el-collapse-item :title="$t('general.lan_advanced')" name="lan">
-              <el-form-item :label="$t('general.bind_address')" label-width="120px">
+              <div class="sub-row">
+                <div class="sub-label">{{ $t("general.bind_address") }}</div>
                 <el-input
                   v-model="cfg['bind-address']"
-                  style="width: 300px"
                   :placeholder="$t('general.bind_address_placeholder')"
                   clearable
                 />
-              </el-form-item>
-              <el-form-item :label="$t('general.lan_allowed_ips')" label-width="120px">
-                <div class="lan-ips">
-                  <el-input
-                    v-model="lanAllowedIpsText"
-                    type="textarea"
-                    :rows="2"
-                    :placeholder="$t('general.lan_allowed_ips_placeholder')"
-                  />
-                  <span v-if="lanAllowedIpsWarning" class="lan-ips-warning">
-                    {{ lanAllowedIpsWarning }}
-                  </span>
-                </div>
-              </el-form-item>
+              </div>
+              <div class="sub-row">
+                <div class="sub-label">{{ $t("general.lan_allowed_ips") }}</div>
+                <el-input
+                  v-model="lanAllowedIpsText"
+                  type="textarea"
+                  :rows="2"
+                  :placeholder="$t('general.lan_allowed_ips_placeholder')"
+                />
+                <span v-if="lanAllowedIpsWarning" class="lan-ips-warning">
+                  {{ lanAllowedIpsWarning }}
+                </span>
+              </div>
             </el-collapse-item>
           </el-collapse>
-          <el-form-item class="pref-switch" :label="$t('general.ipv6')">
-            <el-switch v-model="cfg.ipv6" />
-          </el-form-item>
-          <el-form-item :label="$t('general.log_level')" class="pref-select">
-            <el-select v-model="cfg['log-level']">
-              <el-option v-for="lv in logLevels" :key="lv" :label="lv" :value="lv" />
-            </el-select>
-          </el-form-item>
-          <el-form-item :label="$t('general.geodata_mode')" class="pref-select">
-            <el-select v-model="cfg['geodata-mode']">
-              <el-option v-for="m in geodataModes" :key="m" :label="m" :value="m" />
-            </el-select>
-          </el-form-item>
-          <el-form-item class="pref-switch" :label="$t('general.geo_auto_update')">
-            <el-switch v-model="cfg['geo-auto-update']" />
-          </el-form-item>
-          <el-form-item
-            class="pref-switch"
-            :label="$t('general.auto_update_subscription')"
-          >
-            <el-switch v-model="cfg['auto-update-subscription']" />
-          </el-form-item>
-          <el-form-item :label="$t('general.find_process_mode')" class="pref-select">
-            <el-select v-model="cfg['find-process-mode']">
-              <el-option
-                v-for="m in findProcessModes"
-                :key="m"
-                :label="m"
-                :value="m"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item :label="$t('general.proxy_mode')" class="pref-select">
-            <el-select
-              :model-value="cfg.mode"
-              @change="onProxyModeChange"
-            >
-              <el-option
-                v-for="m in proxyModes"
-                :key="m"
-                :label="$t('tray.mode_' + m)"
-                :value="m"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item class="pref-switch" :label="$t('general.system_proxy')">
-            <el-switch
-              :model-value="cfg['system-proxy']"
-              @change="onSystemProxyChange"
-            />
-          </el-form-item>
-          <el-form-item class="pref-action" :label="$t('settings.data_dir')">
-            <el-button @click="onOpenDataDir">{{ $t("settings.open_data_dir") }}</el-button>
-          </el-form-item>
-          <el-form-item class="pref-save">
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.ipv6") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg.ipv6" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.auto_update_subscription") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg['auto-update-subscription']" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.proxy_mode") }}</div>
+              <div class="pref-hint">{{ $t("general.proxy_mode_hint") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-select :model-value="cfg.mode" style="width: 160px" @change="onProxyModeChange">
+                <el-option v-for="m in proxyModes" :key="m" :label="$t('tray.mode_' + m)" :value="m" />
+              </el-select>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.system_proxy") }}</div>
+              <div class="pref-hint">{{ $t("dashboard.system_proxy_hint") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch :model-value="cfg['system-proxy']" @change="onSystemProxyChange" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("settings.data_dir") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-button @click="onOpenDataDir">{{ $t("settings.open_data_dir") }}</el-button>
+            </div>
+          </div>
+          <div class="pref-save-row">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
-          </el-form-item>
-        </el-form>
+          </div>
+        </div>
       </el-tab-pane>
 
       <!-- 代理 -->
       <el-tab-pane :label="$t('settings.tabs.proxy')">
-        <el-form label-width="150px" class="settings-form">
-          <el-form-item class="pref-switch" :label="$t('proxy.config_mixin')">
-            <el-switch v-model="cfg['mixin-enabled']" />
-          </el-form-item>
-          <el-form-item class="pref-switch" :label="$t('proxy.tun_mode')">
-            <el-switch
-              :model-value="cfg.tun.enable"
-              :loading="tunLoading"
-              @change="onTunEnableChange"
-            />
-          </el-form-item>
-          <el-form-item class="pref-save">
+        <div class="pref-list">
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("proxy.config_mixin") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg['mixin-enabled']" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("proxy.tun_mode") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch
+                :model-value="cfg.tun.enable"
+                :loading="tunLoading"
+                @change="onTunEnableChange"
+              />
+            </div>
+          </div>
+          <div class="pref-save-row">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
-          </el-form-item>
-        </el-form>
+          </div>
+        </div>
       </el-tab-pane>
 
       <!-- TUN -->
       <el-tab-pane :label="$t('settings.tabs.tun')">
-        <el-form label-width="150px" class="settings-form">
-          <el-form-item class="pref-switch" :label="$t('tun.enable')">
-            <el-switch
-              :model-value="cfg.tun.enable"
-              :loading="tunLoading"
-              @change="onTunEnableChange"
-            />
-          </el-form-item>
-          <el-form-item :label="$t('tun.stack')">
-            <el-select v-model="cfg.tun.stack" style="width: 300px">
-              <el-option value="mixed" :label="$t('tun.stack_mixed')" />
-              <el-option value="system" :label="$t('tun.stack_system')" />
-              <el-option value="gvisor" :label="$t('tun.stack_gvisor')" />
-            </el-select>
-          </el-form-item>
-          <el-form-item class="pref-switch" :label="$t('tun.auto_route')">
-            <el-switch v-model="cfg.tun['auto-route']" />
-          </el-form-item>
-          <el-form-item class="pref-switch" :label="$t('tun.auto_detect_interface')">
-            <el-switch v-model="cfg.tun['auto-detect-interface']" />
-          </el-form-item>
-          <el-form-item :label="$t('tun.interface_name')">
-            <el-input
-              v-model="tunInterface"
-              style="width: 300px"
-              :placeholder="$t('tun.interface_name')"
-            />
-          </el-form-item>
-          <el-form-item class="pref-save">
+        <div class="pref-list">
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("tun.enable") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch
+                :model-value="cfg.tun.enable"
+                :loading="tunLoading"
+                @change="onTunEnableChange"
+              />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("tun.stack") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-select v-model="cfg.tun.stack" style="width: 160px">
+                <el-option value="mixed" :label="$t('tun.stack_mixed')" />
+                <el-option value="system" :label="$t('tun.stack_system')" />
+                <el-option value="gvisor" :label="$t('tun.stack_gvisor')" />
+              </el-select>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("tun.auto_route") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg.tun['auto-route']" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("tun.auto_detect_interface") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg.tun['auto-detect-interface']" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("tun.interface_name") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-input
+                v-model="tunInterface"
+                style="width: 220px"
+                :placeholder="$t('tun.interface_name')"
+                clearable
+              />
+            </div>
+          </div>
+          <div class="pref-save-row">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
-          </el-form-item>
-        </el-form>
+          </div>
+        </div>
       </el-tab-pane>
 
-      <!-- 高级 -->
+      <!-- 高级：低频技术项集中在此（日志/地理数据/进程查找/URL 覆写/导入导出） -->
       <el-tab-pane :label="$t('settings.tabs.advanced')">
-        <el-form label-width="150px" class="settings-form">
-          <el-form-item :label="$t('advanced.geox_url')">
-            <el-input v-model="cfg.advanced['geox-url']" />
-          </el-form-item>
-          <el-form-item :label="$t('advanced.geoip_url')">
-            <el-input v-model="cfg.advanced['geoip-url']" />
-          </el-form-item>
-          <el-form-item :label="$t('advanced.geosite_url')">
-            <el-input v-model="cfg.advanced['geosite-url']" />
-          </el-form-item>
-          <el-form-item :label="$t('geodata.title')">
-            <div class="geo-row">
-              <el-button :loading="geoUpdating" @click="onUpdateGeo">
-                {{ $t("geodata.update_btn") }}
-              </el-button>
-              <span v-if="geo" class="geo-status">
-                GeoIP: {{ geo.geoip.exists ? fmtSize(geo.geoip.size) : "—" }}
-                · GeoSite: {{ geo.geosite.exists ? fmtSize(geo.geosite.size) : "—" }}
-              </span>
+        <div class="pref-list">
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.log_level") }}</div>
             </div>
-          </el-form-item>
-          <el-form-item class="pref-save">
+            <div class="pref-control">
+              <el-select v-model="cfg['log-level']" style="width: 160px">
+                <el-option v-for="lv in logLevels" :key="lv" :label="lv" :value="lv" />
+              </el-select>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.geodata_mode") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-select v-model="cfg['geodata-mode']" style="width: 160px">
+                <el-option v-for="m in geodataModes" :key="m" :label="m" :value="m" />
+              </el-select>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.geo_auto_update") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg['geo-auto-update']" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("general.find_process_mode") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-select v-model="cfg['find-process-mode']" style="width: 160px">
+                <el-option v-for="m in findProcessModes" :key="m" :label="m" :value="m" />
+              </el-select>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("advanced.geox_url") }}</div>
+            </div>
+            <div class="pref-control pref-control-wide">
+              <el-input v-model="cfg.advanced['geox-url']" clearable />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("advanced.geoip_url") }}</div>
+            </div>
+            <div class="pref-control pref-control-wide">
+              <el-input v-model="cfg.advanced['geoip-url']" clearable />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("advanced.geosite_url") }}</div>
+            </div>
+            <div class="pref-control pref-control-wide">
+              <el-input v-model="cfg.advanced['geosite-url']" clearable />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("geodata.title") }}</div>
+            </div>
+            <div class="pref-control">
+              <div class="geo-row">
+                <el-button :loading="geoUpdating" @click="onUpdateGeo">
+                  {{ $t("geodata.update_btn") }}
+                </el-button>
+                <span v-if="geo" class="geo-status">
+                  GeoIP: {{ geo.geoip.exists ? fmtSize(geo.geoip.size) : "—" }}
+                  · GeoSite: {{ geo.geosite.exists ? fmtSize(geo.geosite.size) : "—" }}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="pref-save-row">
             <el-button type="primary" @click="onSave">{{ $t("common.save") }}</el-button>
-          </el-form-item>
-          <el-form-item class="pref-danger">
+          </div>
+          <div class="pref-danger-row">
             <el-button @click="onImportConfig">{{ $t("advanced.import_config") }}</el-button>
             <el-button @click="onExportConfig">{{ $t("advanced.export_config") }}</el-button>
             <el-button type="danger" plain @click="onReset">
               {{ $t("advanced.reset_config") }}
             </el-button>
-          </el-form-item>
-        </el-form>
+          </div>
+        </div>
       </el-tab-pane>
 
       <!-- 关于 -->
@@ -584,103 +688,111 @@ async function onUpdateGeo() {
   overflow-wrap: anywhere;
 }
 
-.settings-form {
+/* ---- 偏好行式列表（与概览页 set-row 同范式）----
+ * 标题(+副文本) 居左、控件 居右，细分隔线分行；去"表单"感。 */
+.pref-list {
   max-width: 680px;
 }
 
-/* 桌面偏好布局：行距收敛（后台表单 22px → 桌面设置 18px）
- * 开关行/标签的层级统一，去"表单"感。 */
-.settings-form .el-form-item {
-  margin-bottom: 18px;
-}
-
-.settings-form .el-form-item__label {
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-/* 开关行：标签居左、控件居右对齐，形成"系统代理 [开]"的桌面偏好节奏。 */
-.settings-form .el-form-item--no-asterisk.pref-switch,
-.settings-form .pref-switch {
+.pref-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  min-height: 44px;
 }
 
-.settings-form .pref-switch .el-form-item__content {
-  margin-left: auto;
+.pref-row + .pref-row {
+  border-top: 1px solid var(--card-border);
 }
 
-/* 开关行 label：主标签 + 次级说明（桌面设置常用单行 label 或多行 stack） */
-.settings-form .pref-switch .el-form-item__label {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  line-height: 1.4;
+.pref-info {
+  min-width: 0;
 }
 
-.pref-label {
+.pref-title {
+  font-size: 14px;
   font-weight: 500;
+  color: var(--text-primary);
 }
 
 .pref-hint {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--text-tertiary);
   margin-top: 2px;
-}
-
-/* select/输入行：控件固定宽度，标签不换行 */
-.settings-form .pref-select .el-form-item__content {
-  width: 220px;
-  margin-left: auto;
-}
-
-/* 保存行：与表单体隔开，不参与标签居左的排版 */
-.settings-form .pref-save .el-form-item__content {
-  margin-left: 150px;
-}
-
-/* 危险操作行：底部独立区域，弱化边框与色彩 */
-.settings-form .pref-danger {
-  border-top: 1px solid var(--card-border);
-  padding-top: 16px;
-  margin-top: 4px;
-}
-
-.settings-form .pref-danger .el-form-item__content {
-  margin-left: 150px;
-}
-
-.geo-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.geo-status {
   font-size: 12px;
   color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
 }
 
-/* 高级限制（仅 allow-lan 开启时显示）：从属块，缩进对齐开关行的内容区，
- * 用弱背景与主设置行分层，不喧宾夺主。 */
+.pref-control {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 宽控件（URL 覆写）：吃满行内剩余宽度。 */
+.pref-control-wide {
+  flex: 1;
+  min-width: 0;
+}
+
+.pref-control-wide .el-input {
+  width: 100%;
+}
+
+/* 从属块（allow-lan 高级限制）：弱背景 + 标签在上、输入在下。 */
 .lan-advanced {
-  margin: 0 0 18px 150px;
+  margin: 0 0 4px;
   border-top: none;
   border-bottom: none;
   background: var(--bg-soft);
   border-radius: var(--r-sm);
 }
 
-.lan-ips {
+.sub-row {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px 0;
+}
+
+.sub-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
 }
 
 .lan-ips-warning {
   font-size: 12px;
   color: var(--el-color-warning);
+}
+
+/* 保存行：右对齐，与列表体隔开。 */
+.pref-save-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 16px;
+}
+
+/* 危险操作行：底部独立区域，顶部细分隔线。 */
+.pref-danger-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--card-border);
+}
+
+.geo-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.geo-status {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 </style>

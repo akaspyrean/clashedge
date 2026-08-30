@@ -158,27 +158,26 @@ onUnmounted(() => {
       max-height="65vh"
       class="connections-table"
     >
-      <el-table-column type="index" width="50" />
       <el-table-column
         prop="host"
         :label="$t('connections.host')"
-        min-width="200"
+        min-width="180"
         show-overflow-tooltip
       />
-      <el-table-column prop="network" :label="$t('connections.network')" width="90" />
+      <el-table-column prop="network" :label="$t('connections.network')" width="70" />
       <el-table-column
         prop="rule"
         :label="$t('connections.rule')"
-        min-width="150"
+        min-width="120"
         show-overflow-tooltip
       />
-      <el-table-column :label="$t('connections.upload')" width="110" align="right">
+      <el-table-column :label="$t('connections.upload')" min-width="90" align="right">
         <template #default="{ row }">{{ formatBytes(row.upload) }}</template>
       </el-table-column>
-      <el-table-column :label="$t('connections.download')" width="110" align="right">
+      <el-table-column :label="$t('connections.download')" min-width="90" align="right">
         <template #default="{ row }">{{ formatBytes(row.download) }}</template>
       </el-table-column>
-      <el-table-column :label="$t('connections.time')" width="100" align="right">
+      <el-table-column :label="$t('connections.time')" min-width="90" align="right">
         <template #default="{ row }">{{ formatStart(row.start) }}</template>
       </el-table-column>
     </el-table>
@@ -226,13 +225,15 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+/* 实时跳动的数字用等宽数字防抖动；分隔符弱化为纯留白（Flyme 靠间距不靠标点）。 */
 .totals b {
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .totals-sep {
-  margin: 0 10px;
+  margin: 0 4px;
   color: var(--border-subtle);
 }
 
@@ -258,5 +259,10 @@ onUnmounted(() => {
   border: 1px solid var(--card-border);
   border-radius: var(--r-md);
   overflow: hidden;
+}
+
+/* 流量/时间列实时跳动：等宽数字防抖动。 */
+.connections-table :deep(.el-table .cell) {
+  font-variant-numeric: tabular-nums;
 }
 </style>
