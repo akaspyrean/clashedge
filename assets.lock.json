@@ -55,6 +55,27 @@
       "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/ad.yaml",
       "sha256": "1e5b5b59f1441bd991f4c71a1c19b0a3f8d873acda4fa55144ff0475cead0172",
       "out": "rules/ad.yaml"
+    },
+    {
+      "name": "geodata-geoip",
+      "version": "external@13f3d8bf6652234797e5aabca656c5961da5430a",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/13f3d8bf6652234797e5aabca656c5961da5430a/geodata/GeoIP.dat",
+      "sha256": "0d5d2ba0c5a5c58027fd1347a6afd57c9470799b6bb3cbc274fd4657ed8de382",
+      "out": "geodata/GeoIP.dat"
+    },
+    {
+      "name": "geodata-geosite",
+      "version": "external@13f3d8bf6652234797e5aabca656c5961da5430a",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/13f3d8bf6652234797e5aabca656c5961da5430a/geodata/GeoSite.dat",
+      "sha256": "818c7f5b434ce8d24aac8138fc4c304a3525f057a6893547ce2bccfb7cf2ae3e",
+      "out": "geodata/GeoSite.dat"
+    },
+    {
+      "name": "geodata-country",
+      "version": "external@13f3d8bf6652234797e5aabca656c5961da5430a",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/13f3d8bf6652234797e5aabca656c5961da5430a/geodata/Country.mmdb",
+      "sha256": "fe721d5e47d320b2a23db4eafddb796a22026ef01899bbe7007fc0274016e5f4",
+      "out": "geodata/Country.mmdb"
     }
   ]
 }

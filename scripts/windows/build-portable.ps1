@@ -132,10 +132,12 @@ foreach ($sc in $sidecars) {
 }
 
 # 3. Default data + pre-seeded user Data/
-#    Built-in rule sets come from the staged assets (pinned in assets.lock.json).
-#    wintun.dll comes from staging too (it ships in both sidecar/ and DefaultData).
-$stagedRules = Join-Path $assets "rules"
-$stagedWintun = Join-Path $assets "wintun\wintun.dll"
+#    Rule sets, geodata and wintun.dll all come from the staged assets
+#    (pinned in assets.lock.json); the packaging template only carries
+#    config.yaml. wintun.dll ships in both sidecar/ and DefaultData.
+$stagedRules   = Join-Path $assets "rules"
+$stagedGeodata = Join-Path $assets "geodata"
+$stagedWintun  = Join-Path $assets "wintun\wintun.dll"
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "App\DefaultData")
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "Data")
 Copy-Item $stagedWintun (Join-Path $out "App\DefaultData\wintun.dll")
@@ -143,6 +145,10 @@ Copy-Item $stagedWintun (Join-Path $out "Data\wintun.dll")
 if (Test-Path $stagedRules) {
     Copy-Item -Recurse (Join-Path $stagedRules "*") (Join-Path $out "App\DefaultData\rules")
     Copy-Item -Recurse (Join-Path $stagedRules "*") (Join-Path $out "Data\rules")
+}
+foreach ($g in @("GeoIP.dat", "GeoSite.dat", "Country.mmdb")) {
+    Copy-Item (Join-Path $stagedGeodata $g) (Join-Path $out "App\DefaultData\$g")
+    Copy-Item (Join-Path $stagedGeodata $g) (Join-Path $out "Data\$g")
 }
 
 # 4. Help docs in Other/
@@ -162,6 +168,9 @@ $assertions = @(
     @{ path = Join-Path $sidecarDir "mihomo-win64.exe";        label = "mihomo core sidecar/mihomo-win64.exe" },
     @{ path = Join-Path $sidecarDir "wintun.dll";              label = "TUN driver sidecar/wintun.dll" },
     @{ path = Join-Path $out "App\DefaultData\wintun.dll";     label = "TUN driver App/DefaultData/wintun.dll" },
+    @{ path = Join-Path $out "App\DefaultData\GeoIP.dat";      label = "geodata App/DefaultData/GeoIP.dat" },
+    @{ path = Join-Path $out "App\DefaultData\GeoSite.dat";    label = "geodata App/DefaultData/GeoSite.dat" },
+    @{ path = Join-Path $out "App\DefaultData\Country.mmdb";   label = "geodata App/DefaultData/Country.mmdb" },
     @{ path = Join-Path $out "Data";                           label = "Data directory" },
     @{ path = Join-Path $out "App\DefaultData";                label = "App/DefaultData directory" },
     @{ path = Join-Path $out "Other\Help\README.md";           label = "Other/Help/README.md" }

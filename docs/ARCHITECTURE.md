@@ -111,9 +111,10 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
 - 触发只有 `push: tags: v*`；tag 不可变由 GitHub Rulesets 保证（仓库设置，非脚本）。
 - manifest 强制签名（`TAURI_SIGNING_PRIVATE_KEY`），公钥编译期注入客户端（`update/mod.rs`）。
 - Updater 按稳定 ZIP 名下载，验 SHA256 + minisign 签名。
-- 第三方资产（mihomo、wintun.dll、内置规则集）不进 Git：版本/URL/SHA256 锁在
-  `assets.lock.json`，由 `scripts/assets/prepare.ps1` 物化到 `build/assets/staging/`。
-  规则集固定在 `akaspyrean/external` 的具体 commit（commit-sha raw URL 永久不可变），
+- 第三方资产（mihomo、wintun.dll、内置规则集、geodata）不进 Git：版本/URL/SHA256
+  锁在 `assets.lock.json`，由 `scripts/assets/prepare.ps1` 物化到 `build/assets/staging/`。
+  规则集与 geodata 由 `akaspyrean/external` 仓库发布（geodata 由其定时同步 Action
+  镜像 MetaCubeX/meta-rules-dat），均固定到具体 commit（commit-sha raw URL 永久不可变），
   升级 = 改 lock 的 commit + 各文件 sha256 后提交，hash 由脚本逐字节校验，
   绝不为未知二进制生成可信哈希。
 
@@ -132,6 +133,3 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
   command 层只做 参数 → controller → Result，事务与 runtime apply 内聚在 controller。
 - `core/manager.rs`、`util/fetch.rs`、`commands/profiles.rs` 体量偏大，按"一个文件一个
   变化原因"拆分，不引入 interfaces/repositories 之类的分层仪式。
-- geodata（GeoIP/GeoSite/Country.mmdb，约 26MB）仍在 Git：上游 meta-rules-dat 是
-  rolling 发布（只有 latest tag、孤儿提交），无法安全 pin。可选方案：在 external 仓库
-  加定时同步 Action 镜像 geodata 后，即可按 commit 迁入 assets.lock.json。
