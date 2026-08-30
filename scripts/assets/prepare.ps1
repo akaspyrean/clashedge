@@ -71,7 +71,12 @@ $failed = 0
 foreach ($asset in $lock.assets) {
     $name = $asset.name
     $outPath = Join-Path $stageDir ($asset.out -replace "/", "\")
-    $outHash = $asset.extracted_sha256.ToLower()
+
+    # Archives carry a separate extracted_sha256; raw assets (rule YAMLs) are
+    # verified and staged as-is via sha256.
+    $isArchive = $null -ne $asset.extract
+    if ($isArchive) { $outHash = $asset.extracted_sha256.ToLower() }
+    else { $outHash = $asset.sha256.ToLower() }
 
     Write-Host "==> $name $($asset.version)"
 
@@ -81,19 +86,29 @@ foreach ($asset in $lock.assets) {
         continue
     }
 
-    # 2. Cache the archive; reuse it when its hash matches the lock.
+    # 2. Cache the artifact; reuse it when its hash matches the lock
+    #    (archives verify against sha256, raw files against the same value).
     $archiveName = ($asset.url -split "/")[-1]
     $archivePath = Join-Path $cacheDir $archiveName
-    $haveArchive = (Test-Path $archivePath) -and ((Get-SHA256 $archivePath) -eq $asset.sha256.ToLower())
-    if (-not $haveArchive) {
+    $expectedCacheHash = if ($isArchive) { $asset.sha256.ToLower() } else { $outHash }
+    $haveArtifact = (Test-Path $archivePath) -and ((Get-SHA256 $archivePath) -eq $expectedCacheHash)
+    if (-not $haveArtifact) {
         Write-Host "  downloading: $($asset.url)"
         Invoke-Download -Url $asset.url -Destination $archivePath
         $actual = Get-SHA256 $archivePath
-        if ($actual -ne $asset.sha256.ToLower()) {
+        if ($actual -ne $expectedCacheHash) {
             $failed++
-            Write-Host "  FAIL  archive hash mismatch for $name`n    expected: $($asset.sha256)`n    actual:   $actual" -ForegroundColor Red
+            Write-Host "  FAIL  hash mismatch for $name`n    expected: $expectedCacheHash`n    actual:   $actual" -ForegroundColor Red
             continue
         }
+    }
+
+    if (-not $isArchive) {
+        # Raw asset: the cached file is the artifact itself.
+        New-Item -ItemType Directory -Force (Split-Path -Parent $outPath) | Out-Null
+        Copy-Item $archivePath $outPath -Force
+        Write-Host "  PASS  staged: $outPath"
+        continue
     }
 
     # 3. Extract the pinned member and re-verify the extracted artifact itself.

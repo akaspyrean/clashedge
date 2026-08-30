@@ -23,8 +23,9 @@
 # finds mihomo at App/ClashEdge/sidecar/mihomo-win64.exe via CLASH_EDGE_DATA_DIR.
 #
 # Prerequisites:
-#   1) run scripts/assets/prepare.ps1 once: it downloads the pinned mihomo core
-#      and wintun.dll (see assets.lock.json) into build/assets/staging/.
+#   1) run scripts/assets/prepare.ps1 once: it downloads the pinned mihomo core,
+#      wintun.dll and built-in rule sets (see assets.lock.json) into
+#      build/assets/staging/.
 #   2) .NET Framework csc.exe (C# 5) available under C:\Windows\Microsoft.NET\Framework64.
 #
 # NOTE: keep this file ASCII-only - Windows PowerShell 5.1 reads no-BOM .ps1 as ANSI,
@@ -131,18 +132,17 @@ foreach ($sc in $sidecars) {
 }
 
 # 3. Default data + pre-seeded user Data/
-#    DefaultData no longer ships the built-in rule sets (they live in shared/),
-#    so seed rules/ from shared/rules afterwards. wintun.dll comes from the
-#    staged assets (it ships in both sidecar/ and DefaultData for TUN).
-$sharedRules = Join-Path $repo "shared\rules"
+#    Built-in rule sets come from the staged assets (pinned in assets.lock.json).
+#    wintun.dll comes from staging too (it ships in both sidecar/ and DefaultData).
+$stagedRules = Join-Path $assets "rules"
 $stagedWintun = Join-Path $assets "wintun\wintun.dll"
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "App\DefaultData")
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "Data")
 Copy-Item $stagedWintun (Join-Path $out "App\DefaultData\wintun.dll")
 Copy-Item $stagedWintun (Join-Path $out "Data\wintun.dll")
-if (Test-Path $sharedRules) {
-    Copy-Item -Recurse (Join-Path $sharedRules "*") (Join-Path $out "App\DefaultData\rules")
-    Copy-Item -Recurse (Join-Path $sharedRules "*") (Join-Path $out "Data\rules")
+if (Test-Path $stagedRules) {
+    Copy-Item -Recurse (Join-Path $stagedRules "*") (Join-Path $out "App\DefaultData\rules")
+    Copy-Item -Recurse (Join-Path $stagedRules "*") (Join-Path $out "Data\rules")
 }
 
 # 4. Help docs in Other/

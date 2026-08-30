@@ -142,8 +142,8 @@ jobs:
           CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
         run: node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
-      # Download and hash-verify the pinned mihomo core + wintun driver
-      # (assets.lock.json) into build/assets/staging/ for packaging.
+      # Download and hash-verify pinned third-party assets (assets.lock.json):
+      # mihomo core, wintun driver and built-in rule sets -> build/assets/staging/.
       - name: Prepare third-party assets
         shell: pwsh
         run: .\scripts\assets\prepare.ps1
