@@ -1,0 +1,18 @@
+# subscribe-url: https://example.com/sub
+# Profile imported from a public subscription URL (sanitized).
+# The # subscribe-url: header is used by update_profile_subscription and
+# refresh_subscription to re-fetch content. It is stripped before parsing
+# by strip_subscribe_header, so the body below is standard YAML.
+# Sanitized: all server addresses and passwords are fake.
+proxies:
+  - name: Sub-SS-01
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: test-password
+  - name: Sub-Trojan-01
+    type: trojan
+    server: example.com
+    port: 443
+    password: test-password

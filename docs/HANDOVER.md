@@ -1,6 +1,6 @@
 # ClashEdge 工作交接日志（HANDOVER）
 
-> 最近更新：2026-08-27　版本：1.0.4（dev）　架构：Tauri 2（Rust 后端 + Vue 3 前端）+ Mihomo v1.19.20
+> 最近更新：2026-08-29　版本：1.0.8（已发布）　架构：Tauri 2（Rust 后端 + Vue 3 前端）+ Mihomo v1.19.20
 
 ## 1. 项目概览
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | 产品名 | ClashEdge（原 Clash.F.Win 统一更名） |
 | 应用标识 | `com.clashedge.portable` |
-| 版本 | 1.0.4 |
+| 版本 | 1.0.8 |
 | 内核 | clash-edge-core.exe v1.19.20（sidecar） |
 | 前端 | Vue 3.5 + Pinia + Vue Router 4 + Vite 6 + Element Plus + vue-i18n |
 | 后端 | Rust（`tauri::command` + sidecar 进程管理；winreg 直写系统代理） |
@@ -33,11 +33,18 @@
 │       ├── portable/      # 便携模板：侧车二进制 + 默认数据（供打包拷贝）
 │       └── launcher/      # C# 根启动器源码（build-portable.ps1 每次打包时用 csc.exe 编译为便携包根目录的 ClashEdge.exe，图标取 apps/windows/src-tauri/icons/cat.ico）
 ├── scripts/
-│   ├── windows/           # Windows 构建/打包脚本（build-portable.ps1、scan-portable-paths.ps1）
-│   ├── android/           # Android 构建/打包脚本
-│   └── release/           # 发布脚本（make-update-manifest.py）
+│   ├── ci/              # 单一质量门 quality.ps1（8 步：fmt / clippy / test / audit / npm audit / npm test / npm build）
+│   ├── windows/         # Windows 构建/打包脚本（build-portable.ps1、scan-portable-paths.ps1）+ 实机测试脚本（test-lifecycle / test-config-transactions / test-system-proxy-recovery / test-tun）
+│   ├── android/         # Android 构建/打包脚本
+│   └── release/         # 发布脚本：make-update-manifest.py、Protect-ReleaseTag.ps1（tag 守卫）、Validate-ReleaseTrigger.ps1（触发校验）、test-release-guards.ps1、test-release-triggers.ps1
+├── tests/                # 测试
+│   └── fixtures/subscriptions/  # 脱敏订阅 fixtures（10 个：inline/block、provider、mixed、utf8-bom、duplicate、invalid、redirect、large、malformed）
 ├── docs/                  # 文档
-│   └── HANDOVER.md        #   （本文档）
+│   ├── HANDOVER.md        #   （本文档）
+│   ├── RELEASE-GATE.md    #   发布前逐项实测清单
+│   ├── RELEASE-TAG-PROTECTION.md  # tag 不可变保护（GitHub Ruleset 配置）
+│   ├── AUDIT-0.8.7.md     #   Phase 0 基线审计
+│   └── DESIGN_SYSTEM.md   #   设计系统 v1.0
 ├── release/               # 打包产物（不入库，gitignore）
 │   ├── portable-out/      #   便携目录
 │   └── ClashEdge-portable-win64.zip(.sha256)  # 稳定名，不带版本号（与更新链 ZIP_ASSET 一致）
@@ -67,9 +74,9 @@ cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
 ## 4. 修订记录
 
-### 1.0.4（当前 dev，2026-08-27）
+### 1.0.4（2026-08-27，已发布）
 
-定位为 **reliability patch**：收口跨层事务一致性、系统代理恢复、订阅安全边界。公开 Release 仍是 v1.0.3；本版为多次审计驱动的收尾，含两轮标记 v1.0.4 的提交与未发布的事务重构。
+定位为 **reliability patch**：收口跨层事务一致性、系统代理恢复、订阅安全边界。本版为多次审计驱动的收尾，含两轮标记 v1.0.4 的提交与未发布的事务重构。
 
 **事务一致性**
 - `activate_profile` 拆出内部 `activate_profile_locked`（调用方自行持 `config_tx`）。`rename_profile` / `update_profile_content` / `refresh_subscription` 把文件 rename + activate 序列纳入同一 `config_tx`，消除"文件变化在锁外、与并发激活/刷新交错"的竞争窗口。
@@ -95,6 +102,13 @@ cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 - 前端新增 `stores/profiles.spec.ts`（5）+ `views/ProxiesView.spec.ts`（2）；Rust 新增订阅 fixtures / provider 数量边界 / 事务回滚测试。
 
 **质量**: `cargo fmt --check` / `cargo clippy -D warnings` / `cargo test` / `cargo audit` / `npm audit` / Vitest / `npm run build` 全绿。
+
+### 1.0.5 – 1.0.8（2026-08-28 ~ 2026-08-29，已发布）
+
+- **v1.0.5** `fix(proxy)`：ProxyOverride 分号分隔符修复 + journal / Mihomo 退出解耦；发布收尾含 gate 文档状态校准与 cargo-audit 豁免。
+- **v1.0.6** `fix(tun)`：TUN 加固（mixed stack、dns-hijack、live-state confirm、admin hint）。
+- **v1.0.7** `fix(ci)`：仓库重组后路径修正；sign 步骤相对路径修正（`apps/windows` 需 `..\..\release`）；版本号 bump 至 1.0.7。
+- **v1.0.8** `chore(release)`：版本号 bump 至 1.0.8；CI 质量门收敛为单一来源 `scripts/ci/quality.ps1`（ci.yml / release.yml 统一调用），删除 `quality-gate.yml` 复用 workflow；新增 `scripts/release/Validate-ReleaseTrigger.ps1` 校验 workflow_dispatch 分支与 tag/版本一致性；v1.0.8 tag 校正回正式 Release commit `be0cad9`（详见 `docs/RELEASE-GATE.md` 与 `docs/RELEASE-TAG-PROTECTION.md`）。
 
 ### 1.0.3（2026-08-26，已发布）
 
@@ -132,7 +146,7 @@ cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
    - 规则链：`GEOSITE,private,DIRECT` → `RULE-SET,direct,DIRECT` → `RULE-SET,ad,REJECT` → `GEOSITE,category-ads-all,REJECT` → `RULE-SET,ai,人工智能` → `RULE-SET,media,影音视听` → `RULE-SET,proxy,扶梯出行` → `GEOSITE,cn,DIRECT` → `GEOIP,CN,DIRECT` → `MATCH,扶梯出行`
 2. **代理端口绑定失败不再假成功**：`core/manager.rs` 新增绑定冲突检测（读取 `Data/logs/mihomo-stdout.log`，匹配 `level=error` + `bind`），检测到即停止内核、状态置 `Error`、前端顶部红条如实提示。单测 `test_parse_bind_error_detects_port_conflict` 覆盖。
 3. **配置文件页默认「订阅」**：工具栏「订阅」为主按钮，置于「新建配置」之前。
-4. **ai 规则集修复**：`portable-template/App/DefaultData/rules/ai.yaml` 移除 `ip-asn,20473,no-resolve` 行——mihomo `behavior: classical` 遇到 `ip-asn` 会整文件失败（0 规则）。移除后实测加载 **81 条**规则。
+4. **ai 规则集修复**：`packaging/windows/portable/App/DefaultData/rules/ai.yaml` 移除 `ip-asn,20473,no-resolve` 行——mihomo `behavior: classical` 遇到 `ip-asn` 会整文件失败（0 规则）。移除后实测加载 **81 条**规则。
 5. **重命名订阅名修复**：`rename_profile` 是唯一带多词 snake_case 参数（old_name/new_name）的命令；Tauri 2 的 `invoke` 按 **camelCase** 匹配前端 key，`api/profiles.ts` 误传 `old_name/new_name` 导致 `missing required key oldName`。已改为 `{ oldName, newName }`（该约定仅影响多词参数，其余命令参数均为单词不受影响）。
 6. **托盘图标随系统代理状态变色**：`tray/builder.rs` 新增 `build_tray_icon(config)`，运行时解码内置 `icons/32x32.png` 并按 RGBA 重绘——系统代理**开 → 绿 #15803D**（活跃态）、**关 → 蓝 #2A62CC**（闲置态）。按目标色着色：亮度因子 `f = 0.6 + 0.4·l/255`（映射到 [0.6, 1.0]），最高亮像素即目标色本身、暗部为目标的 60%，色相与目标色严格一致，亮度区间保证浅色/深色任务栏均清晰可辨。`build_tray` 初始图标按真实配置着色，`update_tray_menu` 每次刷新（`refresh_tray`）都 `set_icon` 同步。`Cargo.toml` 直接声明 `image = 0.25`（本就是依赖树内 crate，零新增下载）。
 7. **叶子组不含 DIRECT**：`core/config.rs` 注入订阅节点时——**人工优选**（手动选择）只注入真实节点、**不含 DIRECT**；**自动优选**（url-test）保留 DIRECT 作兜底（全部节点失败时直连）。前端 `ProxiesView.visibleProxies` 对自动优选过滤 `DIRECT`（人工优选本无 DIRECT，过滤为 no-op，保留兼容）；`proxyStore.testGroupProxies` 同样过滤 DIRECT。
@@ -182,7 +196,7 @@ cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
 **保留**（构建关键文件，均被 `tauri.conf.json` / `build.rs` / `tray/builder.rs include_bytes!` 引用）：`cat-32x32.png`、`cat-128x128.png`、`cat-256x256.png`、`cat.icns`、`cat.ico`、`32x32.png`、`icon.ico`、`icon.icns`。
 
-**用户确认保留**：`portable-template/.../static/imgs/logo_64*.png`（2 个）、`tools/ClashEdge.ico`。
+**用户确认保留**：`packaging/windows/portable/.../static/imgs/logo_64*.png`（2 个）、`packaging/windows/launcher/` 下的启动器图标源。
 
 **验证**：删除后 `cargo build --release` 关键图标文件齐全（`include_bytes!("../../icons/32x32.png")` 仍可编译）；此前 34/34 单测与 release 构建已通过，未改动任何 Rust/TS 源码。
 
@@ -192,7 +206,7 @@ cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
 | 删除项 | 大小 | 原因 |
 | --- | --- | --- |
-| `portable-template/.../static/files/default/`（Country.mmdb） | 4.0 MB | 打包脚本不拷贝的重复地理数据 |
+| `packaging/windows/portable/.../App/DefaultData/Country.mmdb` | 4.0 MB | 打包脚本不拷贝的重复地理数据（已移至 `shared/` 或删除） |
 | `.../win/common/sysproxy.exe` | 102 KB | 系统代理已改 Rust winreg 直写注册表 |
 | `.../win/common/schtasks.xml`、`service.yml` | 1.3 KB | 旧服务/计划任务配置，零引用 |
 | `.../win/common/tun2socks/`（TAP 驱动套件） | 0.9 MB | 旧 tun2socks 方案，零引用 |
@@ -202,7 +216,7 @@ cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 | `tools/make-launcher-icon.ps1` | 5 KB | 零引用 |
 | `src/assets/typescript.svg`、`vite.svg` | 模板残留 | 未引用（`tauri.svg` 为 favicon 保留） |
 
-文档整理：根目录 4 份 .md 归入 `docs/`；过期的 `R8.3-REVISION-NOTES.md` 移入 `docs/archive/`；新增根 `README.md`、根 `.gitignore`；`tauri-scaffold/README.md` 由模板内容改为指向根 README。
+文档整理：根目录 4 份 .md 归入 `docs/`；过期的 `R8.3-REVISION-NOTES.md` 移入 `docs/archive/`（后在仓库清理时删除）；新增根 `README.md`、根 `.gitignore`；`tauri-scaffold/README.md` 由模板内容改为指向根 README（`tauri-scaffold/` 后重命名为 `apps/windows/`）。
 
 ## 6. 已知问题与注意事项
 
@@ -232,4 +246,4 @@ cd apps/windows; node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
 ## 9. 协作文档
 
-- 本文件为当前事实来源；`docs/archive/` 内文档不代表当前实现，仅追溯参考。
+- 本文件为当前事实来源。历史归档笔记（原 `docs/archive/`）已在仓库清理时移除，不再作为当前实现参考。

@@ -1,0 +1,23 @@
+# Contains duplicate node names to test the normalizer's dedupe_by_name.
+# Two nodes share the name "Duplicate-Node" but point to different servers.
+# The normalizer should keep only the first occurrence and silently drop the
+# second. This is not a validation error — the file is valid YAML.
+# Sanitized: all server addresses and passwords are fake.
+proxies:
+  - name: Duplicate-Node
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: password-one
+  - name: Duplicate-Node
+    type: ss
+    server: 5.6.7.8
+    port: 8389
+    cipher: aes-256-gcm
+    password: password-two
+  - name: Unique-Node
+    type: trojan
+    server: example.com
+    port: 443
+    password: test-password
