@@ -1,4 +1,4 @@
-﻿// src-tauri/src/tray/events.rs
+// src-tauri/src/tray/events.rs
 //! Tray event handlers
 //!
 //! This module handles all tray icon events including:
@@ -51,7 +51,8 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
         "mode_global" | "mode_rule" | "mode_direct" => {
             info!("Tray: switching proxy mode to {}", item_id);
             let mode = item_id["mode_".len()..].to_string();
-            crate::core::runtime::apply_proxy_mode(app_handle, &mode).await?;
+            let state = app_handle.state::<crate::AppState>();
+            state.controller.apply_proxy_mode(app_handle, &mode).await?;
         }
 
         // System proxy toggle（真实系统代理，独立于 allow-lan）
@@ -65,7 +66,10 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
                 .get_config()
                 .general
                 .system_proxy;
-            crate::core::runtime::apply_system_proxy(app_handle, new_val).await?;
+            state
+                .controller
+                .apply_system_proxy(app_handle, new_val)
+                .await?;
         }
 
         // TUN mode toggle
@@ -73,7 +77,7 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             info!("Tray: toggling TUN mode");
             let state = app_handle.state::<crate::AppState>();
             let new_val = !state.config_manager.lock().unwrap().get_config().tun.enable;
-            crate::core::runtime::apply_tun(app_handle, new_val).await?;
+            state.controller.apply_tun(app_handle, new_val).await?;
         }
 
         // Config mixin toggle
@@ -81,24 +85,11 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             info!("Tray: toggling config mixin");
             let state = app_handle.state::<crate::AppState>();
             // mixin_enabled 是应用级字段（不影响 runtime-config.yaml），
-            // 切换不需要 reload mihomo，但仍要持 config_tx 串行，避免与
-            // commit_config_transaction / apply_* 等并发事务在 config_manager
+            // 切换不需要 reload mihomo，但仍要经 AppController 持事务锁串行，
+            // 避免与 update_config / apply_* 等并发事务在 config_manager
             // 上交错（否则可能撞上正在 reload 的事务拿到中间态配置）。
-            let _tx = state.config_tx.lock().await;
-            let new_val = {
-                let mut cfg = state.config_manager.lock().unwrap();
-                let mut c = cfg.get_config();
-                c.mixin_enabled = !c.mixin_enabled;
-                let v = c.mixin_enabled;
-                cfg.set_config(c)?;
-                v
-            };
-            // 刷新托盘菜单勾选态，并通知前端同步 UI 状态。
-            crate::core::runtime::refresh_tray(app_handle).await?;
-            let _ = app_handle.emit(
-                "config-mixin-changed",
-                serde_json::json!({ "enable": new_val }),
-            );
+            // 刷新托盘菜单勾选态 + 通知前端同步 UI 状态均在控制器事务内完成。
+            state.controller.toggle_config_mixin(app_handle).await?;
         }
 
         // 开机自启开关（注册表 Run 键 → 根启动器 --clash-edge-autostart）
