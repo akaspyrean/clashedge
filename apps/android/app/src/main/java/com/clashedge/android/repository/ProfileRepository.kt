@@ -92,7 +92,7 @@ class ProfileRepository(
     }
 
     /**
-     * Runtime rule dir (filesDir/rules). The real rule sets live in `shared/rules`
+     * Runtime rule dir (filesDir/rules). The real rule sets are pinned in `assets.lock.json` (staged by `scripts/assets/prepare.ps1`)
      * at the repo root and should be copied into assets/ at build time; until then
      * placeholders keep the config loadable. This matches the shared rule set
      * (direct / proxy / media / ai / ad) used by Windows.
@@ -130,7 +130,7 @@ class ProfileRepository(
     private fun writePlaceholderRules(dir: File, names: List<String>) {
         names.forEach { name ->
             val f = File(dir, "$name.yaml")
-            if (!f.exists()) f.writeText("# placeholder $name rules — replaced from shared/rules\n")
+            if (!f.exists()) f.writeText("# placeholder $name rules — replaced from the staged built-in rules\n")
         }
         Logger.warn("built-in rules not bundled yet; using placeholders")
     }

@@ -8,7 +8,7 @@ import com.clashedge.android.model.Node
  *
  * Shares the Windows proxy-group naming and default rule chain (same product
  * rules / same group naming) so a ClashEdge user keeps a familiar information
- * architecture across platforms. Rule-set files come from `shared/rules` and are
+ * architecture across platforms. Rule-set files are pinned in `assets.lock.json` (external repo) and are
  * copied into the data dir at first launch.
  */
 object RuntimeConfigGenerator {

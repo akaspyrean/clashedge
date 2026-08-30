@@ -1,5 +1,5 @@
 {
-  "$comment": "Third-party assets fetched at build time by scripts/assets/prepare.ps1. Hashes are pinned: changing an asset is a deliberate decision that must go through this file. Never point sha256 at an URL whose content you have not verified byte-for-byte.",
+  "$comment": "Third-party assets fetched at build time by scripts/assets/prepare.ps1. Hashes are pinned: changing an asset is a deliberate decision that must go through this file. Never point sha256 at an URL whose content you have not verified byte-for-byte. Rules are pinned to a specific commit of akaspyrean/external (raw URLs with a commit sha are immutable); bumping the commit is a deliberate refresh.",
   "version": 1,
   "assets": [
     {
@@ -20,6 +20,41 @@
       "extract": "wintun/bin/amd64/wintun.dll",
       "out": "wintun/wintun.dll",
       "extracted_sha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
+    },
+    {
+      "name": "rule-direct",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/direct.yaml",
+      "sha256": "9bac72b2e9d672f05009b373104e23a62d3a46a3fdb2c04228c9a42800155fcd",
+      "out": "rules/direct.yaml"
+    },
+    {
+      "name": "rule-proxy",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/proxy.yaml",
+      "sha256": "e4837d6b173318b57860b2913aa434f0cb16146ceb1c70777b46ae9f0920375c",
+      "out": "rules/proxy.yaml"
+    },
+    {
+      "name": "rule-media",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/media.yaml",
+      "sha256": "afd82e17a38221ada7ee1ad936d85d0584c2202e01d181ffbb74fccba6bdb86a",
+      "out": "rules/media.yaml"
+    },
+    {
+      "name": "rule-ai",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/ai.yaml",
+      "sha256": "329f3994f7331ed9ab452c1d874408e2854f81c659e6200887bd2ca42c400e15",
+      "out": "rules/ai.yaml"
+    },
+    {
+      "name": "rule-ad",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/ad.yaml",
+      "sha256": "1e5b5b59f1441bd991f4c71a1c19b0a3f8d873acda4fa55144ff0475cead0172",
+      "out": "rules/ad.yaml"
     }
   ]
 }

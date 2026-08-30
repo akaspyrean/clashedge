@@ -21,12 +21,10 @@ Windows 是 Rust/Tauri，Android 是 Kotlin/Compose/VpnService，允许重复少
 ## 仓库结构
 
 ```text
-assets.lock.json        # 第三方二进制的版本/URL/SHA256 锁定
+assets.lock.json        # 第三方资产（内核/驱动/规则集）的版本/URL/SHA256 锁定
 apps/
   windows/              # 正式产品：Tauri 2（Rust 后端 + Vue 3 前端）
   android/              # 冻结实验：无真实内核，进入发布链路前须过 apps/android/README 的前置项
-shared/
-  rules/                # 内置规则集（direct/proxy/ad/media/ai），HTTP rule-provider 的首启快照
 packaging/windows/      # 便携包模板（DefaultData、launcher 源码、Other/Help）
 scripts/
   assets/prepare.ps1    # 下载 → 校验 SHA256 → 缓存 → stage 第三方资产
@@ -113,9 +111,11 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
 - 触发只有 `push: tags: v*`；tag 不可变由 GitHub Rulesets 保证（仓库设置，非脚本）。
 - manifest 强制签名（`TAURI_SIGNING_PRIVATE_KEY`），公钥编译期注入客户端（`update/mod.rs`）。
 - Updater 按稳定 ZIP 名下载，验 SHA256 + minisign 签名。
-- 第三方二进制（mihomo、wintun.dll）不进 Git：版本/URL/SHA256 锁在 `assets.lock.json`，
-  由 `scripts/assets/prepare.ps1` 物化到 `build/assets/staging/`。升级 = 改 lock + 提交，
-  hash 由脚本逐字节校验，绝不为未知二进制生成可信哈希。
+- 第三方资产（mihomo、wintun.dll、内置规则集）不进 Git：版本/URL/SHA256 锁在
+  `assets.lock.json`，由 `scripts/assets/prepare.ps1` 物化到 `build/assets/staging/`。
+  规则集固定在 `akaspyrean/external` 的具体 commit（commit-sha raw URL 永久不可变），
+  升级 = 改 lock 的 commit + 各文件 sha256 后提交，hash 由脚本逐字节校验，
+  绝不为未知二进制生成可信哈希。
 
 ## 测试与质量
 
@@ -132,6 +132,6 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
   command 层只做 参数 → controller → Result，事务与 runtime apply 内聚在 controller。
 - `core/manager.rs`、`util/fetch.rs`、`commands/profiles.rs` 体量偏大，按"一个文件一个
   变化原因"拆分，不引入 interfaces/repositories 之类的分层仪式。
-- geodata（GeoIP/GeoSite/Country.mmdb）与内置规则快照仍在 Git：上游均为 rolling 源
-  （meta-rules-dat 只有 latest；external 规则含本地补丁），待有不可变镜像后再迁入
-  assets.lock.json。
+- geodata（GeoIP/GeoSite/Country.mmdb，约 26MB）仍在 Git：上游 meta-rules-dat 是
+  rolling 发布（只有 latest tag、孤儿提交），无法安全 pin。可选方案：在 external 仓库
+  加定时同步 Action 镜像 geodata 后，即可按 commit 迁入 assets.lock.json。

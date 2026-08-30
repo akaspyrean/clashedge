@@ -36,7 +36,7 @@ Prerequisites before Android can enter the release scope:
 
 - **UI**: Kotlin + Jetpack Compose (Material 3)
 - **Network**: Android `VpnService` → TUN → Mihomo core (AAR / JNI)
-- **Rules**: same default rule set as Windows (`shared/rules`), same proxy-group names
+- **Rules**: same default rule set as Windows (pinned in `assets.lock.json`), same proxy-group names
 
 ## Architecture
 
@@ -61,7 +61,7 @@ state to `STOPPED`/`ERROR` — the UI can never show a fake "connected".
 > `gradle wrapper` after installing a Gradle distribution.
 
 ```powershell
-# 1) Materialize the shared rule set into assets
+# 1) Stage the pinned rule set into assets (runs scripts/assets/prepare.ps1 first)
 .\scripts\android\sync-rules.ps1
 
 # 2) Build a debug APK (from apps/android; requires the wrapper, see above)
