@@ -1,0 +1,364 @@
+# Large subscription fixture (60 sanitized nodes) for performance testing.
+# All server addresses and passwords are fake.
+
+proxies:
+  - name: Node-001
+    type: ss
+    server: 10.0.0.1
+    port: 8001
+    cipher: aes-128-gcm
+    password: test-password-001
+  - name: Node-002
+    type: ss
+    server: 10.0.0.2
+    port: 8002
+    cipher: aes-128-gcm
+    password: test-password-002
+  - name: Node-003
+    type: ss
+    server: 10.0.0.3
+    port: 8003
+    cipher: aes-128-gcm
+    password: test-password-003
+  - name: Node-004
+    type: ss
+    server: 10.0.0.4
+    port: 8004
+    cipher: aes-128-gcm
+    password: test-password-004
+  - name: Node-005
+    type: ss
+    server: 10.0.0.5
+    port: 8005
+    cipher: aes-128-gcm
+    password: test-password-005
+  - name: Node-006
+    type: ss
+    server: 10.0.0.6
+    port: 8006
+    cipher: aes-128-gcm
+    password: test-password-006
+  - name: Node-007
+    type: ss
+    server: 10.0.0.7
+    port: 8007
+    cipher: aes-128-gcm
+    password: test-password-007
+  - name: Node-008
+    type: ss
+    server: 10.0.0.8
+    port: 8008
+    cipher: aes-128-gcm
+    password: test-password-008
+  - name: Node-009
+    type: ss
+    server: 10.0.0.9
+    port: 8009
+    cipher: aes-128-gcm
+    password: test-password-009
+  - name: Node-010
+    type: ss
+    server: 10.0.0.10
+    port: 8010
+    cipher: aes-128-gcm
+    password: test-password-010
+  - name: Node-011
+    type: ss
+    server: 10.0.0.11
+    port: 8011
+    cipher: aes-128-gcm
+    password: test-password-011
+  - name: Node-012
+    type: ss
+    server: 10.0.0.12
+    port: 8012
+    cipher: aes-128-gcm
+    password: test-password-012
+  - name: Node-013
+    type: ss
+    server: 10.0.0.13
+    port: 8013
+    cipher: aes-128-gcm
+    password: test-password-013
+  - name: Node-014
+    type: ss
+    server: 10.0.0.14
+    port: 8014
+    cipher: aes-128-gcm
+    password: test-password-014
+  - name: Node-015
+    type: ss
+    server: 10.0.0.15
+    port: 8015
+    cipher: aes-128-gcm
+    password: test-password-015
+  - name: Node-016
+    type: ss
+    server: 10.0.0.16
+    port: 8016
+    cipher: aes-128-gcm
+    password: test-password-016
+  - name: Node-017
+    type: ss
+    server: 10.0.0.17
+    port: 8017
+    cipher: aes-128-gcm
+    password: test-password-017
+  - name: Node-018
+    type: ss
+    server: 10.0.0.18
+    port: 8018
+    cipher: aes-128-gcm
+    password: test-password-018
+  - name: Node-019
+    type: ss
+    server: 10.0.0.19
+    port: 8019
+    cipher: aes-128-gcm
+    password: test-password-019
+  - name: Node-020
+    type: ss
+    server: 10.0.0.20
+    port: 8020
+    cipher: aes-128-gcm
+    password: test-password-020
+  - name: Node-021
+    type: ss
+    server: 10.0.0.21
+    port: 8021
+    cipher: aes-128-gcm
+    password: test-password-021
+  - name: Node-022
+    type: ss
+    server: 10.0.0.22
+    port: 8022
+    cipher: aes-128-gcm
+    password: test-password-022
+  - name: Node-023
+    type: ss
+    server: 10.0.0.23
+    port: 8023
+    cipher: aes-128-gcm
+    password: test-password-023
+  - name: Node-024
+    type: ss
+    server: 10.0.0.24
+    port: 8024
+    cipher: aes-128-gcm
+    password: test-password-024
+  - name: Node-025
+    type: ss
+    server: 10.0.0.25
+    port: 8025
+    cipher: aes-128-gcm
+    password: test-password-025
+  - name: Node-026
+    type: ss
+    server: 10.0.0.26
+    port: 8026
+    cipher: aes-128-gcm
+    password: test-password-026
+  - name: Node-027
+    type: ss
+    server: 10.0.0.27
+    port: 8027
+    cipher: aes-128-gcm
+    password: test-password-027
+  - name: Node-028
+    type: ss
+    server: 10.0.0.28
+    port: 8028
+    cipher: aes-128-gcm
+    password: test-password-028
+  - name: Node-029
+    type: ss
+    server: 10.0.0.29
+    port: 8029
+    cipher: aes-128-gcm
+    password: test-password-029
+  - name: Node-030
+    type: ss
+    server: 10.0.0.30
+    port: 8030
+    cipher: aes-128-gcm
+    password: test-password-030
+  - name: Node-031
+    type: ss
+    server: 10.0.0.31
+    port: 8031
+    cipher: aes-128-gcm
+    password: test-password-031
+  - name: Node-032
+    type: ss
+    server: 10.0.0.32
+    port: 8032
+    cipher: aes-128-gcm
+    password: test-password-032
+  - name: Node-033
+    type: ss
+    server: 10.0.0.33
+    port: 8033
+    cipher: aes-128-gcm
+    password: test-password-033
+  - name: Node-034
+    type: ss
+    server: 10.0.0.34
+    port: 8034
+    cipher: aes-128-gcm
+    password: test-password-034
+  - name: Node-035
+    type: ss
+    server: 10.0.0.35
+    port: 8035
+    cipher: aes-128-gcm
+    password: test-password-035
+  - name: Node-036
+    type: ss
+    server: 10.0.0.36
+    port: 8036
+    cipher: aes-128-gcm
+    password: test-password-036
+  - name: Node-037
+    type: ss
+    server: 10.0.0.37
+    port: 8037
+    cipher: aes-128-gcm
+    password: test-password-037
+  - name: Node-038
+    type: ss
+    server: 10.0.0.38
+    port: 8038
+    cipher: aes-128-gcm
+    password: test-password-038
+  - name: Node-039
+    type: ss
+    server: 10.0.0.39
+    port: 8039
+    cipher: aes-128-gcm
+    password: test-password-039
+  - name: Node-040
+    type: ss
+    server: 10.0.0.40
+    port: 8040
+    cipher: aes-128-gcm
+    password: test-password-040
+  - name: Node-041
+    type: ss
+    server: 10.0.0.41
+    port: 8041
+    cipher: aes-128-gcm
+    password: test-password-041
+  - name: Node-042
+    type: ss
+    server: 10.0.0.42
+    port: 8042
+    cipher: aes-128-gcm
+    password: test-password-042
+  - name: Node-043
+    type: ss
+    server: 10.0.0.43
+    port: 8043
+    cipher: aes-128-gcm
+    password: test-password-043
+  - name: Node-044
+    type: ss
+    server: 10.0.0.44
+    port: 8044
+    cipher: aes-128-gcm
+    password: test-password-044
+  - name: Node-045
+    type: ss
+    server: 10.0.0.45
+    port: 8045
+    cipher: aes-128-gcm
+    password: test-password-045
+  - name: Node-046
+    type: ss
+    server: 10.0.0.46
+    port: 8046
+    cipher: aes-128-gcm
+    password: test-password-046
+  - name: Node-047
+    type: ss
+    server: 10.0.0.47
+    port: 8047
+    cipher: aes-128-gcm
+    password: test-password-047
+  - name: Node-048
+    type: ss
+    server: 10.0.0.48
+    port: 8048
+    cipher: aes-128-gcm
+    password: test-password-048
+  - name: Node-049
+    type: ss
+    server: 10.0.0.49
+    port: 8049
+    cipher: aes-128-gcm
+    password: test-password-049
+  - name: Node-050
+    type: ss
+    server: 10.0.0.50
+    port: 8050
+    cipher: aes-128-gcm
+    password: test-password-050
+  - name: Node-051
+    type: ss
+    server: 10.0.0.51
+    port: 8051
+    cipher: aes-128-gcm
+    password: test-password-051
+  - name: Node-052
+    type: ss
+    server: 10.0.0.52
+    port: 8052
+    cipher: aes-128-gcm
+    password: test-password-052
+  - name: Node-053
+    type: ss
+    server: 10.0.0.53
+    port: 8053
+    cipher: aes-128-gcm
+    password: test-password-053
+  - name: Node-054
+    type: ss
+    server: 10.0.0.54
+    port: 8054
+    cipher: aes-128-gcm
+    password: test-password-054
+  - name: Node-055
+    type: ss
+    server: 10.0.0.55
+    port: 8055
+    cipher: aes-128-gcm
+    password: test-password-055
+  - name: Node-056
+    type: ss
+    server: 10.0.0.56
+    port: 8056
+    cipher: aes-128-gcm
+    password: test-password-056
+  - name: Node-057
+    type: ss
+    server: 10.0.0.57
+    port: 8057
+    cipher: aes-128-gcm
+    password: test-password-057
+  - name: Node-058
+    type: ss
+    server: 10.0.0.58
+    port: 8058
+    cipher: aes-128-gcm
+    password: test-password-058
+  - name: Node-059
+    type: ss
+    server: 10.0.0.59
+    port: 8059
+    cipher: aes-128-gcm
+    password: test-password-059
+  - name: Node-060
+    type: ss
+    server: 10.0.0.60
+    port: 8060
+    cipher: aes-128-gcm
+    password: test-password-060
