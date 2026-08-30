@@ -22,9 +22,10 @@ env:
   ZIP_NAME: ClashEdge-portable-win64.zip
 
 jobs:
-  # P1-3：先跑质量门（fmt/clippy/test/audit/npm test/build）。
-  # 任一失败立即中止 release——避免发布"质量门没过"的版本。这是 Release
-  # 与 CI 共用同一套检查的关键：本地不经 main CI 直接打 tag 时也会被卡住。
+  # P1-3 / Quality Gate single source: Release 与 CI 共用同一份 quality gate
+  # (scripts/ci/quality.ps1)。以前 Release 内联了一套重复步骤，与 CI 的
+  # reusable workflow 漂移后产生"本地不经 main CI 直接打 tag 仍可能发布"的
+  # 风险。现在统一调用 quality.ps1，保证 fmt/clippy/test/audit/build 完全一致。
   quality:
     runs-on: windows-latest
     steps:
@@ -45,39 +46,9 @@ jobs:
         with:
           workspaces: apps/windows/src-tauri
 
-      - name: npm ci
-        working-directory: apps/windows
-        run: npm ci
-
-      - name: cargo fmt --check
-        working-directory: apps/windows/src-tauri
-        run: cargo fmt --check
-
-      - name: cargo clippy (-D warnings)
-        working-directory: apps/windows/src-tauri
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: cargo test
-        working-directory: apps/windows/src-tauri
-        run: cargo test
-
-      - name: cargo audit (known vulnerabilities)
-        working-directory: apps/windows/src-tauri
-        run: |
-          cargo install cargo-audit --locked 2>$null
-          cargo audit
-
-      - name: npm audit (high / critical)
-        working-directory: apps/windows
-        run: npm audit --audit-level=high
-
-      - name: npm test (Vitest unit + component tests)
-        working-directory: apps/windows
-        run: npm test
-
-      - name: npm run build
-        working-directory: apps/windows
-        run: npm run build
+      - name: "Quality Gate (single source: scripts/ci/quality.ps1)"
+        shell: pwsh
+        run: .\scripts\ci\quality.ps1
 
   build:
     needs: quality
@@ -109,14 +80,26 @@ jobs:
       # B1：快速失败守卫——workflow_dispatch 手动触发时 github.ref 是分支而非 tag，
       # 后续所有发布步骤都会产生错误的外部副作用（如以分支名创建公开 release）。
       # 在最前面直接终止，避免有人误触发后以为发版成功。
-      - name: Guard — only run on v* tags
+      # 判定逻辑在 scripts/release/Validate-ReleaseTrigger.ps1（由
+      # scripts/release/test-release-triggers.ps1 单元测试覆盖）。
+      # 该守卫同时校验 tag 名与 tauri.conf.json 版本号一致（tag/version mismatch
+      # 会让发布 ZIP / manifest / updater 路径彼此矛盾）。
+      - name: Read version
+        id: meta
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF -notlike 'refs/tags/v*') {
-            Write-Host "::error::Release workflow must be triggered by pushing a 'v*' tag, not by manual workflow_dispatch (ref: $env:GITHUB_REF)"
-            exit 1
-          }
-          Write-Host "tag trigger confirmed: $env:GITHUB_REF"
+          $raw = Get-Content .\apps\windows\src-tauri\tauri.conf.json -Encoding UTF8 -Raw
+          $m = [regex]::Match($raw, '"version"\s*:\s*"([^"]+)"')
+          if (-not $m.Success) { throw "Cannot extract version from tauri.conf.json" }
+          Add-Content $env:GITHUB_OUTPUT "version=$($m.Groups[1].Value)"
+
+      - name: Guard — trigger must be a v* tag matching config version
+        shell: pwsh
+        run: |
+          .\scripts\release\Validate-ReleaseTrigger.ps1 `
+            -Ref "$env:GITHUB_REF" `
+            -Tag "${{ github.ref_name }}" `
+            -Version "${{ steps.meta.outputs.version }}"
 
       # B1：Immutable release guard —— 发布不可变守卫，位于一切外部副作用之前。
       # 判定逻辑在 scripts/release/Protect-ReleaseTag.ps1（由
@@ -143,26 +126,6 @@ jobs:
             -Repo "${{ github.repository }}" `
             -WhatIfOnly `
             -SetGitHubOutput
-
-      - name: Read version
-        id: meta
-        shell: pwsh
-        run: |
-          $raw = Get-Content .\apps\windows\src-tauri\tauri.conf.json -Encoding UTF8 -Raw
-          $m = [regex]::Match($raw, '"version"\s*:\s*"([^"]+)"')
-          if (-not $m.Success) { throw "Cannot extract version from tauri.conf.json" }
-          Add-Content $env:GITHUB_OUTPUT "version=$($m.Groups[1].Value)"
-
-      - name: Validate tag matches version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $ver = "${{ steps.meta.outputs.version }}"
-          if ($tag -ne "v$ver") {
-            throw "tag '$tag' != 'v$ver' from tauri.conf.json — bump the config before tagging"
-          }
-          Write-Host "tag $tag matches config version $ver OK"
 
       # P0-6：更新清单签名是强制的。私钥或公钥缺失 => 立即失败，
       # 防止发布无法被客户端验签的更新包。
