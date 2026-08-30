@@ -8,7 +8,7 @@
 
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-4F6D7A?style=flat-square)
 ![Android](https://img.shields.io/badge/Android-Experimental-3DDC84?style=flat-square)
-![Version](https://img.shields.io/github/v/tag/akaspyrean/clashedge?style=flat-square&label=Version&color=66856A)
+![Version](https://img.shields.io/github/v/release/akaspyrean/clashedge?style=flat-square&label=Version&color=66856A&prefix=v)
 ![License](https://img.shields.io/badge/license-MIT-A98652?style=flat-square&label=License)
 
 [下载](../../releases) · [规则库](https://github.com/akaspyrean/external)
