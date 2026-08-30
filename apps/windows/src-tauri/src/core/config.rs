@@ -51,7 +51,7 @@ const EXTRA_ALLOWED_KEYS: &[&str] = &[];
 /// 语义不同，这些值不会写给 mihomo）。
 const APP_GEODATA_MODES: &[&str] = &["manual", "use-external", "remote"];
 
-/// 合并配置规则 - profile-preprocessor.cjs 逻辑的 Rust 实现
+/// 合并配置规则 - 运行时语义校验与归一：
 /// - 校验并修正代理模式（rule / global / direct）
 /// - 校验 geodata_mode（应用级值，仅空串回退 manual，不覆盖 mihomo 语义值）
 /// - 校验 find_process_mode（off / strict / always）
@@ -113,7 +113,7 @@ pub(crate) fn merge_rules(config: Config) -> Config {
 /// `-f` 交给 mihomo 加载。应用级字段（profile / locale / mixin-enabled /
 /// advanced / profiles / geo-auto-update / geodata-mode 应用值）不进入运行时。
 ///
-/// 合并策略（复刻 ClashEdge profile-preprocessor 的 preset 合并语义）：
+/// 合并策略（应用控制运行时结构，订阅只提供节点）：
 /// 1. AppConfig 控制运行时关键设置（端口 / 控制器 / 模式 / TUN / DNS），订阅不得覆盖；
 /// 2. AppConfig.extra 兜底键作为基线透传（用户自行导入的自定义键）；
 /// 3. 激活 Profile 只提供节点：应用始终采用内置组骨架（GLOBAL + 5 组）与内置规则链，
@@ -139,7 +139,7 @@ pub fn build_runtime_config(
         serde_yaml::Value::from(app.general.mixed_port)
     );
     put!("allow-lan", serde_yaml::Value::from(app.general.allow_lan));
-    // P1-5：allow-lan 高级控制。仅 allow-lan=true 时写入：
+    // allow-lan 高级控制。仅 allow-lan=true 时写入：
     // - bind-address：限定监听接口（如仅内网 IP）；
     // - lan-allowed-ips：来源网段白名单（CIDR）。
     // 值为空/None 时不写键，保持 mihomo 默认行为；非法值（含空白/控制符
@@ -170,7 +170,7 @@ pub fn build_runtime_config(
         "mode",
         serde_yaml::Value::from(app.general.proxy_mode.clone())
     );
-    // 日志级别实装（P1-11）：设置页的 log-level 真正写入运行时配置，
+    // 日志级别：设置页的 log-level 真正写入运行时配置，
     // 不再固定 info。非法值/空值归一到 info（mihomo 官方模板默认值）。
     // 注意 silent/error 会让内置日志页几乎无输出——这是用户显式选择，
     // UI 侧应有相应提示，后端不再越权改写用户意图。
@@ -266,9 +266,9 @@ pub fn build_runtime_config(
     let mut groups = app.proxy_groups.clone();
     // 有效节点来源：激活 Profile 的 `proxies` 优先，其次「导入配置」带入的
     // AppConfig.extra.proxies（用户显式导入完整 mihomo 配置）。
-    // 旧实现 extra.proxies 分支只写顶层 proxies、不做叶子组注入——节点存在于
-    // 配置但人工优选仍为 [DIRECT]、自动优选被零节点兜底删除，所有流量直连，
-    // 表现为"导入配置不起效"。现统一走同一注入路径。
+    // extra.proxies（导入配置带入的节点）必须与激活 Profile 的节点走同一
+    // 注入路径：只写顶层 proxies、不注入叶子组的话，节点存在于配置但
+    // 人工优选仍为 [DIRECT]、自动优选被零节点兜底删除，所有流量直连。
     let effective_proxies = profile_proxies.or_else(|| {
         app.extra
             .get("proxies")
@@ -720,7 +720,7 @@ proxies:
             map.get("secret").unwrap().as_str(),
             Some("clash-edge-secret")
         );
-        // P0-2：未知顶层字段不透传——订阅携带的 hosts/sniffer/script/listeners/
+        // 未知顶层字段不透传——订阅携带的 hosts/sniffer/script/listeners/
         // external-ui/dns/tun/proxy-providers/rule-providers 均不得进入运行时
         assert!(map.get("hosts").is_none(), "hosts must not pass through");
         assert!(
@@ -775,7 +775,7 @@ proxies:
     }
 
     /// 导入配置的节点（AppConfig.extra.proxies）必须注入内置叶子组：
-    /// 旧实现只写顶层 proxies、不注入叶子组，人工优选保持 [DIRECT]、
+    /// 若只写顶层 proxies、不注入叶子组，人工优选保持 [DIRECT]、
     /// 自动优选被零节点兜底删除，所有流量直连（"导入配置不起效"）。
     #[test]
     fn build_runtime_config_imported_extra_proxies_inject_into_leaf_groups() {
@@ -905,7 +905,7 @@ proxies:
         assert_eq!(merged.general.find_process_mode, "always");
     }
 
-    /// P0-2：订阅携带的 `proxy-providers` / `rule-providers` 不再透传到运行时配置
+    /// 订阅携带的 `proxy-providers` / `rule-providers` 不透传到运行时配置
     /// （白名单仅允许 `proxies`）。运行时仅保留应用内置 5 组 rule-providers，
     /// 其合法相对路径保持原样。
     #[test]

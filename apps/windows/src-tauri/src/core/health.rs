@@ -1,5 +1,5 @@
 // src-tauri/src/core/health.rs
-//! mihomo 就绪 / 端口健康探测与启动日志解析（CoreManager 拆分 P2）
+//! mihomo 就绪 / 端口健康探测与启动日志解析
 //!
 //! 纯函数辅助：不持有 CoreManager 状态，只处理单个输入。供
 //! - CoreManager::start / wait_ready（就绪轮询）
@@ -10,10 +10,10 @@ use std::time::Duration;
 
 use crate::util::error::{Error, Result};
 
-/// P0-4：端口健康探测（TCP connect）超时
+/// 端口健康探测（TCP connect）超时
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// P0-4：TCP 探测 `(host, port)`，超时或拒绝都视为监听失败
+/// TCP 探测 `(host, port)`，超时或拒绝都视为监听失败
 pub(crate) async fn probe_tcp<A: tokio::net::ToSocketAddrs>(
     addr: A,
     timeout: Duration,
@@ -25,7 +25,7 @@ pub(crate) async fn probe_tcp<A: tokio::net::ToSocketAddrs>(
     Ok(())
 }
 
-/// P0-4：TCP 探测 "host:port" 字符串地址
+/// TCP 探测 "host:port" 字符串地址
 pub(crate) async fn probe_str_addr(addr: &str) -> Result<()> {
     match tokio::time::timeout(PORT_PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
         Ok(Ok(_)) => Ok(()),
@@ -34,7 +34,7 @@ pub(crate) async fn probe_str_addr(addr: &str) -> Result<()> {
     }
 }
 
-/// P0-4：把 mihomo `dns.listen` 归一化为可探测的 "127.0.0.1:<port>"。
+/// 把 mihomo `dns.listen` 归一化为可探测的 "127.0.0.1:<port>"。
 /// 兼容 ":1053" / "0.0.0.0:1053" / "127.0.0.1:1053" 三种写法。
 pub(crate) fn normalize_dns_listen(listen: &str) -> String {
     let normalized = listen.replacen("0.0.0.0:", "127.0.0.1:", 1);
@@ -92,7 +92,7 @@ mod tests {
         assert_eq!(parse_bind_error(provider), None);
     }
 
-    // P0-4：dns.listen 归一化（探测地址必须可连接）
+    // dns.listen 归一化（探测地址必须可连接）
     #[test]
     fn test_normalize_dns_listen() {
         assert_eq!(normalize_dns_listen("127.0.0.1:1053"), "127.0.0.1:1053");

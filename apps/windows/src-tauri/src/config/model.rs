@@ -1,5 +1,5 @@
 // src-tauri/src/config/model.rs
-//! 配置数据模型：对应 profile-preprocessor.cjs 处理后的配置结构
+//! 配置数据模型：config.yaml（应用持久化配置）的结构
 //! 单一来源：Rust 结构体 ←→ 前端 TypeScript 接口
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ pub struct Config {
     pub general: GeneralConfig,
 
     /// 外部控制器（mihomo 顶层键 external-controller / secret）
-    /// 使用 flatten 与 config.yaml 顶层布局对齐：R8.3 把这些键放在顶层，
+    /// 使用 flatten 与 config.yaml 顶层布局对齐（这些键位于顶层）：
     /// 若嵌套在 proxy: 下，serde 会把未知顶层键静默丢弃，写回时值丢失且错位。
     #[serde(default, flatten)]
     pub proxy: ProxyConfig,
@@ -43,8 +43,8 @@ pub struct Config {
     #[serde(default = "default_locale")]
     pub locale: String,
 
-    /// 规则提供者（订阅来源；内置基线 5 组 direct/ai/media/proxy/ad，
-    /// 对应 profile-preprocessor.cjs 的 rule-providers 段）
+    /// 规则提供者（订阅来源；默认内置基线 5 组 direct/ai/media/proxy/ad，
+    /// 保证无订阅时也有完整分流所需的 provider 定义，随包附带规则文件可离线加载）
     #[serde(default = "default_rule_providers")]
     pub rule_providers: HashMap<String, serde_yaml::Value>,
 
@@ -54,7 +54,7 @@ pub struct Config {
     #[serde(default = "default_proxy_groups")]
     pub proxy_groups: Vec<serde_yaml::Value>,
 
-    /// 内置路由规则（对应 profile-preprocessor.cjs buildPreset 的内置段，
+    /// 内置路由规则（内置基线，
     /// 保证无订阅时也有完整分流规则而非空配置；订阅规则由导入流程前置插入）
     #[serde(default = "default_rules")]
     pub rules: Vec<String>,
@@ -100,14 +100,14 @@ pub struct GeneralConfig {
     #[serde(default)]
     pub allow_lan: bool,
 
-    /// P1-5：allow-lan 高级控制——绑定地址（mihomo `bind-address`）。
+    /// allow-lan 高级控制——绑定地址（mihomo `bind-address`）。
     /// None/空 → 不写该键（mihomo 默认绑定所有接口）；
     /// 常用值："*"（所有接口）、"127.0.0.1"（仅本机，等价关闭 LAN 访问）、
     /// 具体内网 IP。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind_address: Option<String>,
 
-    /// P1-5：允许访问代理的来源网段白名单（mihomo `lan-allowed-ips`，
+    /// 允许访问代理的来源网段白名单（mihomo `lan-allowed-ips`，
     /// CIDR 列表如 192.168.1.0/24）。空列表 → 不写该键（mihomo 默认
     /// 0.0.0.0/0 + ::/0 即全部放行）。仅在 allow-lan=true 时写入运行时。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -139,7 +139,7 @@ pub struct GeneralConfig {
     pub find_process_mode: String,
 
     /// 代理模式。mihomo 顶层键为 `mode`（rule/global/direct），
-    /// 旧版本（R8.3 及更早）写的是 `proxy-mode`，因此保留 `alias` 兼容旧配置。
+    /// 旧配置写的 `proxy-mode` 键通过 `alias` 保持兼容。
     #[serde(default = "default_proxy_mode", rename = "mode", alias = "proxy-mode")]
     pub proxy_mode: String,
 
@@ -227,7 +227,7 @@ pub(crate) fn default_secret_placeholder() -> &'static str {
     "clash-edge-secret"
 }
 
-/// P0-3 脱敏占位符：`get_config` 返回给前端时用它替代真实 secret。
+/// 脱敏占位符：`get_config` 返回给前端时用它替代真实 secret。
 /// `update_config`/`import_config` 见到此值或空串时保留现有真实密钥，不轮换。
 pub const SECRET_REDACTED: &str = "********";
 
@@ -246,8 +246,8 @@ pub fn generate_random_secret() -> String {
 }
 
 /// 是否需要轮换控制器密钥：空 / 固定占位 / 旧版（Clash.F.Win）遗留固定密钥。
-/// `ConfigManager::ensure_secure_secret`（H1 收敛的落盘前统一轮换）
-/// 与系统代理开启前兜底（C9）复用同一判定，避免两处判定逻辑漂移。
+/// `ConfigManager::ensure_secure_secret`（落盘前统一轮换）
+/// 与系统代理开启前兜底复用同一判定，避免两处判定逻辑漂移。
 pub fn needs_secret_rotation(secret: &str) -> bool {
     secret.is_empty() || secret == default_secret_placeholder() || secret == "clash-f-win-secret"
 }
@@ -600,7 +600,7 @@ fn default_profiles_ai_group() -> String {
     "AI".to_string()
 }
 
-/// 内置规则提供者：对应 profile-preprocessor.cjs buildPreset 的 rule-providers。
+/// 内置规则提供者：默认基线的 rule-providers 定义。
 /// `path: ./rules/<name>.yaml` 相对 mihomo 的 `-d` 目录（Data/），随包附带这些文件，
 /// 离线也能加载；联网后按 interval 自动更新。
 pub fn default_rule_providers() -> HashMap<String, serde_yaml::Value> {
@@ -639,7 +639,7 @@ ad:
     serde_yaml::from_str(YAML).unwrap_or_default()
 }
 
-/// 内置代理组：对应 profile-preprocessor.cjs 的 proxy-groups 段。
+/// 内置代理组：默认基线的 proxy-groups 段。
 /// 叶子组初始为空（无订阅时无可用节点），订阅导入后由
 /// `build_runtime_config` 注入真实节点名。
 /// GLOBAL 为全局模式专用组：`mode: global` 时所有流量走它，只含 DIRECT/REJECT
@@ -685,7 +685,7 @@ pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
     serde_yaml::from_str(YAML).unwrap_or_default()
 }
 
-/// 内置路由规则：对应 profile-preprocessor.cjs buildPreset 的内置规则段。
+/// 内置路由规则：内置基线的分流规则段。
 /// 采用经典分流：国内直连、广告拦截、AI/影音走专属组、其余（proxy 规则集 + MATCH）
 /// 走"扶梯出行"主组。广告拦截双保险：内置 ad 规则集（external/ad.yaml，约 21 万条）
 /// 优先于 GEOSITE category-ads-all 兜底，确保离线也有基础拦截。
@@ -708,12 +708,12 @@ pub fn default_rules() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// R8.3 config.yaml：external-controller / secret 位于顶层。
+    /// 旧版 config.yaml：external-controller / secret 位于顶层。
     /// 往返后必须保留原始值，且仍写回顶层（mihomo 可识别），
     /// 不得丢失、不得空串、不得错位嵌套到 proxy: 下。
     #[test]
-    fn roundtrip_preserves_r83_external_controller() {
-        let r83 = r#"
+    fn roundtrip_preserves_top_level_external_controller() {
+        let legacy_yaml = r#"
 mixed-port: 7890
 allow-lan: false
 external-controller: 127.0.0.1:50715
@@ -721,7 +721,7 @@ secret: b1616fdd-63a8-44e9-b196-c63b68307a9b
 log-level: error
 "#;
 
-        let config: Config = serde_yaml::from_str(r83).expect("parse R8.3 yaml");
+        let config: Config = serde_yaml::from_str(legacy_yaml).expect("parse legacy yaml");
         assert_eq!(config.proxy.external_controller, "127.0.0.1:50715");
         assert_eq!(config.proxy.secret, "b1616fdd-63a8-44e9-b196-c63b68307a9b");
 
@@ -804,7 +804,7 @@ hosts:
         assert!(again.extra.contains_key("hosts"));
     }
 
-    /// 旧配置键 `proxy-mode` 必须仍可被解析（alias 兼容 R8.3 及更早）。
+    /// 旧配置键 `proxy-mode` 必须仍可被解析（alias 兼容旧格式）。
     #[test]
     fn legacy_proxy_mode_alias_parses() {
         let yaml = "proxy-mode: global\nmixed-port: 7890\n";

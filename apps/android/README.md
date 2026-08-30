@@ -2,11 +2,11 @@
 
 Lightweight / Simple / Mihomo-based Clash client for Android.
 
-## Status: experimental / planned (NOT in the release gate)
+## Status: experimental / planned (NOT released)
 
-Android is **experimental / planned work**. It is **not part of the formal
-release gate** (see `docs/RELEASE-GATE.md`) and must not be advertised as a
-shipping platform until every prerequisite below is done.
+Android is **experimental / planned work**. It is **not part of the release
+chain** and must not be advertised as a shipping platform until every
+prerequisite below is done.
 
 Current state (as of 2026-08-28):
 

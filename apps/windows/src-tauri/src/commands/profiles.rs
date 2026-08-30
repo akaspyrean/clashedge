@@ -22,7 +22,7 @@ use crate::util::paths::{get_profiles_dir, sanitize_profile_name};
 /// 临时文件名计数器（与进程 id 组合成随机后缀，保证同一进程内不撞名）
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-// P1-8：订阅资源限制
+// 订阅资源限制
 /// 最大下载大小（10 MB）
 const MAX_DOWNLOAD_BYTES: u64 = 10 * 1024 * 1024;
 /// 最大 YAML 内容大小（10 MB 文本）
@@ -34,7 +34,7 @@ const MAX_NODE_NAME_LENGTH: usize = 100;
 /// 任意字段值的最大长度（防止异常超长字段）
 const MAX_FIELD_VALUE_LENGTH: usize = 5000;
 
-/// 校验订阅内容是否符合资源限制（P1-8）。
+/// 校验订阅内容是否符合资源限制。
 /// 在写入磁盘前调用，防止恶意超大/超长订阅导致资源耗尽或 UI 异常。
 fn validate_subscription_content(text: &str) -> Result<()> {
     if text.len() > MAX_YAML_CONTENT_BYTES as usize {
@@ -65,7 +65,7 @@ fn validate_subscription_content(text: &str) -> Result<()> {
                     )));
                 }
             }
-            // P1-9：按协议校验必要字段，不使用统一极小字段白名单。
+            // 按协议校验必要字段，不使用统一极小字段白名单。
             // 保证 VLESS/Reality/Trojan/Hysteria2/TUIC 等协议不被破坏。
             validate_node_protocol(node, i + 1)?;
             // 校验所有字段值长度
@@ -87,7 +87,7 @@ fn validate_subscription_content(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// P1-9：按协议校验代理节点必要字段。
+/// 按协议校验代理节点必要字段。
 /// 每种协议有各自的必需字段，统一校验可防止字段缺失导致 mihomo 启动失败。
 /// 不使用统一的极小字段白名单——保证 VLESS/Reality/Trojan/Hysteria2/TUIC
 /// 等现有协议能力不被破坏。
@@ -285,7 +285,7 @@ pub async fn list_profiles(app: AppHandle) -> Result<Vec<serde_json::Value>> {
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_default(),
                     "active": name == active,
-                    // P1-10：订阅地址脱敏——前端只获得 host 或脱敏 URL，
+                    // 订阅地址脱敏——前端只获得 host 或脱敏 URL，
                     // token/key 不返回前端。后端更新功能读回文件内完整 URL 重新拉取。
                     "url": std::fs::read_to_string(&path)
                         .ok()
@@ -372,10 +372,9 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
         return Err(Error::InvalidArgument("Profile already exists".to_string()));
     }
 
-    // P0-2：整个 rename + activate 序列持有 config_tx。旧实现先 rename 文件、
-    // 再调 activate_profile（内部才取锁）——文件变化发生在事务锁外，可能与并发
-    // 订阅刷新/激活/配置修改交错。改为全程持锁（rename / activate / rollback
-    // 都走 *_locked 变体，避免嵌套取锁死锁）。
+    // 整个 rename + activate 序列必须全程持有 config_tx：若文件变化发生在
+    // 事务锁外，会与并发的订阅刷新/激活/配置修改交错。rename / activate /
+    // rollback 都走 *_locked 变体，避免嵌套取锁死锁。
     let state = app.state::<crate::AppState>();
     let _tx = state.config_tx.lock().await;
 
@@ -441,7 +440,7 @@ pub async fn update_profile_content(app: AppHandle, name: String, content: Strin
     // 统一校验（与网络导入同一标准）
     validate_subscription_content(&content)?;
 
-    // P0-2：写文件 + 激活序列全程持有 config_tx（文件变化不在事务锁外）。
+    // 写文件 + 激活序列全程持有 config_tx（文件变化不在事务锁外）。
     let state = app.state::<crate::AppState>();
     let _tx = state.config_tx.lock().await;
 
@@ -618,7 +617,7 @@ async fn normalize_subscription_body(app: &AppHandle, body: &str) -> Result<(Str
     Ok((doc, norm.warnings))
 }
 
-/// P1-10：脱敏订阅 URL，返回 host（含可选端口），不泄露 token/key。
+/// 脱敏订阅 URL，返回 host（含可选端口），不泄露 token/key。
 ///
 /// - `https://user:pass@host:port/path?token=secret#frag` → `https://host:port/…`
 /// - `https://host/path?token=secret` → `https://host/…`
@@ -795,7 +794,7 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
 
     // 事务第一步：下载新内容到临时文件（流式 + 大小上限）。
     // 注释头先行写入，保留订阅地址供下次更新；
-    // C6：URL 用规范化后的 parsed.as_str()，防止原始字符串反射注入。
+    // URL 用规范化后的 parsed.as_str()，防止原始字符串反射注入。
     // 此阶段任何失败都不触碰现有文件，原订阅保持可用。
     let temp_path = temp_path_for(&file_path);
     let header = format!("# subscribe-url: {}\n", parsed.as_str());
@@ -831,7 +830,7 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         return Err(e);
     }
 
-    // P0-2：到这里（下载/校验/归一化已完成）才持有 config_tx，串行「提交文件 +
+    // 到这里（下载/校验/归一化已完成）才持有 config_tx，串行「提交文件 +
     // 激活生效」这一段。网络下载/解析耗时，不应占住全局事务锁。
     let state = app.state::<crate::AppState>();
     let _tx = state.config_tx.lock().await;
@@ -851,7 +850,7 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     Ok(())
 }
 
-// D6：启动时一次性订阅静默刷新
+// 启动时一次性订阅静默刷新
 //
 /// 订阅静默刷新的过期阈值：mtime 距今超过 24h 才刷新
 const SUBSCRIPTION_REFRESH_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
@@ -1140,7 +1139,7 @@ proxies:
         assert!(!temp.exists());
     }
 
-    // ---- D6：启动时一次性订阅静默刷新 ----
+    // ---- 启动时一次性订阅静默刷新 ----
 
     /// 阈值逻辑：仅「含订阅头 + mtime 超过 24h」入选；本地配置与 mtime 未知跳过
     #[test]

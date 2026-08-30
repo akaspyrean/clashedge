@@ -4,10 +4,10 @@
 // `general` 与 `proxy` 均被 `#[serde(flatten)]` 展开到顶层，
 // 所以 JSON 键是 kebab-case，且 external-controller / secret 位于顶层。
 // `proxy_mode` 字段在模型上 `#[serde(rename = "mode", alias = "proxy-mode")]`，
-// 因此 JSON 键是 `mode`（不是 0.8.5 旧版的 "proxy-mode"）；
+// 因此 JSON 键是 `mode`（旧键 "proxy-mode" 仅作后端 alias 兼容）；
 // `system_proxy` 是应用级字段（托盘系统代理开关的真实状态），键为 "system-proxy"，
 // 前端任何整包保存（update_config）都必须携带它，否则会被后端默认值覆盖。
-// P0-3：`secret` 字段由后端脱敏为 "********"（真实密钥仅存后端，Rust 调用
+// `secret` 字段由后端脱敏为 "********"（真实密钥仅存后端，Rust 调用
 // mihomo API 时直接读共享配置 Arc 做 Bearer 鉴权）。前端回传脱敏值时后端
 // 保留现有真实密钥不轮换。
 
@@ -85,7 +85,7 @@ export interface ClashConfig {
 export const configApi = {
   get: () => invoke<ClashConfig>("get_config"),
   /** 降级模式信息：config.yaml 损坏时 degraded=true，backup_file 给出备份路径。
-   *  前端据此展示横幅并阻止无确认的普通保存（P0）。 */
+   *  前端据此展示横幅并阻止无确认的普通保存。 */
   getConfigDegraded: () =>
     invoke<{
       degraded: boolean;

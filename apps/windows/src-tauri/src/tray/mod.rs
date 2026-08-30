@@ -9,11 +9,10 @@ use std::sync::{Mutex, OnceLock};
 
 /// 托盘菜单「不透明 ID → (组名, 节点名)」映射。
 ///
-/// 背景（审计 P1-9）：旧实现把真实组名/节点名编码进 MenuId（如
-/// `proxy_group_{group}_{proxy}`），事件侧再用 `rsplitn(2, '_')` 反解；
-/// 名称含 `_` 时解析歧义会选错节点，中文/空格也会进 ID。
-/// 现在菜单构建时按顺序分配稳定序号 ID（`proxy-item-0001`），
-/// 真实名称只存这里；refresh_tray 每次 update_tray_menu 都整体重建菜单，
+/// 设计约束：真实组名/节点名绝不编码进 MenuId——名称含 `_` 时用分隔符反解
+/// 会产生歧义选错节点，中文/空格也不适合进 ID。因此菜单构建时按顺序分配
+/// 稳定序号 ID（`proxy-item-0001`），真实名称只存这里；
+/// refresh_tray 每次 update_tray_menu 都整体重建菜单，
 /// 且映射替换严格发生在 set_menu 成功之后（保证窗口期点击语义一致）。
 pub type TrayMenuMap = HashMap<String, (String, String)>;
 

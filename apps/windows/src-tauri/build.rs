@@ -1,5 +1,5 @@
 // build.rs — minimal build script for Tauri 2.
-// Sidecar binaries (clash-edge-core.exe, go-tun2socks.exe, etc.) are NOT embedded in
+// Sidecar binaries (mihomo core, wintun.dll) are NOT embedded in
 // the Tauri binary; they are manually copied into App/ by scripts/windows/build-portable.ps1.
 // create-tauri-app scaffolds an empty build.rs; Tauri's own resource embedding is handled
 // via tauri.conf.json `bundle.resources`, so this file stays minimal.

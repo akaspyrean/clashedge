@@ -29,7 +29,7 @@
 
 两个平台共享品牌、产品定位、默认规则体系与相近的信息架构，但平台能力各自独立实现。
 
-> **Android 为实验性/规划中，不包含在正式发布 Gate 内**：当前缺少 gradle wrapper（无可执行的 `gradlew`/`gradlew.bat`）、Mihomo AAR/JNI 为占位实现（无真实 VPN 内核集成）、无 release 签名配置，因此**无法提供真实 VPN 服务**。现状与进入发布范围的前置条件清单见 [`apps/android/README.md`](apps/android/README.md)。
+> **Android 为实验性/规划中，不包含在正式发布链路内**：当前缺少 gradle wrapper（无可执行的 `gradlew`/`gradlew.bat`）、Mihomo AAR/JNI 为占位实现（无真实 VPN 内核集成）、无 release 签名配置，因此**无法提供真实 VPN 服务**。现状与进入发布范围的前置条件清单见 [`apps/android/README.md`](apps/android/README.md)。
 
 ---
 

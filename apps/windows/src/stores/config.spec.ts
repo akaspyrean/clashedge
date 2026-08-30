@@ -76,7 +76,7 @@ function primeStore(store: ReturnType<typeof useConfigStore>, cfg: ClashConfig) 
   store.baseline = JSON.parse(JSON.stringify(cfg));
 }
 
-describe("config store / diffFromBaseline (P0-3 深比较)", () => {
+describe("config store / diffFromBaseline (深比较)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     invokeMock.mockReset();

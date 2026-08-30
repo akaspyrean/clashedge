@@ -1,0 +1,25 @@
+{
+  "$comment": "Third-party assets fetched at build time by scripts/assets/prepare.ps1. Hashes are pinned: changing an asset is a deliberate decision that must go through this file. Never point sha256 at an URL whose content you have not verified byte-for-byte.",
+  "version": 1,
+  "assets": [
+    {
+      "name": "mihomo",
+      "version": "1.19.20",
+      "variant": "windows-amd64-compatible",
+      "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.20/mihomo-windows-amd64-compatible-v1.19.20.zip",
+      "sha256": "bf0be6e1feaef84311a5d901d3d1e5d1171aaa4be04005d368b78865727eae4e",
+      "extract": "mihomo-windows-amd64-compatible.exe",
+      "out": "mihomo/clash-edge-core.exe",
+      "extracted_sha256": "1b97c10b06c41d78fd0f3821ac49905c3f8ac5812605bd4b2753a48147769801"
+    },
+    {
+      "name": "wintun",
+      "version": "0.14.1",
+      "url": "https://www.wintun.net/builds/wintun-0.14.1.zip",
+      "sha256": "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51",
+      "extract": "wintun/bin/amd64/wintun.dll",
+      "out": "wintun/wintun.dll",
+      "extracted_sha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
+    }
+  ]
+}

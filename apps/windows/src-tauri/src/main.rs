@@ -5,7 +5,7 @@
 //! - 后端：Rust (Tauri 2 + Tokio)
 //! - 前端：Vue 3 + TypeScript + Pinia + Element Plus
 //! - 打包：dir target（便携包，无安装器）
-//! - Sidecar：clash-edge-core.exe, go-tun2socks.exe, EnableLoopback.exe, wintun.dll
+//! - Sidecar：clash-edge-core.exe（mihomo 内核）、wintun.dll
 //! - 便携模式：exe 同目录 App/ 存放程序文件，Data/ 存放用户数据
 //!   （原生便携检测：App/portable.dat 或 App/clash-edge-core.exe 存在即便携）
 
@@ -51,17 +51,17 @@ pub struct AppState {
     pub core_manager: std::sync::OnceLock<crate::core::manager::CoreManager>,
     pub config_manager: std::sync::Mutex<ConfigManager>,
     /// 配置/运行态事务串行锁：跨 `.await` 持有，串行所有改 Config + Mihomo +
-    /// Windows 的入口。见上文结构注释。P0-2。
+    /// Windows 的入口。见上文结构注释。
     pub config_tx: tokio::sync::Mutex<()>,
     pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
     /// 日志流任务句柄（前端日志页启用/停止；std Mutex，abort 为同步调用）
     pub log_stream: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    /// P1-7：最近一次 mihomo 子进程 PID 缓存（CoreSupervisor 在每次成功 spawn
+    /// 最近一次 mihomo 子进程 PID 缓存（CoreSupervisor 在每次成功 spawn
     /// 后更新、stop 时清零）。退出清理在 core_manager 锁被 async 任务占用时
-    /// 用它做按 PID 精确清杀，取代旧的「按进程名 taskkill」——后者会误杀
-    /// 用户自己在跑的其他 mihomo 实例。0 = 本会话从未启动过子进程。
+    /// 用它做按 PID 精确清杀——「按进程名 taskkill」会误杀用户自己在跑的
+    /// 其他 mihomo 实例。0 = 本会话从未启动过子进程。
     pub core_pid_cache: std::sync::atomic::AtomicU32,
-    /// P0-6：本会话最近一次通过 minisign 验签的更新清单（附验签时刻）。
+    /// 本会话最近一次通过 minisign 验签的更新清单（附验签时刻）。
     /// `download_update` 只允许下载这份清单指向的包——WebView 传入的
     /// version/url/hash 不参与任何决策。带 TTL：距检查超过
     /// `VERIFIED_UPDATE_TTL` 后缓存失效，必须重新 check_update，
@@ -127,7 +127,7 @@ pub fn run() {
                 let mut config_mgr = state.config_manager.lock().unwrap();
                 config_mgr.init(&data_dir)?;
 
-                // P1-8：异常恢复与手动关闭/正常退出共用同一 ownership helper。
+                // 异常恢复与手动关闭/正常退出共用同一 ownership helper。
                 // ownership 已被用户/其他软件拿走时，不写注册表，并把配置意图落回
                 // false，避免核心启动后再次覆盖用户的新代理。
                 let port = config_mgr.get_config().general.mixed_port;
@@ -162,7 +162,7 @@ pub fn run() {
             build_tray(app.handle())?;
 
             // 设置窗口行为
-            // H2③ WebView 导航锁定：仅放行应用自身 origin，其余一律阻止。
+            // WebView 导航锁定：仅放行应用自身 origin，其余一律阻止。
             // 回调返回 true 放行、false 拒绝；拒绝时 WebView 停留在当前页面，
             // 防止被导航到外部站点（钓鱼 / 恶意注入 / 加载外部脚本）。
             // 放行清单：
@@ -284,7 +284,7 @@ pub fn run() {
                             crate::core::runtime::apply_system_proxy(&app_handle, true).await
                         {
                             error!("Failed to restore system proxy: {}", e);
-                            // P0-3：恢复失败不得让 UI 继续把 system-proxy 当作 ON；
+                            // 恢复失败不得让 UI 继续把 system-proxy 当作 ON；
                             // 配置落回实际状态并推送事件刷新前端。
                             crate::core::runtime::mark_system_proxy_failed(
                                 &app_handle,
@@ -294,7 +294,7 @@ pub fn run() {
                         }
                     } else if sys_proxy_intent && !started {
                         // 内核没起来但配置里仍想开系统代理：保持关闭，否则会指向死端口。
-                        // P0-3：配置意图同步落回 false，UI 显示真实状态（OFF）。
+                        // 配置意图同步落回 false，UI 显示真实状态（OFF）。
                         warn!("System proxy stays OFF: core failed to start (config intent=true)");
                         crate::core::runtime::mark_system_proxy_failed(
                             &app_handle,
@@ -305,7 +305,7 @@ pub fn run() {
                 });
             }
 
-            // D6：启动时一次性订阅静默刷新——延迟 60s（给核心启动与网络就绪
+            // 启动时一次性订阅静默刷新——延迟 60s（给核心启动与网络就绪
             // 留时间）后执行一次即结束：无常驻定时器、无循环、不占驻留内存。
             // 仅在用户显式开启"自动更新订阅"时执行（可预期性与隐私：避免
             // 用户只是打开应用、60s 后却静默访问订阅服务器）。
@@ -464,7 +464,7 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
         }
     }
 
-    // A1：尽力卸载 TUN，避免强杀 mihomo 后 wintun 虚拟网卡/接管路由残留。
+    // 尽力卸载 TUN，避免强杀 mihomo 后 wintun 虚拟网卡/接管路由残留。
     // 仅在配置开启了 TUN 且核心仍在运行时，向 mihomo 控制器发
     // PATCH /configs {tun:{enable:false}} 让其优雅拆除虚拟网卡/路由；
     // 2s 硬超时，任何失败都不阻断退出（随后仍会按 PID taskkill 兜底）。
@@ -485,11 +485,11 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     // 复读验证与 journal 清除已由 release_owned_proxy 完成：系统代理
     //    恢复并验证成功后 journal 已被清除。Mihomo 的停止与 journal 完全解耦——
     //    Mihomo 停止失败只记录错误，绝不重新创建或保留 proxy journal。
-    //    P1-7：只按 PID 精确清杀自己创建的进程。优先走 core_manager 锁拿
+    //    只按 PID 精确清杀自己创建的进程。优先走 core_manager 锁拿
     //    实时 PID；锁被 async 任务占用时退回 supervisor 维护的 PID 缓存。
     //    两者都没有（本会话从未成功启动过核心）就什么都不杀——绝不按
     //    进程名 taskkill，避免误杀用户另行运行的 mihomo。
-    //    P0-8：按 PID 杀之前必须做所有权校验（映像路径匹配），防止 PID 被
+    //    按 PID 杀之前必须做所有权校验（映像路径匹配），防止 PID 被
     //    系统复用后误杀无关进程。
     let pid = {
         match state.core_manager.get() {
@@ -543,7 +543,7 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     }
 }
 
-/// P0-8：PID 所有权校验——该 PID 对应进程的映像路径是否确认为 ClashEdge
+/// PID 所有权校验——该 PID 对应进程的映像路径是否确认为 ClashEdge
 /// 的 mihomo 二进制。用 OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) +
 /// QueryFullProcessImageNameW 读取映像路径，与期望路径（canonicalize 归一）
 /// 比对。任一环节失败（进程已不存在/权限不足/路径解析失败）一律返回 false

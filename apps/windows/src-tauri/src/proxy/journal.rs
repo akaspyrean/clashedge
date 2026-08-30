@@ -1,5 +1,5 @@
 // src-tauri/src/proxy/journal.rs
-//! P1-8 系统代理 Recovery Journal（proxy-session.json）
+//! 系统代理 Recovery Journal（proxy-session.json）
 //!
 //! 覆盖正常退出恢复无法处理的场景：End Task / TerminateProcess / 断电 /
 //! 系统崩溃。应用在「成功把 Windows 系统代理指向自己」时写一份极小的
@@ -59,10 +59,10 @@ fn journal_path(data_dir: &std::path::Path) -> PathBuf {
 
 /// 写入 journal（原子写）。
 ///
-/// P0-1：journal 是崩溃恢复的唯一凭据——必须先于"改注册表"持久化成功，
+/// journal 是崩溃恢复的唯一凭据——必须先于"改注册表"持久化成功，
 /// 否则进程在改完注册表后崩溃、journal 不在，下次启动无法恢复用户原代理。
-/// 因此本函数失败必须返回 Err，由调用方决定是否拒绝开启系统代理。
-/// （旧行为只 `warn!` 不阻断 → 注册表已改但 journal 缺失 → 崩溃后死代理。）
+/// 因此本函数失败必须返回 Err，由调用方决定是否拒绝开启系统代理
+/// （若静默放行 → 注册表已改但 journal 缺失 → 崩溃后死代理）。
 pub fn write_journal(data_dir: &std::path::Path, journal: &ProxyJournal) -> Result<()> {
     let json = serde_json::to_string_pretty(journal)
         .map_err(|e| Error::Other(format!("Failed to serialize proxy session journal: {}", e)))?;
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn write_failure_is_reported_not_silently_swallowed() {
-        // P0-1 语义：journal 写失败必须返回 Err（调用方据此拒绝开启系统代理）。
+        // journal 写失败必须返回 Err（调用方据此拒绝开启系统代理）。
         // 用一个不存在（也不可创建）的父目录模拟磁盘故障。
         let missing_parent = std::env::temp_dir().join(format!(
             "clashedge-journal-no-parent-{}",

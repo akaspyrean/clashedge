@@ -1,15 +1,10 @@
 // src-tauri/src/config/migration.rs
-//! 配置版本迁移（P0-1 重构）
+//! 配置版本迁移
 //!
-//! 旧实现的问题：
-//! - `migrate_mixed_format` / `migrate_from_yaml_string` 是空壳（返回"已迁移"
-//!   但什么都没做）；
-//! - `is_new_format` 恒为 true；
-//! - 迁移直接写盘，失败路径会把用户配置静默覆盖成默认值。
-//!
-//! 新策略（与 docs/AUDIT-0.8.7.md P0-1 一致）：
+//! 设计约束：
 //! - 迁移**只在内存中**完成：旧内容 → 识别已知字段 → 合并到默认结构 → 校验；
-//! - 落盘交给调用方的下一次显式保存；调用方负责在迁移前备份原文件；
+//! - 落盘交给调用方的下一次显式保存；调用方负责在迁移前备份原文件——
+//!   若迁移直接写盘，失败路径会把用户配置静默覆盖成默认值；
 //! - 任何一步失败都返回 Err，绝不产生"看起来成功实际是默认值"的结果。
 
 use crate::config::model::Config;
@@ -360,7 +355,7 @@ proxy:
         assert!(migrated.general.allow_lan);
     }
 
-    /// H：老配置缺 `dns-hijack` 字段时能正常加载（默认补 any:53 + tcp://any:53），
+    /// 老配置缺 `dns-hijack` 字段时能正常加载（默认补 any:53 + tcp://any:53），
     /// 已有合法 dns-hijack 的配置则原样保留，不再被默认覆盖。
     #[test]
     fn loads_legacy_tun_with_or_without_dns_hijack() {
