@@ -1,5 +1,5 @@
 // src/api/update.ts
-// Portable Updater API（1.0 Release Gate P0-6：签名信任链）
+// Portable Updater API（签名信任链）
 //
 // 下载不再接受任何前端参数——后端只使用 check_update 刚验签过的
 // manifest（minisign 签名验证通过后缓存于后端）。

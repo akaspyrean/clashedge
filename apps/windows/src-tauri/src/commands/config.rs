@@ -1,7 +1,7 @@
 // src-tauri/src/commands/config.rs
 //! 配置命令：获取/更新/重置/导入/导出配置
 //!
-//! P0-3/P0-4 事务化（AUDIT-0.8.7）：
+//! 事务化设计：
 //! update / reset / import 统一走 `commit_config_transaction`：
 //!
 //! ```text
@@ -10,7 +10,7 @@
 //!   → 同步 Windows 系统代理副作用 → commit
 //! ```
 //!
-//! P0-1（Release Gate）：Windows 系统代理纳入同一事务——
+//! Windows 系统代理纳入同一事务——
 //! 任何一步失败都会把磁盘、内存、Mihomo 运行时、Windows 注册表恢复到
 //! 操作前状态；成功返回等价于「UI = Config = runtime-config =
 //! Mihomo 实际监听 = Windows 系统代理」五态一致。
@@ -28,7 +28,7 @@ use tracing::{error, info, warn};
 pub async fn get_config(state: State<'_, crate::AppState>) -> Result<serde_json::Value> {
     let config_guard = state.config_manager.lock().unwrap();
     let mut value = serde_json::to_value(config_guard.get_config())?;
-    // P0-3：控制器密钥不得返回 WebView。
+    // 控制器密钥不得返回 WebView。
     // 内部配置继续保存真实 secret，Rust 调用 Mihomo API 的 Bearer 鉴权
     // 直接读共享配置 Arc（api_headers），不受此处脱敏影响。
     // 前端拿到的 secret 替换为脱敏占位符；update_config 见到脱敏值时保留
@@ -44,7 +44,7 @@ pub async fn get_config(state: State<'_, crate::AppState>) -> Result<serde_json:
     Ok(value)
 }
 
-/// P0 降级模式用户可见提示：config.yaml 损坏且迁移失败时，应用以默认配置
+/// 降级模式用户可见提示：config.yaml 损坏且迁移失败时，应用以默认配置
 /// 降级运行，UI 必须明确告知（原文件已备份到何处、保存将覆盖原文件）。
 /// 返回 { degraded, backup_file, message }；正常时 degraded=false。
 #[command]
@@ -97,7 +97,7 @@ pub async fn update_config(
     config: serde_json::Value,
     acknowledge_corrupt_config: Option<bool>,
 ) -> Result<()> {
-    // P0 降级守卫：损坏配置未经确认不得被普通保存静默覆盖。
+    // 降级守卫：损坏配置未经确认不得被普通保存静默覆盖。
     require_save_allowed_when_degraded(&state, acknowledge_corrupt_config)?;
     let new_config = {
         let config_guard = state.config_manager.lock().unwrap();
@@ -112,10 +112,11 @@ pub async fn update_config(
 /// 消除整包回传的读-改-写竞态——用户停留在设置页期间托盘/其他入口
 /// 改过的字段不会再被旧快照覆盖。
 ///
-/// P0 修复（并发丢失）：旧实现在获取 `config_tx` **之前**读取并合并当前配置，
-/// 另一个事务可能在"读取后、加锁前"完成提交，随后被本事务的旧快照整包覆盖。
-/// 现在读取+合并移入 `commit_config_fields_transaction`，在持有 `config_tx`
-/// 之后重新读取最新配置再合并，保证不同字段的并发更新互不覆盖。
+/// 并发正确性：读取+合并必须发生在持有 `config_tx` 之后——若在加锁前读取
+/// 并合并当前配置，另一个事务可能在"读取后、加锁前"完成提交，随后被本事务
+/// 的旧快照整包覆盖。现在读取+合并移入 `commit_config_fields_transaction`，
+/// 在持有 `config_tx` 之后重新读取最新配置再合并，保证不同字段的并发更新
+/// 互不覆盖。
 #[command]
 pub async fn update_config_fields(
     app: AppHandle,
@@ -123,7 +124,7 @@ pub async fn update_config_fields(
     patch: serde_json::Value,
     acknowledge_corrupt_config: Option<bool>,
 ) -> Result<()> {
-    // P0 降级守卫：损坏配置未经确认不得被普通保存静默覆盖。
+    // 降级守卫：损坏配置未经确认不得被普通保存静默覆盖。
     require_save_allowed_when_degraded(&state, acknowledge_corrupt_config)?;
     let obj = patch
         .as_object()
@@ -142,7 +143,7 @@ async fn commit_config_fields_transaction(
     state: &State<'_, crate::AppState>,
     patch: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<()> {
-    // P0：先拿全局配置事务锁，保证"读取最新配置"与"提交"之间没有其他事务插入。
+    // 先拿全局配置事务锁，保证"读取最新配置"与"提交"之间没有其他事务插入。
     let _tx = state.config_tx.lock().await;
     let new_config = {
         let config_guard = state.config_manager.lock().unwrap();
@@ -160,12 +161,12 @@ async fn commit_config_fields_transaction(
 
 #[command]
 pub async fn reset_config(app: AppHandle, state: State<'_, crate::AppState>) -> Result<()> {
-    // set_config 内部会把默认占位密钥轮换为随机值（H1）
+    // set_config 内部会把默认占位密钥轮换为随机值
     commit_config_transaction(&app, &state, Config::default()).await?;
     crate::core::runtime::refresh_tray(&app).await
 }
 
-/// P1：设置页「从文件导入 YAML」的文件选择与读取全部收口到 Rust 侧。
+/// 设置页「从文件导入 YAML」的文件选择与读取全部收口到 Rust 侧。
 /// 前端不再传任意绝对路径（WebView 被攻破时可借此遍历读磁盘 YAML），
 /// 改为由 Rust 侧弹出系统文件对话框，用户选定后立即校验扩展名与大小上限
 /// 并读取内容返回；取消选择返回 None。
@@ -220,7 +221,7 @@ pub async fn pick_import_file(app: AppHandle) -> Result<Option<String>> {
 /// 「持久化 → 应用运行时（含健康检查）→ Windows 副作用 → commit；
 ///   任一步失败 → Config / runtime-config / Mihomo / Windows 全部回滚」。
 ///
-/// P0-2：事务全程持有 `state.config_tx`（tokio Mutex，可跨 `.await`），
+/// 事务全程持有 `state.config_tx`（tokio Mutex，可跨 `.await`），
 /// 串行所有改 Config + Mihomo + Windows 的入口。`config_manager`（std Mutex）
 /// 只能保护短临界区，跨 `.await` 会释放——没有 `config_tx` 的话两个事务
 /// 可交错：A 写 V2 后 await reload，B 读到 V2 写 V3，A 失败回滚到 V1 覆盖 B。
@@ -230,7 +231,7 @@ async fn commit_config_transaction(
     state: &State<'_, crate::AppState>,
     new_config: Config,
 ) -> Result<()> {
-    // 0. P0-2：先拿全局配置事务锁，串行整段事务（跨 await 持有至函数返回）
+    // 0. 先拿全局配置事务锁，串行整段事务（跨 await 持有至函数返回）
     let _tx = state.config_tx.lock().await;
     commit_config_transaction_locked(app, state, new_config).await
 }
@@ -261,7 +262,7 @@ async fn commit_config_transaction_locked(
     }
 
     // 3. 应用到运行时：重写 runtime-config.yaml + 热重载/重启运行中的核心。
-    //    P0-4：reload 成功与否由真实运行状态健康检查决定，不以 HTTP 200 为准。
+    //    reload 成功与否由真实运行状态健康检查决定，不以 HTTP 200 为准。
     //    核心未运行时 reload_running_core 只重写文件，不会失败于此路径之外。
     if let Err(e) = reload_running_core(state).await {
         error!("Config change failed to apply ({}); rolling back", e);
@@ -277,7 +278,7 @@ async fn commit_config_transaction_locked(
         return Err(Error::Other(format!("配置已保存但应用失败，已回滚：{}", e)));
     }
 
-    // 5. P0-1：Windows 副作用同步——注册表必须与新配置意图一致。
+    // 5. Windows 副作用同步——注册表必须与新配置意图一致。
     //    失败则完整回滚四层状态，禁止出现「Config=new / runtime=new / Windows=old」。
     if let Err(e) = sync_windows_side_effects(app, state, &proxy_transition).await {
         error!(
@@ -418,7 +419,7 @@ async fn rollback_config_runtime_and_proxy(
     Ok(())
 }
 
-/// P0-1/P0-2：让 Windows 注册表与新配置的 system-proxy 意图一致。
+/// 让 Windows 注册表与新配置的 system-proxy 意图一致。
 ///
 /// - 新配置开启系统代理：先确保 Core Running 且 mixed-port 真实可连
 ///   （不开死代理），再把注册表指向 `127.0.0.1:<新 mixed-port>` 并维护 journal；
@@ -512,7 +513,7 @@ pub async fn export_config(app: AppHandle, state: State<'_, crate::AppState>) ->
 }
 
 /// 从 YAML 导入配置并使其生效：解析 → 校验 → 落盘 → 重建运行时 → 重载核心
-/// （P0-4：全程事务，任一步失败回滚到操作前状态并返回 Err）。
+/// （全程事务，任一步失败回滚到操作前状态并返回 Err）。
 ///
 /// 导入语义修正（"导入配置不起效"）：build_runtime_config 中激活 Profile 的
 /// `proxies` 优先于 AppConfig.extra 的 `proxies`——若用户此前激活过任何
@@ -560,8 +561,8 @@ fn import_supplies_nodes(config: &Config) -> bool {
 
 /// 重建运行时配置并对运行中的核心生效（热重载，失败回退整进程重启）。
 ///
-/// P0-4：错误必须向上传播——旧实现把 reload 失败吞成 warn 日志后返回成功，
-/// 导致「新配置已写盘但 Mihomo 仍用旧值」的假成功。核心未运行时不报错：
+/// 错误必须向上传播：吞掉 reload 失败会留下「新配置已写盘但 Mihomo 仍用
+/// 旧值」的假成功。核心未运行时不报错：
 /// 文件已重写，下次启动自然加载新配置。
 async fn reload_running_core(state: &State<'_, crate::AppState>) -> Result<()> {
     let core_guard = state.core_manager.get();
@@ -576,10 +577,10 @@ mod tests {
     use super::*;
     use crate::config::persistence::ConfigManager;
 
-    /// P0（并发丢失修复）：字段级更新必须在持有 `config_tx` 后重读最新配置再合并。
+    /// 字段级更新必须在持有 `config_tx` 后重读最新配置再合并。
     /// 这里用 tokio Mutex 模拟 config_tx 的串行语义，两个并发字段更新（分别改
     /// 顶层 `mixed-port` 与 `locale`）在串行事务下必须互不覆盖。
-    /// 旧实现"锁外读快照、锁内整包提交"会让后完成的事务用旧快照覆盖先完成的字段。
+    /// 若"锁外读快照、锁内整包提交"，后完成的事务会用旧快照覆盖先完成的字段。
     #[tokio::test]
     async fn concurrent_field_updates_preserve_each_other() {
         use std::sync::atomic::{AtomicU32, Ordering};

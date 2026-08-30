@@ -153,7 +153,7 @@ pub fn build_tray_menu(
     // move_to_monitor 无真实实现（违反「已展示=必须可用」），菜单中移除；
     // Portable Updater 由设置页和 Launcher 链路承载，托盘不重复增加入口。
     // dev_tools 是 cfg 条件条目，无法收进 vec![] 字面量：先建非空 Vec，
-    // debug 构建再把 dev_tools 插到队首，菜单顺序与旧实现一致。
+    // debug 构建再把 dev_tools 插到队首，保持菜单顺序稳定。
     #[allow(unused_mut)]
     let mut more_items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = vec![
         Box::new(MenuItemBuilder::with_id("restart", i18n.t("tray.restart")).build(app)?),
@@ -198,7 +198,7 @@ pub fn build_tray_menu(
 /// subgroups becomes a nested submenu whose children are one checkable item
 /// per subgroup.
 ///
-/// 审计 P1-9：MenuId 不再编码真实组名/节点名（含 `_` 时反解歧义、中文进 ID），
+/// MenuId 不编码真实组名/节点名（含 `_` 时反解歧义、中文进 ID），
 /// 改用按构建顺序分配的稳定序号 ID（`proxy-item-0001`），真实名称写入返回的
 /// 映射（ID → (组名, 节点名)；节点名为空串表示组本身，无可选节点）。
 ///
@@ -312,14 +312,11 @@ fn build_proxy_group_items(
 /// 眼睛点。眼睛点已在源图上扩大为约 4x4（用户要求「把白点扩大一点点」），
 /// 运行时不再做膨胀，直接按 sum≥380 识别白点着色，保持参考包原貌。
 ///
-/// 历史缺陷修正：
-/// - 旧实现 v1：阈值 `sum<384` 把深蓝猫身（sum≈159）也误判为眼睛，737/783 像素
-///   被涂成眼色（浅色任务栏=白），整只猫几乎全白。
-/// - 旧实现 v2：阈值改为 `sum<60`，但源图的眼睛是亮白像素（sum≈765）而非纯黑，
-///   纯黑的 11 个像素是耳朵/轮廓——结果把耳朵当眼睛涂了眼色，真正的白眼睛
-///   反而被涂成猫身色，眼睛消失。
-/// - 旧实现 v3：阈值 `sum>=380` 匹配亮白眼睛，但再叠加 3+1 轮膨胀把 4x4 白点
-///   扩成 ~9px 斑块（用户反馈「像真眼珠，吓人」）→ 移除膨胀，保留原图白点。
+/// 阈值约束：
+/// - `sum>=380`：白眼睛是亮白像素（sum≈765），而深蓝猫身 sum≈159、纯黑的
+///   耳朵/轮廓像素 sum 更低——低于该阈值会把猫身或耳朵误判为眼睛；
+/// - 不做膨胀：源图眼睛点已扩大为约 4x4，再膨胀会把白点扩成大斑块，
+///   失去参考包原貌。
 /// - 当前：阈值 `sum>=380` 精准匹配白点眼睛，猫身与眼睛各自正确着色，无膨胀。
 pub fn build_tray_icon(
     config: &Config,
@@ -402,7 +399,7 @@ pub fn build_tray(app: &AppHandle) -> crate::util::error::Result<()> {
     let state = app.state::<crate::AppState>();
     *state.tray.lock().unwrap() = Some(tray);
 
-    // 初始菜单已随 builder 挂载成功，此时才登记映射（A2：先 set_menu 后换映射）
+    // 初始菜单已随 builder 挂载成功，此时才登记映射（先 set_menu 后换映射）
     crate::tray::replace_tray_menu_map(id_map);
 
     Ok(())
@@ -418,7 +415,7 @@ pub fn update_tray_menu(
     i18n: &I18n,
 ) -> crate::util::error::Result<()> {
     let (menu, id_map) = build_tray_menu(app, core_status, proxies, config, i18n)?;
-    // A2：先 set_menu 成功，再原子替换 ID 映射。窗口期内的点击落在
+    // 先 set_menu 成功，再原子替换 ID 映射。窗口期内的点击落在
     // 「旧菜单 + 旧映射」的一致组合上；set_menu 后到换映射前极小窗口内
     // 点击新菜单项只会查不到映射（debug 日志忽略），绝不会选错节点。
     tray.set_menu(Some(menu))

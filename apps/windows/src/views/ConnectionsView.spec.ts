@@ -58,7 +58,7 @@ const mountOptions = {
   },
 };
 
-describe("ConnectionsView (P0-4 v-if/v-else 三态)", () => {
+describe("ConnectionsView (v-if/v-else 三态)", () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
@@ -76,7 +76,7 @@ describe("ConnectionsView (P0-4 v-if/v-else 三态)", () => {
     const table = wrapper.find(".connections-table");
     expect(table.exists()).toBe(true);
 
-    // P0-4 回归点：有连接时 el-empty 不应出现
+    // 回归点：有连接时 el-empty 不应出现
     const empty = wrapper.find(".stub-empty");
     expect(empty.exists()).toBe(false);
 

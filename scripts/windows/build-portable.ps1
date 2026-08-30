@@ -12,10 +12,8 @@
 #   Output structure (replicates the reference package):
 #     <out>/ClashEdge.exe                 C# launcher (sets CLASH_EDGE_DATA_DIR + envs, spawns inner app)
 #     <out>/App/ClashEdge/ClashEdge.exe   Tauri app (the real application binary)
-#     <out>/App/ClashEdge/sidecar/        mihomo core + TUN helpers
+#     <out>/App/ClashEdge/sidecar/        mihomo core + TUN driver
 #       mihomo-win64.exe                  mihomo core (renamed from clash-edge-core.exe)
-#       EnableLoopback.exe                loopback enabler
-#       go-tun2socks.exe                  TUN helper
 #       wintun.dll                        TUN driver
 #     <out>/App/DefaultData/              default data (launcher copies missing files into Data/)
 #     <out>/Data/                         user data (pre-seeded from DefaultData)
@@ -25,20 +23,15 @@
 # finds mihomo at App/ClashEdge/sidecar/mihomo-win64.exe via CLASH_EDGE_DATA_DIR.
 #
 # Prerequisites:
-#   1) sidecar files are taken from packaging/windows/portable (released resources, not in git).
+#   1) run scripts/assets/prepare.ps1 once: it downloads the pinned mihomo core
+#      and wintun.dll (see assets.lock.json) into build/assets/staging/.
 #   2) .NET Framework csc.exe (C# 5) available under C:\Windows\Microsoft.NET\Framework64.
 #
 # NOTE: keep this file ASCII-only - Windows PowerShell 5.1 reads no-BOM .ps1 as ANSI,
 #       and non-ASCII bytes corrupt parsing.
 
 param(
-    [switch]$Build,
-
-    # P1-12 hardening (Phase 3 audit): sidecar .sha256 missing => HARD FAILURE.
-    # Never mint a trusted hash for an unknown binary. The only escape is the
-    # DEV-ONLY switch below for bootstrapping hashes of brand-new sidecars;
-    # CI / release builds must NOT pass it.
-    [switch]$GenerateMissingChecksum
+    [switch]$Build
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,7 +79,7 @@ if ($releaseExeLen -lt $MIN_RELEASE_EXE_BYTES) {
 }
 
 # --- Compile the C# launcher (root ClashEdge.exe) ----------------------------
-$launcherSrc  = Join-Path $repo "packaging\windows\launcher\ClashEdge.Launcher.R8.2.cs"
+$launcherSrc  = Join-Path $repo "packaging\windows\launcher\ClashEdge.Launcher.cs"
 if (-not (Test-Path $launcherSrc)) {
     throw "Missing launcher source: $launcherSrc"
 }
@@ -114,7 +107,7 @@ if (-not (Test-Path $launcherOut)) { throw "Launcher was not produced: $launcher
 # --- Layout ------------------------------------------------------------------
 $appClashEdgeDir = Join-Path $out "App\ClashEdge"
 $sidecarDir      = Join-Path $appClashEdgeDir "sidecar"
-$srcSide         = Join-Path $tpl "App\ClashEdge\resources\static\files\win"
+$assets          = Join-Path $repo "build\assets\staging"
 
 New-Item -ItemType Directory -Force $sidecarDir | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $out "Data") | Out-Null
@@ -123,56 +116,30 @@ New-Item -ItemType Directory -Force (Join-Path $out "App\DefaultData") | Out-Nul
 # 1. Inner Tauri app binary
 Copy-Item $releaseExe (Join-Path $appClashEdgeDir "ClashEdge.exe")
 
-# 2. Sidecars (mihomo core renamed to mihomo-win64.exe to match the reference package)
-#    P1-12: 自动 SHA256 校验——每个 sidecar 源文件旁应有 {filename}.sha256。
-#    存在则比对；缺失则 FAIL（Release 语义：绝不为未知二进制生成可信哈希）。
-#    仅本地开发可传 -GenerateMissingChecksum 显式生成新 .sha256（需 git add）。
-#    不匹配立即失败，防止二进制被替换/损坏。
+# 2. Sidecars, staged by scripts/assets/prepare.ps1 (hashes pinned in assets.lock.json).
+#    mihomo core is renamed to mihomo-win64.exe to match the reference package.
 $sidecars = @(
-    @{ src = Join-Path $srcSide "x64\clash-edge-core.exe";   dst = "mihomo-win64.exe" },
-    @{ src = Join-Path $srcSide "x64\go-tun2socks.exe";      dst = "go-tun2socks.exe" },
-    @{ src = Join-Path $srcSide "common\EnableLoopback.exe"; dst = "EnableLoopback.exe" },
-    @{ src = Join-Path $srcSide "x64\wintun.dll";            dst = "wintun.dll" }
+    @{ src = Join-Path $assets "mihomo\clash-edge-core.exe"; dst = "mihomo-win64.exe" },
+    @{ src = Join-Path $assets "wintun\wintun.dll";          dst = "wintun.dll" }
 )
 foreach ($sc in $sidecars) {
     if (-not (Test-Path $sc.src)) {
-        throw ("Missing sidecar source: {0} (needed for {1})`n" +
-               "Portable sidecars live under packaging/windows/portable/App/ClashEdge/resources/static/files/win/") -f `
-            $sc.src, $sc.dst
+        throw ("Missing staged sidecar: {0} (needed for {1})`n" +
+               "Run scripts/assets/prepare.ps1 first.") -f $sc.src, $sc.dst
     }
-    $shaFile = $sc.src + ".sha256"
-    $actual = (Get-FileHash $sc.src -Algorithm SHA256).Hash
-    if (Test-Path $shaFile) {
-        $expected = (Get-Content $shaFile -Raw).Trim()
-        # Case-insensitive compare, matching release.yml's OrdinalIgnoreCase validation.
-        if (-not [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw ("SHA256 mismatch for {0}:`n  expected ({1}): {2}`n  actual:            {3}`n" +
-                   "The sidecar binary has changed. Update the .sha256 file:") -f `
-                $sc.dst, (Split-Path -Leaf $shaFile), $expected, $actual
-        }
-        Write-Host "  SHA256 OK: $($sc.dst)"
-    } elseif ($GenerateMissingChecksum) {
-        # DEV ONLY: bootstrap .sha256 for a brand-new sidecar (git add this file).
-        Set-Content -Path $shaFile -Value $actual -Encoding ascii -NoNewline
-        Write-Host ("  [DEV-ONLY] SHA256 file created: {0} (git add this file to lock the hash)") -f `
-            (Split-Path -Leaf $shaFile)
-    } else {
-        throw ("Missing SHA256 checksum file: {0}`n" +
-               "Refusing to package sidecar '{1}' without a locked hash.`n" +
-               "If this is a NEW sidecar added intentionally, run once with " +
-               "-GenerateMissingChecksum and commit the .sha256 file.") -f `
-            (Split-Path -Leaf $shaFile), $sc.dst
-    }
-    $dstPath = Join-Path $sidecarDir $sc.dst
-    Copy-Item $sc.src $dstPath
+    Copy-Item $sc.src (Join-Path $sidecarDir $sc.dst)
 }
 
 # 3. Default data + pre-seeded user Data/
 #    DefaultData no longer ships the built-in rule sets (they live in shared/),
-#    so seed rules/ from shared/rules afterwards.
+#    so seed rules/ from shared/rules afterwards. wintun.dll comes from the
+#    staged assets (it ships in both sidecar/ and DefaultData for TUN).
 $sharedRules = Join-Path $repo "shared\rules"
+$stagedWintun = Join-Path $assets "wintun\wintun.dll"
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "App\DefaultData")
 Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "Data")
+Copy-Item $stagedWintun (Join-Path $out "App\DefaultData\wintun.dll")
+Copy-Item $stagedWintun (Join-Path $out "Data\wintun.dll")
 if (Test-Path $sharedRules) {
     Copy-Item -Recurse (Join-Path $sharedRules "*") (Join-Path $out "App\DefaultData\rules")
     Copy-Item -Recurse (Join-Path $sharedRules "*") (Join-Path $out "Data\rules")
@@ -193,9 +160,8 @@ $assertions = @(
     @{ path = Join-Path $out "ClashEdge.exe";                  label = "root C# launcher ClashEdge.exe" },
     @{ path = Join-Path $out "App\ClashEdge\ClashEdge.exe";    label = "inner Tauri app App/ClashEdge/ClashEdge.exe" },
     @{ path = Join-Path $sidecarDir "mihomo-win64.exe";        label = "mihomo core sidecar/mihomo-win64.exe" },
-    @{ path = Join-Path $sidecarDir "go-tun2socks.exe";        label = "TUN helper sidecar/go-tun2socks.exe" },
-    @{ path = Join-Path $sidecarDir "EnableLoopback.exe";      label = "loopback enabler sidecar/EnableLoopback.exe" },
     @{ path = Join-Path $sidecarDir "wintun.dll";              label = "TUN driver sidecar/wintun.dll" },
+    @{ path = Join-Path $out "App\DefaultData\wintun.dll";     label = "TUN driver App/DefaultData/wintun.dll" },
     @{ path = Join-Path $out "Data";                           label = "Data directory" },
     @{ path = Join-Path $out "App\DefaultData";                label = "App/DefaultData directory" },
     @{ path = Join-Path $out "Other\Help\README.md";           label = "Other/Help/README.md" }

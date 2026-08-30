@@ -80,7 +80,7 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
         "config_mixin" => {
             info!("Tray: toggling config mixin");
             let state = app_handle.state::<crate::AppState>();
-            // P0-2：mixin_enabled 是应用级字段（不影响 runtime-config.yaml），
+            // mixin_enabled 是应用级字段（不影响 runtime-config.yaml），
             // 切换不需要 reload mihomo，但仍要持 config_tx 串行，避免与
             // commit_config_transaction / apply_* 等并发事务在 config_manager
             // 上交错（否则可能撞上正在 reload 的事务拿到中间态配置）。

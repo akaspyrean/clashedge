@@ -1,9 +1,12 @@
 name: Release
 
+# Releases are tag-driven only: pushing a v* tag is the single release trigger.
+# Tag immutability is enforced by the repository's GitHub Rulesets (immutable
+# tags for v*), not by custom scripts — a pushed tag can never be moved or
+# re-pointed, which removes the need for in-workflow tag guards.
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,24 +15,23 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  # 发布流程不可中断：中途取消会留下半发布状态（draft/资产不全/签名不一致）。
+  # A release run must not be interrupted: cancelling midway can leave a
+  # half-published state (draft with partial assets / inconsistent signatures).
   cancel-in-progress: false
 
 env:
-  # P0-5：全流程唯一 ZIP 文件名（与 scripts/windows/build-portable.ps1、
-  # scripts/release/make-update-manifest.py 的 ZIP_ASSET 一致，不带版本号）。
-  # manifest / 签名 / attestation / upload 只允许引用这一个名字。
+  # Single ZIP name for the whole flow (matches scripts/windows/build-portable.ps1
+  # and scripts/release/make-update-manifest.py ZIP_ASSET). Manifest, signature,
+  # attestation and upload must all reference exactly this name.
   ZIP_NAME: ClashEdge-portable-win64.zip
 
 jobs:
-  # P1-3 / Quality Gate single source: Release 与 CI 共用同一份 quality gate
-  # (scripts/ci/quality.ps1)。以前 Release 内联了一套重复步骤，与 CI 的
-  # reusable workflow 漂移后产生"本地不经 main CI 直接打 tag 仍可能发布"的
-  # 风险。现在统一调用 quality.ps1，保证 fmt/clippy/test/audit/build 完全一致。
+  # CI and Release share the same quality gate (scripts/ci/quality.ps1):
+  # fmt/clippy/test/audit/build. There is exactly one gate, not two.
   quality:
     runs-on: windows-latest
     steps:
-      # B2：所有 action 固定到官方 commit SHA，防止 tag 劫持。
+      # Pin every action to the official commit SHA to prevent tag hijacking.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -55,15 +57,8 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # B2：所有 action 固定到官方 commit SHA，防止 tag 劫持。
+      # Pin every action to the official commit SHA to prevent tag hijacking.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        # Immutable release guard 需要在本地把 refs/tags/<tag>^{commit} 与
-        # github.sha 比对（禁止移动/复用已发布标签）。默认浅克隆（depth=1）
-        # 下 tag 对象图不完整、解析不可靠；本仓库体量小，fetch-depth: 0
-        # 全量拉取成本可忽略，比守卫内按需 fetch 更简单可靠（守卫脚本
-        # 仍保留按需 fetch / GitHub API 兜底，供浅克隆环境本地运行使用）。
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -77,58 +72,25 @@ jobs:
         with:
           workspaces: apps/windows/src-tauri
 
-      # B1：快速失败守卫——workflow_dispatch 手动触发时 github.ref 是分支而非 tag，
-      # 后续所有发布步骤都会产生错误的外部副作用（如以分支名创建公开 release）。
-      # 在最前面直接终止，避免有人误触发后以为发版成功。
-      # 判定逻辑在 scripts/release/Validate-ReleaseTrigger.ps1（由
-      # scripts/release/test-release-triggers.ps1 单元测试覆盖）。
-      # 该守卫同时校验 tag 名与 tauri.conf.json 版本号一致（tag/version mismatch
-      # 会让发布 ZIP / manifest / updater 路径彼此矛盾）。
-      - name: Read version
-        id: meta
+      # A tag whose version diverges from tauri.conf.json would make the ZIP,
+      # manifest and updater paths contradict each other — fail before any
+      # external side effect.
+      - name: Guard — tag version must match tauri.conf.json
         shell: pwsh
         run: |
+          $tag = "${{ github.ref_name }}"
           $raw = Get-Content .\apps\windows\src-tauri\tauri.conf.json -Encoding UTF8 -Raw
           $m = [regex]::Match($raw, '"version"\s*:\s*"([^"]+)"')
           if (-not $m.Success) { throw "Cannot extract version from tauri.conf.json" }
-          Add-Content $env:GITHUB_OUTPUT "version=$($m.Groups[1].Value)"
+          $version = $m.Groups[1].Value
+          if ($tag -ne "v$version") {
+            throw "Tag '$tag' does not match tauri.conf.json version '$version' — bump the version or fix the tag."
+          }
+          Add-Content $env:GITHUB_OUTPUT "version=$version"
+        id: meta
 
-      - name: Guard — trigger must be a v* tag matching config version
-        shell: pwsh
-        run: |
-          .\scripts\release\Validate-ReleaseTrigger.ps1 `
-            -Ref "$env:GITHUB_REF" `
-            -Tag "${{ github.ref_name }}" `
-            -Version "${{ steps.meta.outputs.version }}"
-
-      # B1：Immutable release guard —— 发布不可变守卫，位于一切外部副作用之前。
-      # 判定逻辑在 scripts/release/Protect-ReleaseTag.ps1（由
-      # scripts/release/test-release-guards.ps1 单元测试覆盖），防止三类
-      # 发布安全事故：
-      #   1) 重跑已正式发布（非 draft）的 tag —— 旧实现会先删除公开 Release，
-      #      属于破坏性覆盖，现已禁止；
-      #   2) 标签移动/复用 —— 同一 tag 必须永远指向同一 commit：
-      #      refs/tags/<tag>^{commit} 必须等于 github.sha，否则立即失败；
-      #   3) 既有 draft 与本次构建 commit 不一致 —— 不允许跨 commit 恢复。
-      # 本步骤以 -WhatIfOnly 只读判定并把 decision 写入 GITHUB_OUTPUT，
-      # 实际的 draft 删除重建只发生在后面的 "Create draft release" 步骤
-      # （守卫步骤本身零副作用）。
-      - name: Immutable release guard
-        id: release-guard
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          .\scripts\release\Protect-ReleaseTag.ps1 `
-            -Tag "${{ github.ref_name }}" `
-            -Sha "${{ github.sha }}" `
-            -Repo "${{ github.repository }}" `
-            -WhatIfOnly `
-            -SetGitHubOutput
-
-      # P0-6：更新清单签名是强制的。私钥或公钥缺失 => 立即失败，
-      # 防止发布无法被客户端验签的更新包。
+      # Manifest signing is mandatory: a release that clients cannot verify
+      # must never ship. Missing keys fail the run immediately.
       - name: Require signing keys (mandatory)
         shell: pwsh
         env:
@@ -136,30 +98,31 @@ jobs:
           CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
         run: |
           if ($env:TAURI_SIGNING_PRIVATE_KEY -eq '' -or $null -eq $env:TAURI_SIGNING_PRIVATE_KEY) {
-            throw "TAURI_SIGNING_PRIVATE_KEY is not set — releases must be signed (P0-6)"
+            throw "TAURI_SIGNING_PRIVATE_KEY is not set — releases must be signed"
           }
           if ($env:CLASHEDGE_UPDATE_PUBKEY -eq '' -or $null -eq $env:CLASHEDGE_UPDATE_PUBKEY) {
-            throw "CLASHEDGE_UPDATE_PUBKEY is not set — client cannot verify manifests without the embedded public key (P0-6)"
+            throw "CLASHEDGE_UPDATE_PUBKEY is not set — client cannot verify manifests without the embedded public key"
           }
           Write-Host "Signing secrets present."
 
-      # B1：创建 draft release 是外部副作用，仅允许 v* tag 触发。
-      # 放在 quality gate 之后：quality 失败时不会留下空 draft。
-      # 无条件 delete 已移除：仅当 Immutable release guard 判定既有 draft
-      # 与本次构建指向同一 commit（decision=DELETE_RECREATE_DRAFT）时才删除
-      # 重建（失败重跑的安全恢复场景）；已正式发布的 Release 绝不可能走到
-      # 这里——守卫步骤已 exit 1。
+      # Create the draft release after the quality gate so a failing gate never
+      # leaves an empty draft behind. Only a leftover draft from a previous
+      # failed run may be deleted and recreated; a published release can never
+      # be reached here for the same tag (immutable tags + no manual trigger).
       - name: Create draft release
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $decision = "${{ steps.release-guard.outputs.decision }}"
-          if ($decision -eq 'DELETE_RECREATE_DRAFT') {
-            gh release delete ${{ github.ref_name }} --yes
-          } elseif ($decision -ne 'CREATE') {
-            throw "Immutable release guard decision is '$decision' — refusing to create a release"
+          $raw = gh release view ${{ github.ref_name }} --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0 -and $raw) {
+            $existing = $raw | ConvertFrom-Json
+            if ($existing.isDraft) {
+              Write-Host "Leftover draft found — deleting and recreating."
+              gh release delete ${{ github.ref_name }} --yes
+            } else {
+              throw "Release ${{ github.ref_name }} already exists and is published — refusing to overwrite."
+            }
           }
           gh release create ${{ github.ref_name }} `
             --target ${{ github.sha }} `
@@ -171,28 +134,34 @@ jobs:
         working-directory: apps/windows
         run: npm ci
 
-      # P0-6：把内置验签公钥注入客户端构建（update/mod.rs 编译期读取）。
+      # Inject the embedded update-verification public key into the client
+      # build (update/mod.rs reads it at compile time).
       - name: Tauri release build (--no-bundle)
         working-directory: apps/windows
         env:
           CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
         run: node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
+      # Download and hash-verify the pinned mihomo core + wintun driver
+      # (assets.lock.json) into build/assets/staging/ for packaging.
+      - name: Prepare third-party assets
+        shell: pwsh
+        run: .\scripts\assets\prepare.ps1
+
       - name: Assemble portable package + SHA256
         run: .\scripts\windows\build-portable.ps1
 
-      # P1-2：Launcher 故障注入测试纳入 Release CI。Launcher 已由上一步编译到
-      # release/portable-out/ClashEdge.exe，在此立即跑 --test-recovery 验证
-      # 5 个 kill 点（pending/verified/swapping/committed/nojournal）恢复行为，
-      # 任一失败立即中止 release，避免发布"恢复逻辑有 bug"的版本。
+      # Fault-injection test for the launcher: verifies the 5 kill points
+      # (pending/verified/swapping/committed/nojournal) recover correctly.
+      # Any failure aborts the release — never ship a version whose recovery
+      # logic is broken.
       - name: Launcher recovery fault-injection test
         shell: pwsh
         run: |
           $launcher = ".\release\portable-out\ClashEdge.exe"
           if (-not (Test-Path $launcher)) { throw "Launcher not found: $launcher" }
-          # ClashEdge.exe 是 winexe（GUI 子系统），PowerShell 的 & 运算符不捕获
-          # 它的退出码（$LASTEXITCODE 为空）。用 Start-Process -Wait -PassThru
-          # 正确获取 ExitCode。
+          # ClashEdge.exe is a winexe (GUI subsystem): PowerShell's & operator
+          # does not capture its exit code. Start-Process -Wait -PassThru does.
           $proc = Start-Process -FilePath $launcher -ArgumentList "--test-recovery" -Wait -PassThru -NoNewWindow
           if ($proc.ExitCode -ne 0) { throw "Launcher recovery tests failed (exit $($proc.ExitCode))" }
           Write-Host "Launcher recovery tests passed."
@@ -208,10 +177,10 @@ jobs:
             --out ".\release\portable-manifest.json" `
             --notes "ClashEdge ${{ steps.meta.outputs.version }}"
 
-      # P0-6：minisign 签名 portable-manifest.json。
-      # 使用 Tauri CLI 签名：原生支持 TAURI_SIGNING_* 密钥格式与密码环境变量
-      # （无人值守 CI 可靠，不依赖交互输密码）；产物为 base64 包裹的签名，
-      # 解包成标准 minisign 4 行文本供客户端 minisign-verify 验证。
+      # Sign portable-manifest.json with minisign via the Tauri CLI: it natively
+      # supports the TAURI_SIGNING_* key format and password env vars (reliable
+      # unattended). The output is a base64-wrapped signature; unwrap it to the
+      # standard 4-line minisign text for client-side minisign-verify.
       - name: Sign update manifest (mandatory)
         shell: pwsh
         working-directory: apps/windows
@@ -219,24 +188,20 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          # CLI 自动读取 TAURI_SIGNING_PRIVATE_KEY / _PASSWORD 环境变量
-          # working-directory 是 apps/windows（node_modules 在此）；release/ 在仓库根，
-          # 需 `..\..\release`。旧值 `..\release` 是按平级布局写的（apps/windows 比
-          # 原 tauri-scaffold 多一层），会指向不存在的 apps\release。
           node node_modules/@tauri-apps/cli/tauri.js signer sign `
             "..\..\release\portable-manifest.json"
           if ($LASTEXITCODE -ne 0) { throw "tauri signer sign failed" }
           $sig = "..\..\release\portable-manifest.json.sig"
           if (-not (Test-Path $sig)) { throw "signature file was not produced" }
-          # Tauri .sig = 整个 minisign 签名文件的一层 base64；解包为标准文本
           $raw = Get-Content $sig -Raw
           $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw.Trim()))
           if ($decoded -notmatch 'untrusted comment') { throw "unexpected signature format" }
           Set-Content -Path "..\..\release\portable-manifest.json.minisig" -Value $decoded -NoNewline
           Write-Host "Manifest signed and unwrapped to portable-manifest.json.minisig"
 
-      # P0-5/P0-6 dry-run 校验：manifest、签名、SHA256、attest、upload
-      # 引用的每一个文件都必须真实存在且哈希一致；任何一项不满足立即失败。
+      # Dry-run check: every file referenced by manifest, signature, SHA256,
+      # attestation and upload must exist with a consistent hash — any mismatch
+      # fails the release before anything is published.
       - name: Validate release artifacts (dry-run)
         shell: pwsh
         run: |
@@ -249,8 +214,6 @@ jobs:
             if (-not (Test-Path $f)) { throw "Missing release artifact: $f" }
           }
 
-          # SHA256 文件必须与实际 ZIP 哈希一致（大小写不敏感：
-          # build-portable.ps1 写入的是 Get-FileHash 的大写形式）
           $actualZipSha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           $shaLine = (Get-Content $sha -Raw).Trim()
           $shaFileHash = ($shaLine -split '\s+')[0].Trim()
@@ -258,7 +221,6 @@ jobs:
             throw "ZIP sha256 file mismatch:`n  file says: $shaFileHash`n  actual:    $actualZipSha"
           }
 
-          # manifest 必须指向同一个真实存在的 ZIP 资产名，且内嵌哈希一致
           $m = Get-Content $manifest -Raw | ConvertFrom-Json
           if (-not $m.url.EndsWith("/$env:ZIP_NAME")) {
             throw "manifest url does not point at $env:ZIP_NAME : $($m.url)"
@@ -267,7 +229,6 @@ jobs:
             throw "manifest sha256 mismatch with actual zip: $($m.sha256) vs $actualZipSha"
           }
 
-          # attest 步骤的 subject 全部存在
           foreach ($f in @($zip, $manifest, $sig)) {
             if (-not (Test-Path $f)) { throw "Attest subject missing: $f" }
           }
@@ -277,9 +238,7 @@ jobs:
           Write-Host "  manifest : v$($m.version) -> $($m.url)"
           Write-Host "  signature: $sig"
 
-      # B1：attest 是外部副作用（写入公共透明日志），仅允许 v* tag 触发。
       - name: Attest build provenance
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
         with:
           subject-path: |
@@ -287,9 +246,7 @@ jobs:
             release/portable-manifest.json
             release/portable-manifest.json.minisig
 
-      # B1：上传资产是外部副作用，仅允许 v* tag 触发。
       - name: Upload release assets
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -303,11 +260,8 @@ jobs:
           }
           gh release upload ${{ github.ref_name }} $zip $sha $manifest $sig --clobber
 
-      # B1：publish（draft=false，公开发布）是外部副作用，仅允许 v* tag 触发。
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release edit ${{ github.ref_name }} --draft=false
+        run: gh release edit ${{ github.ref_name }} --draft=false

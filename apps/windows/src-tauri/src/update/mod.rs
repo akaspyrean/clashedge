@@ -1,5 +1,5 @@
 // src-tauri/src/update/mod.rs
-//! Portable Updater（1.0 Release Gate P0-6 重做：真实签名信任链）
+//! Portable Updater（真实签名信任链）
 //!
 //! 便携包更新走自有链路：
 //!
@@ -16,7 +16,7 @@
 //!   ↓
 //! 暂存 Data/update-staging/ + 写 pending.json
 //!   ↓
-//! 下次由根启动器在拉起内层前应用（见 packaging/windows/launcher/ClashEdge.Launcher.R8.2.cs，
+//! 下次由根启动器在拉起内层前应用（见 packaging/windows/launcher/ 下的启动器源码，
 //! 启动器带更新事务 journal，断电可恢复；Data/ 永不被替换）
 //! ```
 //!
@@ -37,7 +37,7 @@ use crate::util::error::{Error, Result};
 pub const UPDATE_ENDPOINT: &str =
     "https://github.com/akaspyrean/clashedge/releases/latest/download/portable-manifest.json";
 
-/// P0-6：更新清单验签公钥（minisign 公钥，base64）。
+/// 更新清单验签公钥（minisign 公钥，base64）。
 ///
 /// 编译期由环境变量 `CLASHEDGE_UPDATE_PUBKEY` 注入（release workflow 从
 /// 同一枚私钥对应的仓库 Secret 传入）。为空 = 更新链不可用，check_update
@@ -109,7 +109,7 @@ fn is_newer(remote: &str, current: &str) -> bool {
     }
 }
 
-/// P0-6：用内置公钥验证 manifest 的 minisign 签名。
+/// 用内置公钥验证 manifest 的 minisign 签名。
 ///
 /// - `manifest_bytes`：manifest 文件的原始字节（验签对象是文件本身）；
 /// - `sig_file_text`：`.minisig` 文件全文（第 2 行是 base64 签名 blob）。
@@ -180,7 +180,7 @@ pub async fn check_for_update(app: &tauri::AppHandle) -> Result<UpdateStatus> {
         .await
         .map_err(|e| Error::Other(format!("update manifest read failed: {}", e)))?;
 
-    // P0-6：先验签，再解析内容——未通过信任链的 manifest 内容一律不看。
+    // 先验签，再解析内容——未通过信任链的 manifest 内容一律不看。
     let sig_text = fetch_signature_text(app).await?;
     verify_manifest_signature(UPDATE_PUBLIC_KEY, &manifest_bytes, &sig_text)?;
 
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(hex_encode(&[0xde, 0xad]), "dead");
     }
 
-    // ---- P0-6 签名信任链 ----
+    // ---- 签名信任链 ----
 
     /// 官方 minisign 测试向量（jedisct1/minisign 与 minisign-verify crate
     /// 同源的公开测试密钥对，仅用于证明验签实现正确）。

@@ -234,7 +234,7 @@ async fn download_file(
                         }
                     };
 
-                    // 流式写入响应到文件；累计字节数超上限即中止并清理临时文件（C8）
+                    // 流式写入响应到文件；累计字节数超上限即中止并清理临时文件
                     let mut total: u64 = 0;
                     loop {
                         match response.chunk().await {

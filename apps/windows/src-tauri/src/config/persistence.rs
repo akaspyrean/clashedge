@@ -21,7 +21,7 @@ use crate::util::error::{Error, Result};
 pub struct ConfigManager {
     data_dir: PathBuf,
     config: Arc<RwLock<Config>>,
-    /// P0-1：启动降级标志。原配置解析且迁移失败时置位：
+    /// 启动降级标志。原配置解析且迁移失败时置位：
     /// 内存使用默认配置（应用可用、可进"配置修复状态"），
     /// 磁盘上的原始文件保持不动；用户显式保存时才覆盖。
     degraded: AtomicBool,
@@ -43,9 +43,9 @@ impl ConfigManager {
     /// 控制器密钥：首次运行（文件不存在 → 默认占位密钥）或旧版配置仍是
     /// 固定默认 "clash-edge-secret" 时，轮换为随机密钥并持久化，避免
     /// 控制器被已知默认密钥接管；已有随机密钥的配置保持不变（无扰动）。
-    /// 轮换判定与落盘统一走 `ensure_secure_secret`（H1），init 只保留日志语义。
+    /// 轮换判定与落盘统一走 `ensure_secure_secret`，init 只保留日志语义。
     ///
-    /// P0-1：坏配置绝不静默覆盖。`read_config` 失败（解析失败且迁移失败）
+    /// 坏配置绝不静默覆盖。`read_config` 失败（解析失败且迁移失败）
     /// 时不返回错误炸掉启动，而是进入降级模式：内存用默认值让应用能打开
     /// 界面修复，磁盘原始文件保持不动（已由 read_config 做了 .corrupt-*.bak
     /// 备份），直到用户下一次显式保存。
@@ -61,7 +61,7 @@ impl ConfigManager {
                     // 轮换必须落盘，否则下次启动又回到占位值、也无法认证重启后的核心。
                     self.set_config(validated)?;
                 } else {
-                    // 仅内存校正（与旧行为一致：磁盘在下次保存时再归一化）
+                    // 仅内存校正：磁盘在下次保存时再归一化
                     *self.config.write() = validated;
                 }
             }
@@ -89,7 +89,7 @@ impl ConfigManager {
         self.degraded.load(Ordering::SeqCst)
     }
 
-    /// 密钥兜底轮换（H1 收敛）：空 / 固定占位 / 旧版遗留固定密钥 → 随机密钥。
+    /// 密钥兜底轮换：空 / 固定占位 / 旧版遗留固定密钥 → 随机密钥。
     /// 已是随机密钥（或任何非占位非空值）保持不变，避免误轮换。
     /// 返回是否发生了轮换（init 据此保留原有日志语义）。
     fn ensure_secure_secret(&self, config: &mut Config) -> bool {
@@ -117,8 +117,8 @@ impl ConfigManager {
     /// init 的轮换分支）统一在写盘前强制 `ensure_secure_secret`，保证
     /// reset/import/update 后密钥也绝不为占位/空/旧遗留值。
     ///
-    /// P0-2 disk-first：先原子落盘，成功后才提交内存。旧实现"先改内存再
-    /// save()"在磁盘写失败时会留下「内存=新值、磁盘=旧值」的分裂状态，
+    /// disk-first：先原子落盘，成功后才提交内存。若"先改内存再
+    /// save()"，磁盘写失败时会留下「内存=新值、磁盘=旧值」的分裂状态，
     /// 且后续所有读方都拿到与磁盘不一致的值；反过来（disk-first）失败时
     /// 内存保持旧值、调用方拿到 Err，两边永远一致。
     pub fn set_config(&mut self, config: Config) -> Result<()> {
@@ -144,12 +144,12 @@ impl ConfigManager {
 
     /// 从前端传入的 JSON 构造新配置（解析 + 校验，**不落盘**）。
     /// 供命令层的事务流程使用：先拿到校验过的新配置，
-    /// 再由事务统一执行「持久化 → 应用运行时 → 失败回滚」（P0-3）。
+    /// 再由事务统一执行「持久化 → 应用运行时 → 失败回滚」。
     pub fn prepare_update(&self, value: serde_json::Value) -> Result<Config> {
         let mut config: Config = serde_json::from_value(value)?;
-        // C7 控制器地址限回环（用户可控输入，落盘前校验）
+        // 控制器地址限回环（用户可控输入，落盘前校验）
         crate::config::model::validate_external_controller(&config.proxy.external_controller)?;
-        // P0-3：前端 get_config 返回脱敏 secret（SECRET_REDACTED），前端回传时
+        // 前端 get_config 返回脱敏 secret（SECRET_REDACTED），前端回传时
         // 保持脱敏值——此时保留现有真实密钥，不轮换。
         // 若前端传入空串也同理保留（前端不应直接操作 secret）。
         if config.proxy.secret == crate::config::model::SECRET_REDACTED
@@ -215,11 +215,11 @@ pub fn strip_utf8_bom(content: &str) -> &str {
 
 /// 读取配置：文件不存在返回默认；解析失败先备份原文件，再在内存中迁移。
 ///
-/// P0-1 重构后的失败语义：
+/// 失败语义：
 /// - 迁移成功 → 返回迁移结果（尚未落盘；原文件已被 .corrupt-*.bak 备份，
 ///   下一次显式保存才会写入新格式）；
 /// - 迁移失败 → 返回 Err（由 init 进入降级模式），**绝不返回默认配置
-///   冒充成功**——旧行为会用默认值静默覆盖用户配置，属于数据丢失。
+///   冒充成功**——那会用默认值静默覆盖用户配置，属于数据丢失。
 pub fn read_config(config_path: &Path) -> Result<Config> {
     if !config_path.exists() {
         info!("Config file not found, returning default config");
@@ -585,7 +585,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// P0-1：损坏的配置文件 → read_config 返回 Err（绝不返回默认配置冒充成功），
+    /// 损坏的配置文件 → read_config 返回 Err（绝不返回默认配置冒充成功），
     /// 原文件原样保留，并生成 .corrupt-*.bak 备份。
     #[test]
     fn corrupt_config_errors_and_backs_up() {
@@ -650,7 +650,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// P0-1：init 遇到坏配置进入降级模式——内存为默认值（应用可用），
+    /// init 遇到坏配置进入降级模式——内存为默认值（应用可用），
     /// 磁盘上的原始文件保持不动。
     #[test]
     fn init_enters_degraded_mode_on_corrupt_config() {
@@ -687,7 +687,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// P0-1：旧版平铺格式通过内存迁移成功加载（不降级、不丢字段）
+    /// 旧版平铺格式通过内存迁移成功加载（不降级、不丢字段）
     #[test]
     fn init_migrates_legacy_flat_config() {
         let dir = std::env::temp_dir().join(format!(
@@ -711,7 +711,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// P0-2 disk-first：set_config 落盘失败时内存必须保持旧值。
+    /// disk-first：set_config 落盘失败时内存必须保持旧值。
     /// 通过把 config.yaml 替换成目录来制造写入失败（rename 到目录路径必然失败）。
     #[test]
     fn set_config_disk_failure_keeps_memory_consistent() {

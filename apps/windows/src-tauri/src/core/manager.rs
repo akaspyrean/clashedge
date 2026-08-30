@@ -39,9 +39,8 @@ const READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 /// 自动重启的初始退避间隔（按窗口内崩溃次数翻倍：2s, 4s, 8s）
 const AUTO_RESTART_BACKOFF: Duration = Duration::from_secs(2);
 
-// P0-7 crash circuit breaker：旧的"成功即清零"计数无法阻止
-// 「启动 2 秒 → 崩溃 → 重启 → 又 2 秒 → 又崩溃」的无限循环。
-// 改为时间窗熔断 + 稳定运行才清零：
+// 崩溃熔断：若仅以"成功即清零"计数，「启动 2 秒 → 崩溃 → 重启 → 又 2 秒 →
+// 又崩溃」会无限循环；因此采用时间窗计数 + 稳定运行才清零：
 /// 崩溃统计窗口：窗口内异常退出达到上限即停止自动重启
 const CRASH_WINDOW: Duration = Duration::from_secs(600); // 10 分钟
 /// 窗口内允许的异常退出次数（第 3 次崩溃后放弃重启，进入 Error）
@@ -106,16 +105,16 @@ pub struct CoreManager {
     controller: ControllerClient,
     /// AppHandle（用于状态变更事件推送）
     app_handle: AppHandle,
-    /// P1-7：用户主动停止标志（stop() 设为 true，start() 清除）。
+    /// 用户主动停止标志（stop() 设为 true，start() 清除）。
     /// watcher 检测到崩溃时检查此标志：用户主动停止时不自动重启。
     user_stopped: Arc<std::sync::atomic::AtomicBool>,
-    /// P0-6 supervisor generation：每次 start()/stop() 递增。
+    /// supervisor generation：每次 start()/stop() 递增。
     /// watcher 捕获自己启动时的 generation，处理事件前先比对——不一致说明
     /// 已有新的 start/stop 流程接管，本 watcher 立即退出。保证任意时刻
-    /// 至多一个有效 watcher（旧实现 stop→start 快速交替时旧 watcher 会
-    /// 盯上新 child，崩溃时多个 watcher 同时重启）。
+    /// 至多一个有效 watcher（否则 stop→start 快速交替时旧 watcher 会盯上
+    /// 新 child，崩溃时多个 watcher 同时重启）。
     generation: Arc<std::sync::atomic::AtomicU64>,
-    /// P0-7 circuit breaker：窗口内崩溃时间戳
+    /// 崩溃熔断：窗口内的崩溃时间戳
     crash_times: Arc<Mutex<Vec<std::time::Instant>>>,
     /// 当前子进程的启动时刻（稳定运行判定用）
     started_at: Arc<Mutex<Option<std::time::Instant>>>,
@@ -161,7 +160,7 @@ impl CoreManager {
             mihomo_path,
             init_error,
             data_dir,
-            // 拆分 P2：REST 客户端（config Arc + HTTP client）收敛到 ControllerClient
+            // REST 客户端（config Arc + HTTP client）收敛到 ControllerClient
             controller: ControllerClient::new(config)?,
             app_handle,
             user_stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -187,16 +186,16 @@ impl CoreManager {
         self.child.lock().unwrap().as_ref().and_then(|c| c.id())
     }
 
-    /// P1-7：把当前子进程 PID 同步到 AppState 缓存。
+    /// 把当前子进程 PID 同步到 AppState 缓存。
     /// 退出清理在 core_manager 锁被 async 任务占用时无法走 child_pid()，
-    /// 改用该缓存做按 PID 精确清杀（取代旧的按进程名 taskkill 误杀风险）。
+    /// 改用该缓存做按 PID 精确清杀，避免按进程名 taskkill 误杀无关进程。
     fn record_pid_cache(&self) {
         if let Some(pid) = self.child_pid() {
             self.set_pid_cache(pid);
         }
     }
 
-    /// 把 PID 写入全局缓存（P0-8：子进程确认退出后必须立即清空，防止 PID
+    /// 把 PID 写入全局缓存（子进程确认退出后必须立即清空，防止 PID
     /// 被系统复用后误杀无关进程；stop 失败时保留以支持退出清理追踪）。
     fn set_pid_cache(&self, pid: u32) {
         let state = self.app_handle.state::<crate::AppState>();
@@ -215,7 +214,7 @@ impl CoreManager {
 
     /// 进入可解释的 Error 状态并推送 `core-status-changed`。
     /// 所有启动/停止失败路径都必须以本方法收尾，保证 UI 绝不呈现
-    /// 假运行 / 假停止 / 永久 Starting（P0 启动状态一致性）。
+    /// 假运行 / 假停止 / 永久 Starting。
     fn transition_to_error_and_emit(&self, err: Error) -> Error {
         let text = err.to_string();
         *self.status.lock().unwrap() = CoreStatus::Error(text.clone());
@@ -228,7 +227,7 @@ impl CoreManager {
 
     /// 轮询 try_wait 直到子进程确认退出或超时。try_wait 可重复调用
     /// （wait() 在超时取消后不能可靠二次调用），用于 stop_locked /
-    /// 自动重启失败清理后确认进程确实消失（P0 停止假成功防护）。
+    /// 自动重启失败清理后确认进程确实消失（停止假成功防护）。
     async fn confirm_child_exit(&self, child: &mut Child, timeout: Duration) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
@@ -306,28 +305,26 @@ impl CoreManager {
 
     /// start 实现体（调用方必须已持有 lifecycle 锁）。
     ///
-    /// P0 修复：tokio Mutex 不可重入——旧实现 restart() 持锁后调 stop()/
-    /// start()，而它们内部再次 lock 同一把锁 → 永久死锁。表现为：重启/激活
-    /// Profile/TUN 回退重启全部挂起；且持有 config_tx 的事务走到该分支后，
-    /// 所有后续配置与开关操作排队等锁，整个应用"卡死"。改为公开入口只加锁、
-    /// 内部 *_locked 不再加锁，串行语义不变。
+    /// tokio Mutex 不可重入：公开入口持锁后调用内部 stop()/start() 会再次
+    /// lock 同一把锁 → 永久死锁。因此公开入口只加锁、内部 *_locked 不再加锁，
+    /// 串行语义不变。
     async fn start_locked(&self) -> Result<()> {
-        // 幂等启动：若已在运行则直接返回。旧实现在此分支调用 stop_locked()
-        // 会让 generation 被二次递增，而下方 spawn_watcher(generation) 用的是
-        // 递增前的旧值，导致 watcher 首次轮询即判定被取代而退出——核心裸奔、
-        // 失去 supervisor。start 的语义是"确保运行中"，重复调用不应产生副作用。
+        // 幂等启动：若已在运行则直接返回，且不得在此分支调用 stop_locked()——
+        // 那会让 generation 被二次递增，而下方 spawn_watcher(generation) 用的是
+        // 递增前的旧值，导致 watcher 首次轮询即判定被取代而退出，核心失去
+        // supervisor。start 的语义是"确保运行中"，重复调用不应产生副作用。
         if self.is_running() {
             return Ok(());
         }
 
-        // P0-6：递增 generation 使所有旧 watcher 失效（它们会在下一次
+        // 递增 generation 使所有旧 watcher 失效（它们会在下一次
         // 轮询比对时退出），随后本流程成功后只 spawn 一个新 watcher。
         let generation = self
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
 
-        // P1-7：用户主动启动 → 清除停止标志
+        // 用户主动启动 → 清除停止标志
         self.user_stopped
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
@@ -339,7 +336,7 @@ impl CoreManager {
         // 初始化阶段已判定内核缺失：直接给出可操作提示（便携模式提示检查
         // App/clash-edge-core.exe；安装版提示 sidecar 打包），而不是裸路径。
         // 所有启动失败路径都必须进入可解释的 Error 并推送 core-status-changed
-        // （P0 启动状态一致性：不得永久停在 Starting / 假运行 / 假停止）。
+        // （不得永久停在 Starting / 假运行 / 假停止）。
         if let Some(hint) = self.init_error.clone() {
             let err = Error::NotFound(hint);
             return Err(self.transition_to_error_and_emit(err));
@@ -419,7 +416,7 @@ impl CoreManager {
             }
         };
         *self.child.lock().unwrap() = Some(child);
-        // P1-7：同步 PID 缓存（退出清理在锁竞争时的精确清杀依据）
+        // 同步 PID 缓存（退出清理在锁竞争时的精确清杀依据）
         self.record_pid_cache();
 
         // 就绪探测：轮询 REST /version（mihomo 起不来的话这里会超时 → Error，不假成功）
@@ -438,9 +435,9 @@ impl CoreManager {
                 if let Ok(v) = self.version().await {
                     *self.version_cache.lock().unwrap() = Some(v);
                 }
-                // P0-7：新进程启动时刻（稳定运行判定基准）
+                // 新进程启动时刻（稳定运行判定基准）
                 *self.started_at.lock().unwrap() = Some(std::time::Instant::now());
-                // P0-6：只 spawn 一个携带当前 generation 的 watcher
+                // 只 spawn 一个携带当前 generation 的 watcher
                 self.spawn_watcher(generation);
                 info!(
                     "mihomo started ({} -d {} -f {})",
@@ -456,10 +453,10 @@ impl CoreManager {
                 Ok(())
             }
             Err(e) => {
-                // P0 顺序修正：旧实现先置 Error、再调 stop_locked()——后者无条件
-                // 覆盖成 Stopped，UI 呈现"假停止"且丢失失败原因。改为先清理僵尸
-                // 进程（stop_locked 可能置 Stopping/Stopped，也可能因杀不掉置 Error），
-                // 最后统一以 Error + core-status-changed 收尾。
+                // 顺序约束：先清理僵尸进程（stop_locked 可能置 Stopping/Stopped，
+                // 也可能因杀不掉置 Error），最后统一以 Error + core-status-changed
+                // 收尾——若先置 Error 再 stop_locked()，后者会无条件覆盖成
+                // Stopped，UI 呈现"假停止"且丢失失败原因。
                 let _ = self.stop_locked().await; // 清掉起不来的僵尸进程
                 Err(self.transition_to_error_and_emit(e))
             }
@@ -526,14 +523,14 @@ impl CoreManager {
         }
     }
 
-    /// 子进程监督循环（CoreSupervisor，P0-6/P0-7/P0-5 重构）：
+    /// 子进程监督循环（CoreSupervisor）：
     ///
     /// - 单 watcher 保证：每个 start() 只 spawn 一个携带 generation 的 watcher，
     ///   任何 start()/stop() 都会递增 generation 使旧 watcher 在下一次轮询时退出；
     /// - 崩溃处理链：状态置 Error → 关闭指向死端口的系统代理（防断网）→
     ///   circuit breaker 判定 → 退避后自动重启 → /version + mixed-port 健康检查
     ///   → 全部通过才恢复系统代理（若用户意图为开）；
-    /// - P0-7 熔断：STABLE_RUN_DURATION 内的崩溃记入 CRASH_WINDOW 时间窗，
+    /// - 崩溃熔断：STABLE_RUN_DURATION 内的崩溃记入 CRASH_WINDOW 时间窗，
     ///   窗口内达到 MAX_CRASHES_IN_WINDOW 次即放弃重启；稳定运行超过阈值后的
     ///   崩溃清空窗口（长期正常服务后的偶发崩溃不受历史连坐）。
     fn spawn_watcher(&self, generation: u64) {
@@ -548,10 +545,10 @@ impl CoreManager {
         let data_dir = self.data_dir.clone();
         let config = self.config.clone();
         let api_client = self.controller.api_client().clone();
-        // D4：自愈重启成功后失效版本缓存（新进程版本可能已变化）
+        // 自愈重启成功后失效版本缓存（新进程版本可能已变化）
         let version_cache = self.version_cache.clone();
 
-        // P0-6：generation 是否仍然有效（不一致说明有新的 start/stop 接管）
+        // generation 是否仍然有效（不一致说明有新的 start/stop 接管）
         let gen_valid = |g: &Arc<std::sync::atomic::AtomicU64>, expected: u64| -> bool {
             g.load(std::sync::atomic::Ordering::SeqCst) == expected
         };
@@ -560,7 +557,7 @@ impl CoreManager {
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // P0-6：generation 已变化 → 新流程接管，本 watcher 立即退出。
+                // generation 已变化 → 新流程接管，本 watcher 立即退出。
                 // 这是消除「多个 watcher 同时盯一个 child、重复重启」的关键。
                 if !gen_valid(&gen_counter, generation) {
                     debug!("supervisor watcher {} superseded; exiting", generation);
@@ -582,9 +579,9 @@ impl CoreManager {
 
                 // 置 child 为 None，is_running() 随之返回 false
                 child_handle.lock().unwrap().take();
-                // P0-8：子进程确认退出后立即清空 PID 缓存——旧实现这里只取走
-                // child、不清缓存，崩溃/熔断/重启失败后旧 PID 可能被系统复用，
-                // 应用退出清理会 taskkill 掉无关进程（PID 误杀风险）。
+                // 子进程确认退出后必须立即清空 PID 缓存：否则崩溃/熔断/重启
+                // 失败后旧 PID 可能被系统复用，应用退出清理会 taskkill 掉
+                // 无关进程（PID 误杀风险）。
                 {
                     let state = app_handle.state::<crate::AppState>();
                     state
@@ -659,7 +656,7 @@ impl CoreManager {
                     break;
                 }
 
-                // P0-7 circuit breaker：
+                // 崩溃熔断：
                 // - 本次崩溃距启动不足 STABLE_RUN_DURATION → 记入窗口；
                 //   超过 → 清空窗口（稳定运行后的偶发崩溃重新计数）
                 // - 窗口内崩溃次数达到上限 → 放弃自动重启
@@ -777,7 +774,7 @@ impl CoreManager {
                 }
                 match cmd.spawn() {
                     Ok(child) => {
-                        // P1-7：同步 PID 缓存
+                        // 同步 PID 缓存
                         if let Some(pid) = child.id() {
                             app_handle
                                 .state::<crate::AppState>()
@@ -794,13 +791,13 @@ impl CoreManager {
                         match core_manager_for_check.wait_ready_and_check_port().await {
                             Ok(()) => {
                                 *status_arc.lock().unwrap() = CoreStatus::Running;
-                                // P0-7：新进程的稳定运行基准从现在起算
+                                // 新进程的稳定运行基准从现在起算
                                 *started_at.lock().unwrap() = Some(std::time::Instant::now());
                                 let _ = app_handle.emit(
                                     "core-status-changed",
                                     serde_json::json!({ "status": "running" }),
                                 );
-                                // P0-5：恢复 Windows 系统代理。崩溃时已临时关闭；
+                                // 恢复 Windows 系统代理。崩溃时已临时关闭；
                                 // 自愈成功后必须按用户意图与真实端口恢复，否则出现
                                 // 「UI=开、配置=开、注册表=关」的三态分裂。
                                 if let Some(expected) = proxy_restore_target.as_ref() {
@@ -820,7 +817,7 @@ impl CoreManager {
                                                  auto-restart: {}",
                                                 e
                                             );
-                                            // P0-3：恢复失败不允许 UI 继续把系统代理当作 ON。
+                                            // 恢复失败不允许 UI 继续把系统代理当作 ON。
                                             // 尽力退回 journal 记录的用户原始代理状态；无论
                                             // 成败，配置意图都改回 false（= Windows 实际），
                                             // 并推送事件刷新前端，杜绝三态分裂。
@@ -868,7 +865,7 @@ impl CoreManager {
                                 let zombie = child_handle.lock().unwrap().take();
                                 if let Some(mut c) = zombie {
                                     let _ = c.kill().await;
-                                    // P0-8：僵尸进程被取走并清理后，PID 缓存必须清空，
+                                    // 僵尸进程被取走并清理后，PID 缓存必须清空，
                                     // 否则旧 PID 残留、应用退出时可能误杀被复用的进程。
                                     let state = app_handle.state::<crate::AppState>();
                                     state
@@ -891,7 +888,7 @@ impl CoreManager {
         });
     }
 
-    /// P0-3：自愈重启后系统代理恢复失败的收尾。
+    /// 自愈重启后系统代理恢复失败的收尾。
     ///
     /// 前提：崩溃恢复确认 ownership 已释放或重新接管失败，但配置意图仍为 true。
     /// 此时绝不能让 UI 继续把系统代理当作 ON——
@@ -924,13 +921,13 @@ impl CoreManager {
 
     /// stop 实现体（调用方必须已持有 lifecycle 锁，见 start_locked 注释）。
     ///
-    /// P0 停止假成功防护：必须确认进程确实退出才能返回 Ok。`child.kill()` 的
+    /// 停止假成功防护：必须确认进程确实退出才能返回 Ok。`child.kill()` 的
     /// 错误、`taskkill` 的启动/退出码都逐一检查；杀不掉时**不**置 Stopped，
     /// 而是保留可追踪的 PID 在 `core_pid_cache`（供退出清理继续追踪）并进入
     /// Error + 推送 core-status-changed。绝不按进程名杀进程。
     async fn stop_locked(&self) -> Result<()> {
-        // P0-6：递增 generation 使旧 watcher 失效（防止它把本次主动停止
-        // 当成崩溃处理）；P1-7：标记用户主动停止双保险
+        // 递增 generation 使旧 watcher 失效（防止它把本次主动停止
+        // 当成崩溃处理）；标记用户主动停止双保险
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.user_stopped
@@ -1008,7 +1005,7 @@ impl CoreManager {
         }
 
         if stopped {
-            // P0-8：进程确认退出后立即清空 PID 缓存，防止 PID 被系统复用后误杀
+            // 进程确认退出后立即清空 PID 缓存，防止 PID 被系统复用后误杀
             self.clear_pid_cache();
             *self.status.lock().unwrap() = CoreStatus::Stopped;
             info!("mihomo stopped");
@@ -1036,9 +1033,8 @@ impl CoreManager {
     /// 重启 mihomo
     pub async fn restart(&self) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
-        // P0 修复：旧实现 self.stop().await? / self.start().await 会再次 lock
-        // 同一把 tokio Mutex（不可重入）→ 永久死锁。改用 *_locked 不再加锁的
-        // 内部实现体，串行语义不变。
+        // tokio Mutex 不可重入：self.stop().await? / self.start().await 会再次
+        // lock 同一把锁 → 永久死锁。必须走 *_locked 内部实现体，串行语义不变。
         self.restart_locked().await
     }
 
@@ -1048,7 +1044,7 @@ impl CoreManager {
         self.start_locked().await
     }
 
-    /// P0-4：热重载后的真实运行状态校验。PUT /configs 返回 200 不代表新配置
+    /// 热重载后的真实运行状态校验。PUT /configs 返回 200 不代表新配置
     /// 真正生效（mihomo 可能静默跳过非法字段/监听失败），必须核对：
     /// 1. `/version` 可达（控制器活着）；
     /// 2. GET /configs 的 mixed-port 与期望一致（关键字段已应用）；
@@ -1118,7 +1114,7 @@ impl CoreManager {
     }
 
     /// 重载配置：重新生成 runtime-config.yaml；运行中用 REST 热重载，
-    /// 热重载后必须通过健康检查（P0-4）；REST 失败、校验失败或未运行时
+    /// 热重载后必须通过健康检查；REST 失败、校验失败或未运行时
     /// 回退整进程重启。
     pub async fn reload_config(&self) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
@@ -1141,7 +1137,7 @@ impl CoreManager {
                 .await;
             match resp {
                 Ok(resp) if resp.status().is_success() => {
-                    // P0-4：HTTP 200 不够——健康检查通过才算 reload 成功；
+                    // HTTP 200 不够——健康检查通过才算 reload 成功；
                     // 失败则回退整进程重启（start() 自带就绪 + bind 冲突检测）。
                     match self.verify_runtime_applied().await {
                         Ok(()) => {
@@ -1173,7 +1169,7 @@ impl CoreManager {
         }
 
         info!("Config rewritten, restarting core");
-        // P0 修复：reload_config 已持 lifecycle 锁，直接调 restart_locked
+        // reload_config 已持 lifecycle 锁，直接调 restart_locked
         // 而非 restart()（后者会再 lock → 死锁）。
         self.restart_locked().await
     }
@@ -1246,7 +1242,7 @@ impl CoreManager {
         })
     }
 
-    // ---------- 外部控制器 API（P2 拆分：逻辑在 core/controller.rs，这里转发） ----------
+    // ---------- 外部控制器 API（逻辑在 core/controller.rs，这里转发） ----------
 
     /// 切换代理模式（PATCH /configs）——只作用于运行中的 mihomo；
     /// 持久化 / 回滚由编排层（apply_proxy_mode）负责。
@@ -1296,7 +1292,7 @@ impl CoreManager {
     }
 }
 
-/// P1-7：自动重启后的就绪探测辅助（复用 CoreManager 的 /version + 端口健康检查）。
+/// 自动重启后的就绪探测辅助（复用 CoreManager 的 /version + 端口健康检查）。
 /// 不直接用 CoreManager 方法（避免借走 self 跨 await 与 watcher 任务所有权冲突），
 /// 只取必要的 Arc 字段。
 struct AutoRestartChecker {

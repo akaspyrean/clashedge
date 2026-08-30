@@ -1,7 +1,7 @@
 // src-tauri/src/core/controller.rs
 //! 外部控制器 REST 客户端（ControllerClient）
 //!
-//! CoreManager 拆分（P2）后的独立模块：只依赖 `config`（读取 external-controller /
+//! CoreManager 的独立模块：只依赖 `config`（读取 external-controller /
 //! secret）与 `api_client`，不含进程生命周期状态。生命周期仍在 CoreManager；
 //! 需要调 REST 的方法（version/get_status 等）仍留在 manager.rs，通过
 //! `self.controller` 调用这里的接口。
@@ -155,7 +155,7 @@ impl ControllerClient {
 
     /// 获取代理组列表（GET /proxies）。
     /// mihomo 返回的类型名是大写（Selector / URLTest / Fallback / LoadBalance / Relay），
-    /// 旧实现只认小写导致永远匹配不到真实代理组。
+    /// 类型匹配必须按实际返回的大小写处理，不得假设全小写。
     pub(crate) async fn get_proxy_groups(&self) -> Result<Vec<serde_json::Value>> {
         let url = self.api_url(&["proxies"], None)?;
         let resp = self

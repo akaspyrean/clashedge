@@ -26,7 +26,7 @@ use crate::util::paths::sanitize_profile_name;
 /// mihomo 合法代理模式（官方模板仅这三值；script 是 Clash Premium 遗留）
 const VALID_MODES: &[&str] = &["rule", "global", "direct"];
 
-/// P0-2：mixed-port TCP 探测超时
+/// mixed-port TCP 探测超时
 const PORT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// mixed-port 是否真实可连接（TCP 握手成功）
@@ -41,7 +41,7 @@ pub(crate) async fn port_alive(port: u16) -> bool {
     )
 }
 
-/// P0-2：确认 mihomo 正在运行且 mixed-port 真实可连接。
+/// 确认 mihomo 正在运行且 mixed-port 真实可连接。
 ///
 /// 开启系统代理前必须调用——绝不能让 Windows 指向无人监听的代理端口（死代理）。
 /// 核心未运行或端口不可连时，按方案优先级先尝试自动启动一次核心；
@@ -58,7 +58,7 @@ pub(crate) async fn ensure_core_serving(app: &AppHandle) -> Result<()> {
             .mixed_port
     };
 
-    // 已运行且端口可连 → 直接通过；否则自动启动/重启一次（P0-2 方案 1）。
+    // 已运行且端口可连 → 直接通过；否则自动启动/重启一次。
     // start()/restart() 内部含就绪探测与 bind 冲突检测，失败会返回 Err。
     let ensured = {
         let guard = state.core_manager.get();
@@ -100,7 +100,7 @@ pub(crate) async fn ensure_core_serving(app: &AppHandle) -> Result<()> {
     }
     Ok(())
 }
-/// P0-3：系统代理开启/恢复失败后，把配置意图落回 Windows 实际状态（false）
+/// 系统代理开启/恢复失败后，把配置意图落回 Windows 实际状态（false）
 /// 并推送事件——不允许 UI 在注册表实际关闭时继续把开关显示为 ON。
 pub(crate) async fn mark_system_proxy_failed(app: &AppHandle, reason: &str) {
     let state = app.state::<crate::AppState>();
@@ -134,7 +134,7 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
     }
     let state = app.state::<crate::AppState>();
 
-    // P0-2：全程持有 config_tx，串行整段事务（持久化 → PATCH → 回滚）。
+    // 全程持有 config_tx，串行整段事务（持久化 → PATCH → 回滚）。
     // 与 commit_config_transaction / apply_tun / apply_system_proxy /
     // activate_profile 互斥，避免并发入口交错覆盖。
     let _tx = state.config_tx.lock().await;
@@ -216,7 +216,7 @@ pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
         ));
     }
 
-    // P0-2：全程持有 config_tx，串行整段事务。
+    // 全程持有 config_tx，串行整段事务。
     let _tx = state.config_tx.lock().await;
 
     // 1. 持久化
@@ -350,7 +350,7 @@ async fn rollback_tun(app: &AppHandle, old_enable: bool) {
 pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
 
-    // P0-2：开启前必须确认 Core Running 且 mixed-port 实际 TCP 可连接；
+    // 开启前必须确认 Core Running 且 mixed-port 实际 TCP 可连接；
     // 不满足时先尝试自动启动核心，仍失败则拒绝开启并返回明确错误——
     // 绝不能让 Windows 指向无人监听的代理端口。此校验在任何持久化之前，
     // 失败时不留下任何半套状态。
@@ -364,7 +364,7 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
         ensure_core_serving(app).await?;
     }
 
-    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
+    // 全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
     let _tx = state.config_tx.lock().await;
     let data_dir = crate::util::paths::get_app_data_dir(app)?;
     let mixed_port = state
@@ -375,10 +375,10 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
         .general
         .mixed_port;
 
-    // C9 系统代理开启前密钥兜底：若当前配置仍是占位/空/旧遗留密钥，立即轮换。
+    // 系统代理开启前密钥兜底：若当前配置仍是占位/空/旧遗留密钥，立即轮换。
     // 系统代理开启后，本机所有流量（含局域网可到达路径）都可能触达本地控制器，
     // 已知默认密钥意味着控制器可被未授权接管——必须先轮换再继续。
-    // 轮换复用 H1 的 ensure_secure_secret 逻辑（经 set_config 落盘生效）。
+    // 轮换复用 ensure_secure_secret 逻辑（经 set_config 落盘生效）。
     if enable {
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let cfg = cfg_mgr.get_config();
@@ -435,13 +435,11 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
 }
 
 /// 停止核心并同步系统代理（统一编排入口）。
-///
-/// 历史遗留的 stop_core 命令自行操作 ConfigManager（直接改 system_proxy 并
-/// 吞掉 set_config 错误），绕过 config_tx 事务，与 apply_* 编排层形成两套路径。
-/// 本函数是唯一入口。
+/// 所有停止核心的调用都必须经由本函数，避免绕过 config_tx 事务或
+/// 与 apply_* 编排层形成两套路径。
 ///
 /// 执行顺序（网络安全优先）：先退出系统代理接管，再停止核心。
-/// 旧实现先停核心再关系统代理——若关系统代理的 set_config 失败，会留下
+/// 若先停核心再关系统代理，关系统代理的 set_config 一旦失败，会留下
 /// "Windows 代理仍指向已死的 127.0.0.1:7890" 的断网状态。反过来：即使
 /// 退系统代理失败，也不停止核心，用户至少保持可上网。
 pub async fn stop_core_and_sync_proxy(app: &AppHandle) -> Result<()> {
@@ -473,7 +471,7 @@ pub async fn stop_core_and_sync_proxy(app: &AppHandle) -> Result<()> {
 pub async fn activate_profile(app: &AppHandle, name: &str) -> Result<()> {
     let state = app.state::<crate::AppState>();
 
-    // P0-2：全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
+    // 全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
     let _tx = state.config_tx.lock().await;
 
     activate_profile_locked(app, name).await

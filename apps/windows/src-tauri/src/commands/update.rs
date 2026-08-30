@@ -4,7 +4,7 @@
 //! 应用侧只负责「验签清单 → 取到已验证的更新包并暂存」；最终替换由根启动器
 //! 在下次启动时执行（Windows 无法覆盖运行中的自身映像）。
 //!
-//! P0-6（Release Gate）：`download_update` 无参数——只使用 `check_update`
+//! `download_update` 无参数——只使用 `check_update`
 //! 刚通过 minisign 验签并缓存的后端 manifest。WebView 传入的
 //! version/url/hash 一律不参与下载决策，无法被用来构造任意下载参数。
 

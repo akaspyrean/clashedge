@@ -325,9 +325,9 @@ pub async fn get_direct_first_streaming(app: &AppHandle, url: &str) -> Result<re
     get_direct_first_with_timeout(app, url, None).await
 }
 
-/// P1-4：整条请求链（含全部重定向跳）保持同一路由语义。
+/// 整条请求链（含全部重定向跳）保持同一路由语义。
 /// 直连尝试的整个重定向链强制直连；代理兜底的整条链固定走本地代理。
-/// 旧实现重定向跳重建 client 时未继承 no_proxy/proxy，会回落到
+/// 若重定向跳重建 client 时未继承 no_proxy/proxy，会回落到
 /// 系统代理/环境变量，导致同一链路前后两跳走不同网络路径。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FetchRoute {
@@ -455,7 +455,7 @@ fn build_client_with_resolved(
 
 /// 发送请求并手动处理重定向：每跳做完整异步 SSRF 校验（含 DNS）后
 /// 用钉定连接跟随，避免自动重定向的同步回调无法做 DNS 校验。
-/// P1-4：重定向跳重建 client 时通过 `apply_route` 保持与首跳相同的
+/// 重定向跳重建 client 时通过 `apply_route` 保持与首跳相同的
 /// 直连/代理路由语义，整条链路网络路径一致。
 ///
 /// 重定向链总 deadline：`total_timeout` 在入口换算为 `Instant` deadline，
@@ -545,7 +545,7 @@ async fn send_and_follow(
             return Ok(resp);
         }
         if !resp.status().is_redirection() {
-            // 非 2xx 且非 3xx：返回给调用方判定（与旧行为一致：非 2xx 触发代理兜底）
+            // 非 2xx 且非 3xx：返回给调用方判定（非 2xx 触发代理兜底）
             return Ok(resp);
         }
         // 3xx 重定向：提取 Location，做完整异步校验后跟随
@@ -843,16 +843,16 @@ mod tests {
         assert_eq!(abs.as_str(), "https://other.com/x");
     }
 
-    // --- P1-5/P2：SSRF local-proxy fallback 修复验证 -------------------------
+    // --- SSRF local-proxy fallback 验证 ------------------------------------
     //
-    // 审计担忧：reqwest 的 `resolve()`（DNS pinning）在 `.proxy(Proxy::all(...))`
+    // 约束背景：reqwest 的 `resolve()`（DNS pinning）在 `.proxy(Proxy::all(...))`
     // 模式下不生效——proxy 收到的是原始域名而非已校验 IP。这意味着：
     //   1. validate_url 校验 evil.com → 返回公网 IP（通过）
     //   2. direct 失败 → 触发 local proxy fallback
     //   3. proxy（mihomo）重新解析 evil.com → DNS rebinding 返回 127.0.0.1
     //   4. mihomo 连 127.0.0.1（SSRF 成功）
     //
-    // v1.0.5 修复：改用 SOCKS5 本地解析 + resolve pinning。代理收到已验证 IP，
+    // 因此 fallback 采用 SOCKS5 本地解析 + resolve pinning。代理收到已验证 IP，
     // 原 URL hostname 则保留给 HTTP Host / TLS SNI 与证书 hostname 校验。
 
     #[tokio::test]
@@ -1123,7 +1123,7 @@ mod tests {
         server.abort();
     }
 
-    /// 手工 Release Gate：通过真实 Mihomo mixed-port 跑生产 fallback 路径，覆盖
+    /// 手工验证（需真实网络环境）：通过真实 Mihomo mixed-port 跑生产 fallback 路径，覆盖
     /// GitHub Release redirect、常见订阅 CDN 与 geodata CDN。默认忽略；执行时
     /// 设置 CLASHEDGE_TEST_PROXY=socks5://127.0.0.1:<isolated-port>。
     #[tokio::test]
