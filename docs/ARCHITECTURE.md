@@ -50,8 +50,8 @@ build/assets/           # prepare.ps1 的缓存与 staging（gitignored）
 校验 → 持久化 → 重生成 runtime-config → 实时下发给 mihomo → 失败回滚 → 通知 UI/托盘刷新
 ```
 
-这条链路目前靠约定维持（每个修改入口自行遵守）；已知债务是状态事务散落在
-`AppState` 的多个成员上，收拢方向见文末。
+这条链路由 **AppController** 从机制上强制维持：事务串行锁在每个 controller 方法
+内部获取并持有到事务结束，command / 托盘等调用方无法绕过，也无法忘记加锁。
 
 ### 配置双层模型
 
@@ -70,19 +70,24 @@ RULE-SET,ai → RULE-SET,media → RULE-SET,proxy → GEOSITE,cn → GEOIP,CN �
 ```text
 src-tauri/src/
   main.rs           # Tauri 装配：AppState、command 注册、托盘、事件
-  commands/         # Tauri command 层：参数 → 内部调用 → Result（不放业务状态）
+  commands/         # Tauri command 层：参数 → AppController → Result（不放业务状态）
+    profiles/       #   mod.rs 命令层 + validate / files / subscription 逻辑模块
   core/
-    manager.rs      # CoreManager：mihomo 进程生命周期、watcher、崩溃熔断、PID 缓存
-    config.rs       # runtime-config 合成（AppConfig + Profile）
-    controller.rs   # mihomo 外部控制器 REST 客户端（无进程状态）
-    runtime.rs      # 运行时状态投影（连接、流量、版本）
-    health.rs       # 健康检查
+    app_controller.rs  # AppController：唯一修改边界，事务串行锁 + 全链路内聚
+    manager.rs         # CoreManager：struct、状态、REST 透传（门面）
+    lifecycle.rs       # 进程生命周期：start/stop/restart/reload、runtime-config 落盘
+    supervisor.rs      # watcher、自动重启、崩溃熔断、PID 缓存、绑定冲突检测
+    config.rs          # runtime-config 合成（AppConfig + Profile）
+    controller.rs      # mihomo 外部控制器 REST 客户端（无进程状态）
+    runtime.rs         # 事务链实现（*_locked）与运行时状态投影
+    health.rs          # 健康检查
   config/           # AppConfig 的 model / persistence / migration
   proxy/            # system_proxy（Windows 注册表）、journal（状态事务日志）
   geodata/          # GeoIP/GeoSite 下载源与更新
   tray/             # 托盘图标与菜单（随系统代理状态变色）
   update/           # 更新检查与便携包清单验签
-  util/             # fetch（受限 HTTP 客户端）、paths（便携检测）、atomic、autostart、elevation
+  util/             # fetch/（受限 HTTP 客户端：guards=SSRF 防护、client=下载机制）、
+                    # paths（便携检测）、atomic、autostart、elevation、normalizer
   i18n/             # 后端文案加载
 ```
 
@@ -128,8 +133,7 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
 
 ## 已知债务（有意推迟，非遗忘）
 
-- `AppState` 同时持有 CoreManager / ConfigManager / config_tx / tray / log_stream 等，
-  状态事务散落。方向：收拢成 `AppController`（Config / Core / SystemProxy / Update），
-  command 层只做 参数 → controller → Result，事务与 runtime apply 内聚在 controller。
-- `core/manager.rs`、`util/fetch.rs`、`commands/profiles.rs` 体量偏大，按"一个文件一个
-  变化原因"拆分，不引入 interfaces/repositories 之类的分层仪式。
+- 上一轮的两项主要债务（AppController 收拢、manager/fetch/profiles 拆分）已完成。
+  `AppState` 现在只剩辅助成员（tray、log_stream、core_pid_cache、verified_update），
+  全部修改路径必须经 `AppController`。新增修改状态的功能时，一律加 controller 方法，
+  不得在 command / tray 层直接操作 ConfigManager + CoreManager。

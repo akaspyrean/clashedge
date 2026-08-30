@@ -41,18 +41,21 @@ use tracing::{error, info, warn};
 ///   操作（reload / restart / Windows 副作用）会释放该锁，因此 `config_manager`
 ///   **不能**串行整个配置事务——两个并发事务会交错：A 写 V2 后 await reload，
 ///   B 读到 V2 写 V3，A 失败回滚到 V1 覆盖 B 的 V3。
-/// - `config_tx` 是 tokio Mutex，可跨 `.await` 持有。所有改变系统运行态的入口
+/// - `controller`（`core::app_controller::AppController`）私有持有配置/运行态
+///   事务串行锁（tokio Mutex，可跨 `.await` 持有）。所有改变系统运行态的入口
 ///   （update_config / update_config_fields / reset_config / import_config /
 ///   apply_proxy_mode / apply_tun / apply_system_proxy / activate_profile /
-///   tray config_mixin）必须在做事之前先 `config_tx.lock().await` 并持有到
-///   事务结束，保证「UI = Config = runtime-config = Mihomo = Windows」在并发
-///   入口下也严格成立。锁的是 `()` —— 纯串行作用，不承载任何数据。
+///   rename_profile / update_profile_content / 订阅提交 / tray config_mixin /
+///   stop_core）都必须经由控制器方法，锁的获取发生在控制器内部——调用方
+///   既不可能忘记持锁，也不可能绕过它，保证「UI = Config = runtime-config =
+///   Mihomo = Windows」在并发入口下也严格成立。锁的是 `()` —— 纯串行作用，
+///   不承载任何数据。
 pub struct AppState {
     pub core_manager: std::sync::OnceLock<crate::core::manager::CoreManager>,
     pub config_manager: std::sync::Mutex<ConfigManager>,
-    /// 配置/运行态事务串行锁：跨 `.await` 持有，串行所有改 Config + Mihomo +
-    /// Windows 的入口。见上文结构注释。
-    pub config_tx: tokio::sync::Mutex<()>,
+    /// 应用事务控制器：私有持有配置/运行态事务串行锁，串行所有改
+    /// Config + Mihomo + Windows 的入口。见上文结构注释。
+    pub controller: crate::core::app_controller::AppController,
     pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
     /// 日志流任务句柄（前端日志页启用/停止；std Mutex，abort 为同步调用）
     pub log_stream: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -75,7 +78,7 @@ impl AppState {
         Self {
             core_manager: std::sync::OnceLock::new(),
             config_manager: std::sync::Mutex::new(ConfigManager::new()),
-            config_tx: tokio::sync::Mutex::new(()),
+            controller: crate::core::app_controller::AppController::new(),
             tray: std::sync::Mutex::new(None),
             log_stream: std::sync::Mutex::new(None),
             core_pid_cache: std::sync::atomic::AtomicU32::new(0),
@@ -281,7 +284,7 @@ pub fn run() {
                     // 只有内核真正起来之后，才把系统代理打开——避免代理指向死端口。
                     if started && sys_proxy_intent {
                         if let Err(e) =
-                            crate::core::runtime::apply_system_proxy(&app_handle, true).await
+                            state.controller.apply_system_proxy(&app_handle, true).await
                         {
                             error!("Failed to restore system proxy: {}", e);
                             // 恢复失败不得让 UI 继续把 system-proxy 当作 ON；

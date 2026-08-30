@@ -2,26 +2,30 @@
 //! 代理命令：系统代理、TUN 模式、代理模式、延迟测试、代理组
 //!
 //! 三个开关类命令不再直接操作 CoreManager 或注册表，而是路由到统一编排层
-//! `core::runtime`（校验 → 持久化 → 同步运行时 → 实时应用 → 回滚 → 通知）。
+//! `core::app_controller::AppController`（内部持事务串行锁，校验 → 持久化 →
+//! 同步运行时 → 实时应用 → 回滚 → 通知，事务主体在 `core::runtime`）。
 //! 这样前端命令与托盘事件行为一致，避免两套逻辑漂移。
 
-use tauri::{command, AppHandle};
+use tauri::{command, AppHandle, Manager};
 
 use crate::util::error::Result;
 
 #[command]
 pub async fn set_system_proxy(app: AppHandle, enable: bool) -> Result<()> {
-    crate::core::runtime::apply_system_proxy(&app, enable).await
+    let state = app.state::<crate::AppState>();
+    state.controller.apply_system_proxy(&app, enable).await
 }
 
 #[command]
 pub async fn set_tun_mode(app: AppHandle, enable: bool) -> Result<()> {
-    crate::core::runtime::apply_tun(&app, enable).await
+    let state = app.state::<crate::AppState>();
+    state.controller.apply_tun(&app, enable).await
 }
 
 #[command]
 pub async fn set_proxy_mode(app: AppHandle, mode: String) -> Result<()> {
-    crate::core::runtime::apply_proxy_mode(&app, &mode).await
+    let state = app.state::<crate::AppState>();
+    state.controller.apply_proxy_mode(&app, &mode).await
 }
 
 #[command]

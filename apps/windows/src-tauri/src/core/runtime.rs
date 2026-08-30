@@ -12,7 +12,9 @@
 //! 5. 失败则回滚配置；
 //! 6. 推送事件给前端，并刷新托盘菜单（勾选状态来自真实状态）。
 //!
-//! 锁纪律：`config_manager` 是 std Mutex（不得跨 `.await` 持有），
+//! 锁纪律：事务串行锁由 `core::app_controller::AppController` 私有持有，
+//! 每个 mutating 入口（本文件的 `*_locked` 函数）由控制器在取锁后调用，
+//! 调用方无法绕过。`config_manager` 是 std Mutex（不得跨 `.await` 持有），
 //! `core_manager` 是 tokio Mutex（可跨 `.await` 持有）。代码中任何一段
 //! 都不同时在两个锁上等待。
 
@@ -25,6 +27,32 @@ use crate::util::paths::sanitize_profile_name;
 
 /// mihomo 合法代理模式（官方模板仅这三值；script 是 Clash Premium 遗留）
 const VALID_MODES: &[&str] = &["rule", "global", "direct"];
+
+/// 校验代理模式合法（在取事务锁之前调用，非法模式不占用事务锁）。
+pub(crate) fn validate_proxy_mode(mode: &str) -> Result<()> {
+    if !VALID_MODES.contains(&mode) {
+        return Err(Error::InvalidArgument(format!(
+            "invalid proxy mode '{}' (must be rule/global/direct)",
+            mode
+        )));
+    }
+    Ok(())
+}
+
+/// TUN 权限预检（在取事务锁之前调用）：开启 TUN 需要管理员权限
+/// （Windows 禁止标准用户创建虚拟网卡/修改路由）——若不满足，直接给出明确
+/// 提示，不做任何持久化/半套状态。关闭（enable=false）不受限制。
+/// 仅 Windows 生效；其它平台 is_elevated 恒 true。
+pub(crate) fn validate_tun_permission(enable: bool) -> Result<()> {
+    if enable && !crate::util::elevation::is_elevated() {
+        return Err(Error::Other(
+            "开启 TUN 需要管理员权限：Windows 要求以管理员身份运行才能创建虚拟网卡并接管路由。\
+             请以管理员身份重新运行 ClashEdge 后重试。"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
 
 /// mixed-port TCP 探测超时
 const PORT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -124,20 +152,10 @@ pub(crate) async fn mark_system_proxy_failed(app: &AppHandle, reason: &str) {
     );
 }
 
-/// 应用代理模式：校验 → 持久化 → 同步运行时 → PATCH 运行中核心 → 失败回滚。
-pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
-    if !VALID_MODES.contains(&mode) {
-        return Err(Error::InvalidArgument(format!(
-            "invalid proxy mode '{}' (must be rule/global/direct)",
-            mode
-        )));
-    }
+/// 应用代理模式的事务主体（调用方 AppController 已持有事务锁）。
+/// 合法性校验已由 `validate_proxy_mode` 在取锁前完成。
+pub(crate) async fn apply_proxy_mode_locked(app: &AppHandle, mode: &str) -> Result<()> {
     let state = app.state::<crate::AppState>();
-
-    // 全程持有 config_tx，串行整段事务（持久化 → PATCH → 回滚）。
-    // 与 commit_config_transaction / apply_tun / apply_system_proxy /
-    // activate_profile 互斥，避免并发入口交错覆盖。
-    let _tx = state.config_tx.lock().await;
 
     // 1. 持久化（内存 + 原子落盘）
     let old_mode = {
@@ -187,11 +205,8 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
     Ok(())
 }
 
-/// 应用 TUN 开关：持久化 → 同步运行时 → PATCH 运行中核心 → 确认实际状态。
-///
-/// 「确认实际结果」是本函数的核心：PATCH /configs 返回 200 不代表 mihomo 真正
-/// 接受并运行了目标 TUN 状态（可能静默跳过非法字段 / 内核未能建立网卡）。因此
-/// PATCH 后必须回读运行中核心的 `tun.enable`，与目标值比对。
+/// 应用 TUN 开关的事务主体（调用方 AppController 已持有事务锁；
+/// 权限预检已由 `validate_tun_permission` 在取锁前完成）。
 ///
 /// 流程（对应验证原则）：
 /// 1. 持久化新 AppConfig；
@@ -200,24 +215,8 @@ pub async fn apply_proxy_mode(app: &AppHandle, mode: &str) -> Result<()> {
 /// 4. 重启后再次回读确认；仍非目标值 → 视为失败；
 /// 5. 失败则完整回滚：恢复旧 AppConfig → 重写旧 runtime-config → 尽力恢复
 ///    Mihomo 到旧 TUN 状态（必要时重启）→ 返回错误，不假装成功。
-///
-/// 全程持有 `config_tx` 串行整段事务（见 apply_proxy_mode 注释）。
-pub async fn apply_tun(app: &AppHandle, enable: bool) -> Result<()> {
+pub(crate) async fn apply_tun_locked(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
-
-    // 0. 权限预检：开启 TUN 需要管理员权限（Windows 禁止标准用户创建虚拟网卡/
-    //    修改路由）——若不满足，直接给出明确提示，不做任何持久化/半套状态。
-    //    关闭（enable=false）不受限制。仅 Windows 生效；其它平台 is_elevated 恒 true。
-    if enable && !crate::util::elevation::is_elevated() {
-        return Err(Error::Other(
-            "开启 TUN 需要管理员权限：Windows 要求以管理员身份运行才能创建虚拟网卡并接管路由。\
-             请以管理员身份重新运行 ClashEdge 后重试。"
-                .to_string(),
-        ));
-    }
-
-    // 全程持有 config_tx，串行整段事务。
-    let _tx = state.config_tx.lock().await;
 
     // 1. 持久化
     let old = {
@@ -346,26 +345,11 @@ async fn rollback_tun(app: &AppHandle, old_enable: bool) {
     }
 }
 
-/// 应用系统代理：持久化用户意图 → 写 Windows 注册表（真实生效）→ 失败回滚。
-pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
+/// 应用系统代理的事务主体（调用方 AppController 已持有事务锁；
+/// ensure_core_serving 预检已由控制器在取锁前完成）。
+pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> Result<()> {
     let state = app.state::<crate::AppState>();
 
-    // 开启前必须确认 Core Running 且 mixed-port 实际 TCP 可连接；
-    // 不满足时先尝试自动启动核心，仍失败则拒绝开启并返回明确错误——
-    // 绝不能让 Windows 指向无人监听的代理端口。此校验在任何持久化之前，
-    // 失败时不留下任何半套状态。
-    //
-    // 注意：ensure_core_serving 在核心异常时可能触发一次慢速
-    // start()/restart()（含就绪轮询，最长 ~10s）。若它在拿到 config_tx
-    // 之后执行，会长期占住这把全局锁，导致其余开关（TUN/代理模式/mixin/
-    // 托盘）全部排队等待——「很多开关像卡 bug」。此校验只确认核心在服务，
-    // 不修改配置，放到事务锁之前执行最安全。
-    if enable {
-        ensure_core_serving(app).await?;
-    }
-
-    // 全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
-    let _tx = state.config_tx.lock().await;
     let data_dir = crate::util::paths::get_app_data_dir(app)?;
     let mixed_port = state
         .config_manager
@@ -434,54 +418,11 @@ pub async fn apply_system_proxy(app: &AppHandle, enable: bool) -> Result<()> {
     Ok(())
 }
 
-/// 停止核心并同步系统代理（统一编排入口）。
-/// 所有停止核心的调用都必须经由本函数，避免绕过 config_tx 事务或
-/// 与 apply_* 编排层形成两套路径。
+/// 激活 Profile 的事务主体（调用方 AppController 已持有事务锁）。
 ///
-/// 执行顺序（网络安全优先）：先退出系统代理接管，再停止核心。
-/// 若先停核心再关系统代理，关系统代理的 set_config 一旦失败，会留下
-/// "Windows 代理仍指向已死的 127.0.0.1:7890" 的断网状态。反过来：即使
-/// 退系统代理失败，也不停止核心，用户至少保持可上网。
-pub async fn stop_core_and_sync_proxy(app: &AppHandle) -> Result<()> {
-    // 1) 先退出系统代理接管（config/registry/journal/事件统一事务）。
-    //    失败则直接返回，不停止核心——宁可保持核心运行也不掐断用户网络。
-    apply_system_proxy(app, false).await?;
-
-    // 2) 再停止核心。
-    {
-        let state = app.state::<crate::AppState>();
-        let core_guard = state.core_manager.get();
-        if let Some(core) = core_guard.as_ref() {
-            core.stop().await?;
-        }
-    }
-
-    // apply_system_proxy(false) 末尾的 refresh_tray 发生在核心停止前，此刻
-    // 状态仍是 running；需在核心停止后再刷新一次托盘（运行态图标/代理组）。
-    refresh_tray(app).await?;
-    Ok(())
-}
-
-/// 激活 Profile：校验名称合法且文件存在 → 持久化激活名 → 重新生成运行时配置 →
-/// 热重载运行中的核心 → 失败回滚。空内容的 Profile 不阻塞：build_runtime_config
-/// 会回退到内置模板。
-///
-/// 持有 `config_tx` 串行整段事务；需要在一个会话内做额外文件/配置变更的调用方
-/// 应先用 `activate_profile_locked`（自行先持有 `config_tx`），避免嵌套取锁死锁。
-pub async fn activate_profile(app: &AppHandle, name: &str) -> Result<()> {
-    let state = app.state::<crate::AppState>();
-
-    // 全程持有 config_tx，串行整段事务（见 apply_proxy_mode 注释）。
-    let _tx = state.config_tx.lock().await;
-
-    activate_profile_locked(app, name).await
-}
-
-/// 激活 Profile 的事务主体（调用方必须已持有 `config_tx`）。
-///
-/// 语义与 `activate_profile` 相同，但不取 `config_tx`——供
-/// rename/update/refresh 等在一个事务里先做文件变更、再激活的调用方使用，
-/// 避免"文件 rename 在事务锁外、activate 才取锁"的交错窗口。
+/// 供 rename/update/refresh 等在一个事务里先做文件变更、再激活的复合入口
+/// 复用（这些入口经由 AppController 对应方法持有同一把事务锁），
+/// 避免"文件 rename 在事务锁外、activate 才取锁"的交错窗口与嵌套取锁死锁。
 pub(crate) async fn activate_profile_locked(app: &AppHandle, name: &str) -> Result<()> {
     let state = app.state::<crate::AppState>();
 

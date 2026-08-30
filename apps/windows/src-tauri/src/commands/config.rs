@@ -2,7 +2,8 @@
 //! 配置命令：获取/更新/重置/导入/导出配置
 //!
 //! 事务化设计：
-//! update / reset / import 统一走 `commit_config_transaction`：
+//! update / reset / import 的变更统一经 `core::app_controller::AppController`
+//! 提交（事务串行锁在控制器内部获取，调用方无法绕过），事务链为：
 //!
 //! ```text
 //! 快照旧配置 → 快照 Windows 代理状态 → 校验新配置 → 持久化(disk-first)
@@ -19,10 +20,9 @@
 //! 激活 Profile/语言），因此命令完成后再刷新托盘菜单勾选态与文案。
 
 use crate::config::model::Config;
-use crate::proxy::system_proxy::SystemProxyConfig;
 use crate::util::error::{Error, Result};
 use tauri::{command, AppHandle, State};
-use tracing::{error, info, warn};
+use tracing::info;
 
 #[command]
 pub async fn get_config(state: State<'_, crate::AppState>) -> Result<serde_json::Value> {
@@ -103,7 +103,7 @@ pub async fn update_config(
         let config_guard = state.config_manager.lock().unwrap();
         config_guard.prepare_update(config)?
     };
-    commit_config_transaction(&app, &state, new_config).await?;
+    state.controller.update_config(&app, new_config).await?;
     crate::core::runtime::refresh_tray(&app).await
 }
 
@@ -112,10 +112,10 @@ pub async fn update_config(
 /// 消除整包回传的读-改-写竞态——用户停留在设置页期间托盘/其他入口
 /// 改过的字段不会再被旧快照覆盖。
 ///
-/// 并发正确性：读取+合并必须发生在持有 `config_tx` 之后——若在加锁前读取
+/// 并发正确性：读取+合并必须发生在持锁之后——若在加锁前读取
 /// 并合并当前配置，另一个事务可能在"读取后、加锁前"完成提交，随后被本事务
-/// 的旧快照整包覆盖。现在读取+合并移入 `commit_config_fields_transaction`，
-/// 在持有 `config_tx` 之后重新读取最新配置再合并，保证不同字段的并发更新
+/// 的旧快照整包覆盖。现在读取+合并移入 `AppController::update_config_fields`，
+/// 在持有事务锁之后重新读取最新配置再合并，保证不同字段的并发更新
 /// 互不覆盖。
 #[command]
 pub async fn update_config_fields(
@@ -132,37 +132,17 @@ pub async fn update_config_fields(
     if obj.is_empty() {
         return Ok(());
     }
-    commit_config_fields_transaction(&app, &state, obj).await?;
+    state.controller.update_config_fields(&app, obj).await?;
     crate::core::runtime::refresh_tray(&app).await
-}
-
-/// 字段级更新事务：先持有 `config_tx`，再读取最新配置合并 patch 并校验，
-/// 然后走与整包事务完全相同的持久化/运行时/回滚流程。
-async fn commit_config_fields_transaction(
-    app: &AppHandle,
-    state: &State<'_, crate::AppState>,
-    patch: &serde_json::Map<String, serde_json::Value>,
-) -> Result<()> {
-    // 先拿全局配置事务锁，保证"读取最新配置"与"提交"之间没有其他事务插入。
-    let _tx = state.config_tx.lock().await;
-    let new_config = {
-        let config_guard = state.config_manager.lock().unwrap();
-        let mut current = serde_json::to_value(config_guard.get_config())?;
-        let cur_obj = current
-            .as_object_mut()
-            .ok_or_else(|| Error::Other("当前配置不是 JSON 对象".to_string()))?;
-        for (k, v) in patch {
-            cur_obj.insert(k.clone(), v.clone());
-        }
-        config_guard.prepare_update(current)?
-    };
-    commit_config_transaction_locked(app, state, new_config).await
 }
 
 #[command]
 pub async fn reset_config(app: AppHandle, state: State<'_, crate::AppState>) -> Result<()> {
     // set_config 内部会把默认占位密钥轮换为随机值
-    commit_config_transaction(&app, &state, Config::default()).await?;
+    state
+        .controller
+        .update_config(&app, Config::default())
+        .await?;
     crate::core::runtime::refresh_tray(&app).await
 }
 
@@ -215,257 +195,6 @@ pub async fn pick_import_file(app: AppHandle) -> Result<Option<String>> {
     std::fs::read_to_string(&path)
         .map(Some)
         .map_err(|e| Error::InvalidArgument(format!("读取文件失败：{}", e)))
-}
-
-/// 事务式提交配置变更：校验已完成，这里执行
-/// 「持久化 → 应用运行时（含健康检查）→ Windows 副作用 → commit；
-///   任一步失败 → Config / runtime-config / Mihomo / Windows 全部回滚」。
-///
-/// 事务全程持有 `state.config_tx`（tokio Mutex，可跨 `.await`），
-/// 串行所有改 Config + Mihomo + Windows 的入口。`config_manager`（std Mutex）
-/// 只能保护短临界区，跨 `.await` 会释放——没有 `config_tx` 的话两个事务
-/// 可交错：A 写 V2 后 await reload，B 读到 V2 写 V3，A 失败回滚到 V1 覆盖 B。
-/// `_tx` 守卫持有到函数返回，整个事务对其他配置入口互斥。
-async fn commit_config_transaction(
-    app: &AppHandle,
-    state: &State<'_, crate::AppState>,
-    new_config: Config,
-) -> Result<()> {
-    // 0. 先拿全局配置事务锁，串行整段事务（跨 await 持有至函数返回）
-    let _tx = state.config_tx.lock().await;
-    commit_config_transaction_locked(app, state, new_config).await
-}
-
-/// 事务主体（调用方必须已持有 `config_tx`）。字段级入口
-/// （`commit_config_fields_transaction`）在锁内重读最新配置后复用本函数。
-async fn commit_config_transaction_locked(
-    app: &AppHandle,
-    state: &State<'_, crate::AppState>,
-    mut new_config: Config,
-) -> Result<()> {
-    // 1. 快照旧配置（回滚基准）
-    let old = { state.config_manager.lock().unwrap().get_config() };
-
-    // mixed-port 变化或关闭系统代理前，必须先释放旧 ownership 并确认用户基线，
-    // 再停止/重启旧端口的 Mihomo。否则 runtime 先切到新端口的数秒内，Windows
-    // 仍指向已经无人监听的旧端口，会制造短暂断网。
-    let proxy_transition = prepare_proxy_transition(app, &old, &new_config)?;
-    if matches!(proxy_transition, ProxyTransition::OwnershipUnavailable) {
-        // 用户/其他软件已经接管：保留 Windows 状态，并取消新配置的自动接管意图。
-        new_config.general.system_proxy = false;
-    }
-
-    // 2. 持久化新配置（disk-first：落盘成功才提交内存）
-    {
-        let mut guard = state.config_manager.lock().unwrap();
-        guard.set_config(new_config)?;
-    }
-
-    // 3. 应用到运行时：重写 runtime-config.yaml + 热重载/重启运行中的核心。
-    //    reload 成功与否由真实运行状态健康检查决定，不以 HTTP 200 为准。
-    //    核心未运行时 reload_running_core 只重写文件，不会失败于此路径之外。
-    if let Err(e) = reload_running_core(state).await {
-        error!("Config change failed to apply ({}); rolling back", e);
-
-        // 4a. 回滚持久化 + 运行时（内存 + 磁盘恢复旧值，再拉回旧运行态）
-        if let Err(rb) = rollback_config_runtime_and_proxy(app, state, old, &proxy_transition).await
-        {
-            return Err(Error::Other(format!(
-                "配置应用失败（{}），且配置回滚也失败：{}",
-                e, rb
-            )));
-        }
-        return Err(Error::Other(format!("配置已保存但应用失败，已回滚：{}", e)));
-    }
-
-    // 5. Windows 副作用同步——注册表必须与新配置意图一致。
-    //    失败则完整回滚四层状态，禁止出现「Config=new / runtime=new / Windows=old」。
-    if let Err(e) = sync_windows_side_effects(app, state, &proxy_transition).await {
-        error!(
-            "Config change applied but Windows side-effect failed ({}); rolling back fully",
-            e
-        );
-
-        // 新端口 ownership 只有在能安全释放/确认后，才允许回滚 runtime；
-        // 若当前仍指向新端口但字段已被并发修改，必须保留新核心避免死代理。
-        let attempted = { state.config_manager.lock().unwrap().get_config() };
-        let data_dir = crate::util::paths::get_app_data_dir(app)?;
-        let unwind = if attempted.general.system_proxy {
-            match crate::proxy::journal::release_owned_proxy(
-                &data_dir,
-                attempted.general.mixed_port,
-            ) {
-                Ok(crate::proxy::journal::ReleaseOutcome::Restored { restored, .. }) => {
-                    ProxyTransition::Released(restored)
-                }
-                Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost)
-                | Ok(crate::proxy::journal::ReleaseOutcome::NoOwnership) => {
-                    ProxyTransition::OwnershipUnavailable
-                }
-                Err(release_error) => {
-                    return Err(Error::Other(format!(
-                        "系统代理同步失败（{}），且无法安全释放新端口 ownership（{}）；为避免死代理，保留当前 runtime/Mihomo 与 journal",
-                        e, release_error
-                    )));
-                }
-            }
-        } else {
-            proxy_transition.clone()
-        };
-
-        let rb_err = match rollback_config_runtime_and_proxy(app, state, old, &unwind).await {
-            Ok(()) => None,
-            Err(rb) => {
-                error!(
-                    "Config rollback during Windows side-effect failure also failed: {}",
-                    rb
-                );
-                Some(rb)
-            }
-        };
-        return Err(match rb_err {
-            Some(rb) => Error::Other(format!(
-                "系统代理同步失败（{}），已回滚；但配置回滚也失败：{}",
-                e, rb
-            )),
-            None => Error::Other(format!("系统代理同步失败，已完整回滚：{}", e)),
-        });
-    }
-
-    Ok(())
-}
-
-/// 回滚持久化（内存 + 磁盘恢复旧值）并尽力把 Mihomo 运行时拉回旧配置。
-/// 持久化回滚失败 → Err；运行时恢复失败 → 记录后返回该错误（不掩盖原始错误）。
-async fn rollback_config_and_runtime(
-    state: &State<'_, crate::AppState>,
-    old: Config,
-) -> Result<()> {
-    {
-        let mut guard = state.config_manager.lock().unwrap();
-        guard.set_config(old)?;
-    }
-    if let Err(rb) = reload_running_core(state).await {
-        warn!("Rollback runtime restore failed: {}", rb);
-        return Err(rb);
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-enum ProxyTransition {
-    /// 本次配置变更不需要提前释放旧代理。
-    None,
-    /// 已确认释放旧 ownership，Windows 当前应精确等于该用户基线。
-    Released(SystemProxyConfig),
-    /// ownership 已由用户/其他软件拿走，或缺少可用凭据；不得重新接管。
-    OwnershipUnavailable,
-}
-
-fn prepare_proxy_transition(
-    app: &AppHandle,
-    old: &Config,
-    new: &Config,
-) -> Result<ProxyTransition> {
-    let must_release = old.general.system_proxy
-        && (!new.general.system_proxy || old.general.mixed_port != new.general.mixed_port);
-    if !must_release {
-        return Ok(ProxyTransition::None);
-    }
-    let data_dir = crate::util::paths::get_app_data_dir(app)?;
-    match crate::proxy::journal::release_owned_proxy(&data_dir, old.general.mixed_port)? {
-        crate::proxy::journal::ReleaseOutcome::Restored { restored, .. } => {
-            Ok(ProxyTransition::Released(restored))
-        }
-        crate::proxy::journal::ReleaseOutcome::OwnershipLost
-        | crate::proxy::journal::ReleaseOutcome::NoOwnership => {
-            Ok(ProxyTransition::OwnershipUnavailable)
-        }
-    }
-}
-
-/// 配置/runtime 回滚后，仅凭本事务刚确认的用户基线重新接管旧端口。
-/// ownership 已丢失时把旧配置意图落回 false，绝不覆盖外部代理。
-async fn rollback_config_runtime_and_proxy(
-    app: &AppHandle,
-    state: &State<'_, crate::AppState>,
-    mut old: Config,
-    transition: &ProxyTransition,
-) -> Result<()> {
-    if matches!(transition, ProxyTransition::OwnershipUnavailable) {
-        old.general.system_proxy = false;
-    }
-    let old_port = old.general.mixed_port;
-    let old_proxy_intent = old.general.system_proxy;
-    rollback_config_and_runtime(state, old).await?;
-
-    if old_proxy_intent {
-        if let ProxyTransition::Released(expected_baseline) = transition {
-            crate::core::runtime::ensure_core_serving(app).await?;
-            let data_dir = crate::util::paths::get_app_data_dir(app)?;
-            if let Err(e) = crate::proxy::journal::acquire_system_proxy_if_unchanged(
-                &data_dir,
-                old_port,
-                Some(expected_baseline),
-            ) {
-                crate::core::runtime::mark_system_proxy_failed(app, &e.to_string()).await;
-                return Err(Error::Other(format!(
-                    "旧端口 runtime 已恢复，但系统代理 ownership 无法安全恢复：{}",
-                    e
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// 让 Windows 注册表与新配置的 system-proxy 意图一致。
-///
-/// - 新配置开启系统代理：先确保 Core Running 且 mixed-port 真实可连
-///   （不开死代理），再把注册表指向 `127.0.0.1:<新 mixed-port>` 并维护 journal；
-/// - 新配置关闭系统代理（import/reset 可能改变它）：把注册表还原为 journal /
-///   快照记录的用户原始代理状态（无则关闭），并清除 journal。
-async fn sync_windows_side_effects(
-    app: &AppHandle,
-    state: &State<'_, crate::AppState>,
-    transition: &ProxyTransition,
-) -> Result<()> {
-    let cfg = { state.config_manager.lock().unwrap().get_config() };
-    let data_dir = crate::util::paths::get_app_data_dir(app)?;
-
-    if cfg.general.system_proxy {
-        // 开启（或 mixed-port 变更后重新指向）：先保证核心真实服务新端口，
-        // 再通过统一 ownership helper 安全释放旧端口并接管新端口。
-        crate::core::runtime::ensure_core_serving(app).await?;
-        match transition {
-            ProxyTransition::Released(expected_baseline) => {
-                crate::proxy::journal::acquire_system_proxy_if_unchanged(
-                    &data_dir,
-                    cfg.general.mixed_port,
-                    Some(expected_baseline),
-                )?;
-            }
-            ProxyTransition::OwnershipUnavailable => {
-                return Err(Error::Other(
-                    "Windows proxy ownership changed; refusing to overwrite the new owner"
-                        .to_string(),
-                ));
-            }
-            ProxyTransition::None => {
-                crate::proxy::journal::acquire_system_proxy(&data_dir, cfg.general.mixed_port)?;
-            }
-        }
-        info!(
-            "Windows system proxy synced to 127.0.0.1:{}",
-            cfg.general.mixed_port
-        );
-        Ok(())
-    } else {
-        // old=true 的关闭路径已在 runtime 切换前释放；old=false 时本来就未接管。
-        // 此处不再额外写注册表，避免把没有 ownership 的外部代理当作关闭目标。
-        info!("Windows system proxy synced OFF per config intent");
-        Ok(())
-    }
 }
 
 /// 导出当前完整配置为一份可直接使用的 mihomo 配置文件。
@@ -540,7 +269,7 @@ pub async fn import_config(
         // 走 extra.proxies 分支；下次启动 init/merge_rules 会归一为 "DIRECT"。
         new_config.general.profile = String::new();
     }
-    commit_config_transaction(&app, &state, new_config).await?;
+    state.controller.update_config(&app, new_config).await?;
     crate::core::runtime::refresh_tray(&app).await
 }
 
@@ -559,27 +288,14 @@ fn import_supplies_nodes(config: &Config) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
-/// 重建运行时配置并对运行中的核心生效（热重载，失败回退整进程重启）。
-///
-/// 错误必须向上传播：吞掉 reload 失败会留下「新配置已写盘但 Mihomo 仍用
-/// 旧值」的假成功。核心未运行时不报错：
-/// 文件已重写，下次启动自然加载新配置。
-async fn reload_running_core(state: &State<'_, crate::AppState>) -> Result<()> {
-    let core_guard = state.core_manager.get();
-    if let Some(core) = core_guard.as_ref() {
-        core.reload_config().await?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::persistence::ConfigManager;
 
-    /// 字段级更新必须在持有 `config_tx` 后重读最新配置再合并。
-    /// 这里用 tokio Mutex 模拟 config_tx 的串行语义，两个并发字段更新（分别改
-    /// 顶层 `mixed-port` 与 `locale`）在串行事务下必须互不覆盖。
+    /// 字段级更新必须在持有配置事务锁后重读最新配置再合并。
+    /// 这里用 tokio Mutex 模拟 AppController 内部事务锁的串行语义，两个并发字段
+    /// 更新（分别改顶层 `mixed-port` 与 `locale`）在串行事务下必须互不覆盖。
     /// 若"锁外读快照、锁内整包提交"，后完成的事务会用旧快照覆盖先完成的字段。
     #[tokio::test]
     async fn concurrent_field_updates_preserve_each_other() {
@@ -599,7 +315,7 @@ mod tests {
             m.init(&dir).unwrap();
             m
         }));
-        // 模拟 AppState.config_tx：跨 await 持有、串行所有配置事务。
+        // 模拟 AppController 内部的事务串行锁：跨 await 持有、串行所有配置事务。
         let tx = Arc::new(tokio::sync::Mutex::new(()));
 
         // 事务内"重读最新配置 + 合并 patch + 校验"——与修复后的
