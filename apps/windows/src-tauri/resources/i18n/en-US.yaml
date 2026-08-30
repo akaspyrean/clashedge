@@ -114,6 +114,7 @@ general:
   auto_update_subscription: "Auto Update Subscriptions"
   find_process_mode: "Process Lookup Mode"
   proxy_mode: "Proxy Mode"
+  proxy_mode_hint: "Global / Rule / Direct, applies immediately"
   profile: "Profile"
   manage_profiles: "Manage Profiles"
 
@@ -177,6 +178,7 @@ profiles:
   new: "New Profile"
   import: "Import Profile"
   export: "Export Profile"
+  more: "More"
   subscribe: "Subscribe"
   subscribe_manage: "Subscribe Management"
   subscribe_url: "Subscribe URL"
@@ -283,3 +285,9 @@ common:
   success: "Success"
   warning: "Warning"
   info: "Info"
+errors:
+  network: "Network request failed. Check your network or proxy and try again"
+  port_busy: "Port is already in use. Change the mixed port in Settings and try again"
+errors:
+  network: "Network request failed. Check your network or proxy and try again"
+  port_busy: "Port is already in use. Change the mixed port in Settings and try again"

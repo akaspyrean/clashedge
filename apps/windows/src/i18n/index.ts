@@ -60,6 +60,13 @@ async function resolveLocale(): Promise<string> {
 /** 应用启动时调用：解析语言 → 拉取消息表 → 创建 i18n 实例。 */
 let instance: I18n | null = null;
 
+/** 非组件环境（工具函数等）取全局 t；i18n 未就绪时返回 key 本身。 */
+export function t(key: string): string {
+  // legacy:false 下 global 是 Composer；此处只需要最朴素的 key→string 翻译。
+  const g = instance?.global as unknown as { t: (k: string) => string } | undefined;
+  return g?.t(key) ?? key;
+}
+
 export async function setupI18n(): Promise<I18n> {
   const locale = await resolveLocale();
   currentLocale = locale;

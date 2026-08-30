@@ -214,7 +214,7 @@ onUnmounted(() => {
   flex: none;
   width: 56px;
   text-align: left;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.3px;
   font-variant-numeric: tabular-nums;
