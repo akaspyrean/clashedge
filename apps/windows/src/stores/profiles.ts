@@ -35,6 +35,27 @@ export const useProfilesStore = defineStore("profiles", {
       await profilesApi.rename(oldName, newName);
       await this.list();
     },
+    async importFromUrl(name: string, url: string, userAgent?: string) {
+      await profilesApi.importFromUrl(name, url, userAgent);
+      await this.list();
+    },
+    async importContent(name: string, content: string) {
+      await profilesApi.import(name, content);
+      await this.list();
+    },
+    /** 导出：返回完整 YAML 文本，不改变列表。 */
+    exportContent: (name: string) => profilesApi.export(name),
+    /** 重新拉取订阅内容（激活中则后端热重载生效）。 */
+    async refreshSubscription(name: string) {
+      await profilesApi.updateProfile(name);
+      await this.list();
+    },
+    async setUserAgent(name: string, userAgent: string | null) {
+      await profilesApi.setUserAgent(name, userAgent);
+      await this.list();
+    },
+    getContent: (name: string) => profilesApi.getContent(name),
+    updateContent: (name: string, content: string) => profilesApi.updateContent(name, content),
     async activate(name: string) {
       await profilesApi.activate(name);
       this.profiles = this.profiles.map((p) => ({

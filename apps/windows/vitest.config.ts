@@ -16,5 +16,8 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: ["src/**/*.spec.ts"],
+    // element-plus.ts 引入各组件的 .css：让 vite 处理（否则 node 直接 import 报 Unknown file extension）。
+    server: { deps: { inline: ["element-plus"] } },
+    css: false,
   },
 });

@@ -8,7 +8,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
+import { createPinia, setActivePinia } from "pinia";
 import ElementPlus from "element-plus";
+import { testI18n } from "@/test/harness";
 import ConnectionsView from "@/views/ConnectionsView.vue";
 
 function makeConn(id: string) {
@@ -49,7 +51,7 @@ const globalMocks = {
 
 const mountOptions = {
   global: {
-    plugins: [ElementPlus],
+    plugins: [ElementPlus, testI18n()],
     mocks: globalMocks,
     stubs: {
       // el-empty 内部用 teleport+transition，stub 掉避免 jsdom 警告
@@ -60,6 +62,7 @@ const mountOptions = {
 
 describe("ConnectionsView (v-if/v-else 三态)", () => {
   beforeEach(() => {
+    setActivePinia(createPinia());
     invokeMock.mockReset();
   });
 

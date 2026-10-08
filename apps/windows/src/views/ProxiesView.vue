@@ -1,50 +1,35 @@
-﻿<!-- src/views/ProxiesView.vue - 代理组：切换代理模式、查看各组节点、手动选择与延迟测试 -->
+<!-- src/views/ProxiesView.vue - 代理组：切换代理模式、查看各组节点、手动选择与延迟测试 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { Refresh } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
-import { proxyApi, type ProxyGroup } from "@/api/proxy";
+import type { ProxyGroup } from "@/api/proxy";
+import { useAction } from "@/composables/useAction";
+import { useNotify } from "@/composables/useNotify";
 import { resolveGroupId } from "@/constants/groups";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
-import { friendlyError } from "@/errors";
 
 const proxyStore = useProxyStore();
 const configStore = useConfigStore();
 const coreStore = useCoreStore();
+const notify = useNotify();
 
 // 节点选中 in-flight 守卫：连点节点时只允许一个 select 在途，避免乱序覆盖。
-const selecting = ref(false);
+const select = useAction();
+const modeAction = useAction();
 // 单组测速（testOne）在途集合：组粒度守卫，避免同组连点重复请求。
 const testingGroups = ref(new Set<string>());
 
 // mihomo 官方模板仅这三值；script 是 Clash Premium 遗留，后端会拒绝。
 const proxyModes = ["rule", "global", "direct"];
 
-/** 切换全局代理模式：走统一编排层（持久化 + 实时 PATCH 核心 + 托盘刷新），
- *  成功后把本地 store 同步为真实状态。 */
-async function onModeChange(mode: string) {
-  try {
-    await proxyApi.setProxyMode(mode);
-    if (configStore.config) configStore.config.mode = mode;
-  } catch (e) {
-    ElMessage.error(friendlyError(e));
-  }
-}
+/** 切换全局代理模式：走统一编排层（持久化 + 实时 PATCH 核心 + 托盘刷新）。 */
+const onModeChange = (mode: string) => modeAction.run(() => configStore.setProxyMode(mode));
 
 /** 选中节点：带 in-flight 守卫 + 失败提示。 */
-async function onSelectNode(group: string, proxy: string) {
-  if (selecting.value) return;
-  selecting.value = true;
-  try {
-    await proxyStore.select(group, proxy);
-  } catch (e) {
-    ElMessage.error(friendlyError(e));
-  } finally {
-    selecting.value = false;
-  }
-}
+const onSelectNode = (group: string, proxy: string) =>
+  select.run(() => proxyStore.select(group, proxy));
 
 /** 单组延迟测试：组粒度 in-flight 守卫，连点不重复发起。 */
 async function onTestGroup(group: string) {
@@ -53,7 +38,7 @@ async function onTestGroup(group: string) {
   try {
     await proxyStore.testOne(group);
   } catch (e) {
-    ElMessage.error(friendlyError(e));
+    notify.fail(e);
   } finally {
     testingGroups.value.delete(group);
   }
@@ -134,6 +119,8 @@ watch(
         <span class="mode-label">{{ $t("general.proxy_mode") }}</span>
         <el-select
           :model-value="configStore.proxyMode"
+          :aria-label="$t('general.proxy_mode')"
+          :disabled="modeAction.busy.value"
           style="width: 200px"
           @change="onModeChange"
         >
@@ -156,6 +143,7 @@ watch(
       <el-button
         text
         :title="$t('proxies.reload')"
+        :aria-label="$t('proxies.reload')"
         :loading="proxyStore.testing"
         @click="proxyStore.loadGroups()"
       >
@@ -191,6 +179,7 @@ watch(
                 text
                 :loading="testingGroups.has(g.name)"
                 :title="$t('proxies.latency')"
+                :aria-label="`${$t('proxies.latency')}: ${g.name}`"
                 @click.stop="onTestGroup(g.name)"
               >
                 <el-icon><Refresh /></el-icon>
@@ -207,6 +196,7 @@ watch(
             class="proxy-item"
             :class="{ active: proxy === g.now }"
             :title="proxy"
+            :aria-pressed="proxy === g.now"
             @click="onSelectNode(g.name, proxy)"
           >
             <span class="proxy-node">{{ proxy }}</span>

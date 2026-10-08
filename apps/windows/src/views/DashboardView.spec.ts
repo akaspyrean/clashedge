@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { createPinia, setActivePinia } from "pinia";
 import ElementPlus from "element-plus";
+import { testI18n } from "@/test/harness";
 import DashboardView from "@/views/DashboardView.vue";
 import { useConfigStore } from "@/stores/config";
 import type { ClashConfig } from "@/api/config";
@@ -51,7 +52,7 @@ function mockBackendSystemProxy(v: boolean) {
 
 const mountOptions = {
   global: {
-    plugins: [ElementPlus],
+    plugins: [ElementPlus, testI18n()],
     mocks: { $t: (k: string) => k },
   },
 };
