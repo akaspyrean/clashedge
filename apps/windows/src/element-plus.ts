@@ -34,8 +34,7 @@ import {
   ElMenu,
   ElMenuItem,
   ElOption,
-  ElRadioButton,
-  ElRadioGroup,
+  ElRadio,
   ElSelect,
   ElSwitch,
   ElTable,
@@ -71,6 +70,7 @@ import "element-plus/es/components/main/style/css";
 import "element-plus/es/components/menu/style/css";
 import "element-plus/es/components/menu-item/style/css";
 import "element-plus/es/components/option/style/css";
+import "element-plus/es/components/radio/style/css";
 import "element-plus/es/components/radio-button/style/css";
 import "element-plus/es/components/radio-group/style/css";
 import "element-plus/es/components/select/style/css";
@@ -111,8 +111,7 @@ const COMPONENTS: Plugin[] = [
   ElMenu,
   ElMenuItem,
   ElOption,
-  ElRadioButton,
-  ElRadioGroup,
+  ElRadio,
   ElSelect,
   ElSwitch,
   ElTable,

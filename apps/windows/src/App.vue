@@ -2,7 +2,7 @@
      深色主题；Element Plus 语言包随配置语言响应式切换。
      主窗口已设置 set_decorations(false)，故需自绘标题栏提供窗口控制。 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -25,6 +25,8 @@ import { useAppStore } from "@/stores/app";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { utilApi } from "@/api/util";
+import DegradedBanner from "@/components/DegradedBanner.vue";
+import StatusBanner from "@/components/StatusBanner.vue";
 import { getTheme, setTheme } from "./theme";
 
 const appStore = useAppStore();
@@ -93,6 +95,32 @@ const coreError = computed(() => {
   return s.startsWith("error:") ? s.slice("error:".length).trim() : "";
 });
 
+// 无障碍：路由切换后把焦点移到主内容区并更新窗口标题——键盘 / 读屏用户无需重新 Tab
+// 穿过侧栏才能到达新页面内容；文档语言随界面语言更新（读屏器据此选发音）。
+const mainEl = ref<{ $el: HTMLElement } | null>(null);
+
+function focusMain() {
+  mainEl.value?.$el?.focus({ preventScroll: true });
+}
+
+watch(
+  () => route.path,
+  async () => {
+    await nextTick();
+    const key = menuItems.find((m) => route.path.startsWith(m.path))?.key;
+    document.title = key ? `${t(key)} - ClashEdge` : "ClashEdge";
+    focusMain();
+  },
+);
+
+watch(
+  () => configStore.locale,
+  (loc) => {
+    document.documentElement.lang = loc ?? "zh-CN";
+  },
+  { immediate: true },
+);
+
 const menuItems = [
   { path: "/dashboard", key: "nav.dashboard", icon: Odometer },
   { path: "/proxies", key: "nav.proxies", icon: SetUp },
@@ -160,9 +188,10 @@ function onNarrowChange(e: MediaQueryListEvent) {
 <template>
   <el-config-provider :locale="elLocale">
     <div class="frame">
+      <button type="button" class="skip-link" @click="focusMain">{{ $t("a11y.skip_to_content") }}</button>
       <header class="titlebar">
         <div class="titlebar-drag" data-tauri-drag-region>
-          <span class="titlebar-title" data-tauri-drag-region>ClashEdge</span>
+          <h1 class="titlebar-title" data-tauri-drag-region>ClashEdge</h1>
         </div>
         <div class="titlebar-controls">
           <button
@@ -200,6 +229,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
 
       <el-container class="app-shell">
         <el-aside :width="isNarrow ? '64px' : '216px'" class="app-aside" :class="{ narrow: isNarrow }">
+          <nav :aria-label="$t('a11y.main_navigation')">
           <el-menu :default-active="route.path" router class="app-menu">
             <el-menu-item
               v-for="item in menuItems"
@@ -211,19 +241,14 @@ function onNarrowChange(e: MediaQueryListEvent) {
               <span class="menu-label">{{ $t(item.key) }}</span>
             </el-menu-item>
           </el-menu>
+          </nav>
           <div v-if="appStore.version && !isNarrow" class="app-footer">
             v{{ appStore.version }}
           </div>
         </el-aside>
-        <el-main class="app-main">
-          <el-alert
-            v-if="coreError"
-            :title="coreError"
-            type="error"
-            show-icon
-            :closable="false"
-            class="core-error-banner"
-          />
+        <el-main id="main-content" ref="mainEl" class="app-main" tabindex="-1">
+          <DegradedBanner />
+          <StatusBanner v-if="coreError" :title="coreError" type="error" />
           <router-view />
         </el-main>
       </el-container>
@@ -325,7 +350,29 @@ function onNarrowChange(e: MediaQueryListEvent) {
   height: auto;
 }
 
-.core-error-banner {
-  margin-bottom: 12px;
+.titlebar-title {
+  margin: 0;
+}
+
+/* 跳转到主内容：平时移出视口，键盘聚焦时出现。 */
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -48px;
+  z-index: 3000;
+  padding: 8px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--accent);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.skip-link:focus-visible {
+  top: 8px;
+}
+
+.app-main:focus {
+  outline: none;
 }
 </style>

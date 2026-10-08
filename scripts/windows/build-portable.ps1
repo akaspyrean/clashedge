@@ -154,6 +154,24 @@ foreach ($g in @("GeoIP.dat", "GeoSite.dat", "Country.mmdb")) {
 # 4. Help docs in Other/
 Copy-Item -Recurse (Join-Path $tpl "Other") (Join-Path $out "Other")
 
+# 4b. License compliance: mihomo is GPL-3.0 and ships as a binary, so the package must carry
+#     the license texts and say exactly which upstream source the binary corresponds to.
+$licDir = Join-Path $out "Other\Licenses"
+New-Item -ItemType Directory -Force $licDir | Out-Null
+Copy-Item (Join-Path $repo "LICENSE") (Join-Path $licDir "ClashEdge-MIT.txt")
+Copy-Item (Join-Path $repo "THIRD_PARTY_NOTICES.md") (Join-Path $licDir "THIRD_PARTY_NOTICES.md")
+$lock = Get-Content (Join-Path $repo "assets.lock.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$mihomo = $lock.assets | Where-Object { $_.name -eq "mihomo" } | Select-Object -First 1
+$srcLines = @(
+    "mihomo (GPL-3.0) - bundled unmodified as App/ClashEdge/sidecar/mihomo-win64.exe",
+    "Version        : $($mihomo.version)",
+    "Binary release : $($mihomo.url)",
+    "Binary SHA-256 : $($mihomo.extracted_sha256)",
+    "Source code    : https://github.com/MetaCubeX/mihomo/tree/v$($mihomo.version)",
+    "License text   : GPL-3.0.txt (this folder)"
+)
+Set-Content -Path (Join-Path $licDir "MIHOMO-SOURCE.txt") -Value $srcLines -Encoding utf8
+
 Write-Host ""
 Write-Host "Portable layout assembled: $out"
 Get-ChildItem -Recurse $out -File | ForEach-Object {
@@ -173,7 +191,9 @@ $assertions = @(
     @{ path = Join-Path $out "App\DefaultData\Country.mmdb";   label = "geodata App/DefaultData/Country.mmdb" },
     @{ path = Join-Path $out "Data";                           label = "Data directory" },
     @{ path = Join-Path $out "App\DefaultData";                label = "App/DefaultData directory" },
-    @{ path = Join-Path $out "Other\Help\README.md";           label = "Other/Help/README.md" }
+    @{ path = Join-Path $out "Other\Help\README.md";           label = "Other/Help/README.md" },
+    @{ path = Join-Path $out "Other\Licenses\GPL-3.0.txt";     label = "GPL-3.0 text" },
+    @{ path = Join-Path $out "Other\Licenses\MIHOMO-SOURCE.txt"; label = "mihomo source/version notice" }
 )
 foreach ($a in $assertions) {
     if (-not (Test-Path $a.path)) {
@@ -201,30 +221,11 @@ if (Test-Path $ScanScript) {
     Write-Host "  [SKIP] scan script not found at $ScanScript" -ForegroundColor DarkYellow
 }
 
-# 5c. Optional Authenticode signing (audit B11).
-# Unsigned binaries that edit the system proxy, spawn a core and write autostart keys are
-# routinely flagged by SmartScreen / AV. When WINDOWS_CODESIGN_PFX_BASE64 (+ _PASSWORD) are
-# provided (release CI), sign the launcher and the inner app before they are zipped.
-# Without the secret the package is built unsigned and a warning is printed.
-if ($env:WINDOWS_CODESIGN_PFX_BASE64) {
-    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
-                Sort-Object FullName -Descending | Select-Object -First 1
-    if (-not $signtool) { throw "signtool.exe not found (Windows SDK required for code signing)" }
-    $pfxPath = Join-Path ([System.IO.Path]::GetTempPath()) ("clashedge-codesign-" + [guid]::NewGuid().ToString("N") + ".pfx")
-    try {
-        [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_BASE64))
-        foreach ($target in @($launcherOut, (Join-Path $appClashEdgeDir "ClashEdge.exe"))) {
-            Write-Host "==> Authenticode signing $target"
-            & $signtool.FullName sign /f $pfxPath /p $env:WINDOWS_CODESIGN_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $target
-            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $target (exit $LASTEXITCODE)" }
-        }
-    } finally {
-        if (Test-Path $pfxPath) { Remove-Item $pfxPath -Force }
-    }
-} else {
-    Write-Host "  [WARN] WINDOWS_CODESIGN_PFX_BASE64 not set - binaries are NOT Authenticode-signed." -ForegroundColor DarkYellow
-}
+# 5c. Optional Authenticode signing (audit B11) - LOCAL builds only.
+# Release CI does NOT pass signing secrets to the job that runs this script (it executes
+# third-party build code); the publish job signs the finished ZIP with sign-portable.ps1.
+. "$PSScriptRoot\codesign.ps1"
+[void](Invoke-CodeSign -Targets @($launcherOut, (Join-Path $appClashEdgeDir "ClashEdge.exe")))
 
 # 6. Single-file distributable archive.
 # Top-level folder "ClashEdge/": extracting the zip yields a ClashEdge directory

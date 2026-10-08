@@ -47,25 +47,29 @@ pub async fn update_geodata(app_handle: &tauri::AppHandle) -> Result<()> {
 
 async fn update_geodata_inner(app: &tauri::AppHandle) -> Result<()> {
     // 1. 签名规则清单（尽力而为：清单未发布 / 网络不通不阻断 geodata 更新）
+    let mut covered: Vec<String> = Vec::new();
     match crate::geodata::rules::update_rules(app).await {
-        Ok(o) => info!(
-            "Signed rules update ok (v{}, updated {} files, up_to_date={})",
-            o.version,
-            o.updated.len(),
-            o.up_to_date
-        ),
+        Ok(o) => {
+            info!(
+                "Signed rules update ok (v{}, updated {} files, up_to_date={})",
+                o.version,
+                o.updated.len(),
+                o.up_to_date
+            );
+            covered = o.covered;
+        }
         Err(e) => warn!("Signed rules update skipped: {}", e),
     }
-    // 2. GeoData 文件
-    update_geo_files(app).await?;
+    // 2. GeoData 文件（签名清单已覆盖的文件不再用未签名源重复下载 / 覆盖）
+    update_geo_files(app, &covered).await?;
     stamp_updated(app);
     Ok(())
 }
 
 /// 下载 GeoIP / GeoSite 并事务式替换。
-async fn update_geo_files(app: &tauri::AppHandle) -> Result<()> {
+async fn update_geo_files(app: &tauri::AppHandle, signed_covered: &[String]) -> Result<()> {
     let sources = geodata_sources(app);
-    let targets: Vec<(&str, PathBuf, Vec<String>)> = vec![
+    let all: Vec<(&str, PathBuf, Vec<String>)> = vec![
         (
             "geoip",
             crate::util::paths::get_geoip_path(app)?,
@@ -77,6 +81,7 @@ async fn update_geo_files(app: &tauri::AppHandle) -> Result<()> {
             sources.geosite,
         ),
     ];
+    let targets = filter_unsigned_targets(all, signed_covered);
 
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
     let cleanup = |staged: &[(PathBuf, PathBuf)]| {
@@ -120,6 +125,28 @@ async fn update_geo_files(app: &tauri::AppHandle) -> Result<()> {
         warn!("GeoData replaced but core reload failed: {}", e);
     }
     Ok(())
+}
+
+/// 去掉已由签名清单管理的目标：同名文件的可信来源只有清单，
+/// 再用未签名的镜像覆盖会让签名链形同虚设（纯函数，便于测试）。
+fn filter_unsigned_targets<'a>(
+    targets: Vec<(&'a str, PathBuf, Vec<String>)>,
+    signed_covered: &[String],
+) -> Vec<(&'a str, PathBuf, Vec<String>)> {
+    targets
+        .into_iter()
+        .filter(|(_, path, _)| {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let managed = signed_covered.iter().any(|c| c.eq_ignore_ascii_case(name));
+            if managed {
+                info!(
+                    "{} is managed by the signed manifest; skipping unsigned sources",
+                    name
+                );
+            }
+            !managed
+        })
+        .collect()
 }
 
 /// 依次尝试每个 URL，直到得到一个通过结构校验的文件（落在 `tmp`）。
@@ -340,6 +367,28 @@ fn prepend_urls(defaults: Vec<String>, custom: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_covered_files_are_not_overwritten_by_unsigned_sources() {
+        let t = |n: &'static str| {
+            (
+                n,
+                PathBuf::from("Data").join(if n == "geoip" {
+                    "GeoIP.dat"
+                } else {
+                    "GeoSite.dat"
+                }),
+                vec!["https://example.com/x".to_string()],
+            )
+        };
+        let kept = filter_unsigned_targets(vec![t("geoip"), t("geosite")], &["geoip.dat".into()]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].0, "geosite");
+        let none = filter_unsigned_targets(vec![t("geoip")], &["GeoIP.dat".into()]);
+        assert!(none.is_empty());
+        let all = filter_unsigned_targets(vec![t("geoip"), t("geosite")], &[]);
+        assert_eq!(all.len(), 2);
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("clashedge-geo-{}-{}", tag, std::process::id()));

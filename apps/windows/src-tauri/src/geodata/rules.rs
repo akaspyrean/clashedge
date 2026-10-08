@@ -71,6 +71,9 @@ pub struct RulesOutcome {
     pub version: u64,
     pub updated: Vec<String>,
     pub up_to_date: bool,
+    /// 签名清单覆盖的全部目标（相对 Data 的路径）。这些文件的唯一可信来源是清单；
+    /// 调用方不得再用未签名源覆盖它们（否则签名链被抵消）。
+    pub covered: Vec<String>,
 }
 
 /// 目标路径白名单：`rules/<[a-z0-9_-]+>.yaml` 或固定的 geodata 文件名。
@@ -249,6 +252,7 @@ pub async fn update_rules(app: &tauri::AppHandle) -> Result<RulesOutcome> {
 
     let mut outcome = RulesOutcome {
         version: manifest.version,
+        covered: manifest.files.iter().map(|f| f.path.clone()).collect(),
         ..Default::default()
     };
     if downloaded.is_empty() {

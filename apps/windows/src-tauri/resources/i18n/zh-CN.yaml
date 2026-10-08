@@ -13,6 +13,18 @@ nav:
   logs: "日志"
   settings: "设置"
 
+a11y:
+  skip_to_content: "跳到主要内容"
+  main_navigation: "主导航"
+
+degraded:
+  title: "配置文件 config.yaml 已损坏，当前使用默认配置运行（降级模式）"
+  backup: "原文件已备份：{path}"
+  hint: "在确认之前，任何设置变更都不会写盘，以免覆盖损坏的原文件。"
+  confirm: "我已了解，覆盖并继续"
+  confirmed: "已写入新配置"
+  failed: "写入失败：{error}"
+
 titlebar:
   minimize: "最小化"
   maximize: "最大化"
@@ -89,10 +101,7 @@ settings:
   open_data_dir: "打开数据目录"
   core_version: "核心版本"
   check_update: "检查更新"
-  degraded_banner: "检测到 config.yaml 损坏且自动迁移失败，应用正在使用默认配置运行（降级模式）。原文件未被覆盖，已备份到：{path}"
-  degraded_backup_fallback: "（备份位置见数据目录，文件名 config.yaml.corrupt-*.bak）"
-  degraded_confirm: "我确认备份位置无误，保存时覆盖损坏的 config.yaml"
-  degraded_save_blocked: "config.yaml 已损坏。请在降级提示中确认备份位置并勾选「我确认覆盖损坏的配置文件」后再保存。"
+  degraded_save_blocked: "config.yaml 已损坏。请先在窗口顶部的横幅中确认「覆盖并继续」，之后再保存设置。"
 
 general:
   title: "常规设置"
