@@ -1,0 +1,39 @@
+name: Diagnose Update Pubkey
+
+on:
+  workflow_dispatch:
+
+# Temporary diagnostic: prints ONLY structural facts (lengths, line count,
+# decoded byte count) about the CLASHEDGE_UPDATE_PUBKEY secret — never the
+# content, in case the wrong (private) key was pasted there. Delete after use.
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect pubkey secret structure (no content)
+        env:
+          PK: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
+        run: |
+          set -u
+          if [ -z "${PK:-}" ]; then echo "RESULT: secret is EMPTY"; exit 0; fi
+          echo "char length            : ${#PK}"
+          printf '%s' "$PK" | wc -c | xargs echo "byte length (incl)     :"
+          nl=$(printf '%s' "$PK" | awk 'END{print NR}')
+          echo "line count             : $nl"
+          printf '%s' "$PK" | head -1 | wc -c | xargs echo "first line bytes      :"
+          printf '%s' "$PK" | sed -n '2p' | wc -c | xargs echo "second line bytes    :"
+          printf '%s' "$PK" | head -1 | grep -q '^untrusted comment:' && echo "starts with comment   : yes" || echo "starts with comment   : no"
+          ws=$(printf '%s' "$PK" | tr -d '[:space:]')
+          echo "after ws-strip length  : ${#ws}"
+          if db=$(printf '%s' "$ws" | base64 -d 2>/dev/null | wc -c); then
+            echo "decoded bytes (whole)  : $db"
+          else
+            echo "decoded bytes (whole)  : FAILED (not valid base64)"
+          fi
+          # minisign public key = 42 bytes; secret key = 104 bytes
+          if printf '%s' "$ws" | base64 -d 2>/dev/null | head -c2 | od -An -tx1 | grep -qi '45 64\|45 44'; then
+            echo "algorithm bytes        : Ed/ED (minisign-compatible)"
+          else
+            echo "algorithm bytes        : NOT Ed/ED (or decode failed)"
+          fi
