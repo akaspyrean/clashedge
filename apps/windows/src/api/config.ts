@@ -18,7 +18,9 @@ export interface TunConfig {
   stack: string;
   "auto-route": boolean;
   "auto-detect-interface": boolean;
-  "interface-name": string | null;
+  "interface-name"?: string | null;
+  /** 严格路由：强制所有流量经 TUN，避免多网卡并行 DNS 造成的泄漏。 */
+  "strict-route"?: boolean;
   /** TUN 内核 DNS 劫持列表（any:53 / tcp://any:53）；普通用户无需编辑。 */
   "dns-hijack"?: string[];
 }
@@ -34,25 +36,10 @@ export interface DnsConfig {
   nameserver: string[];
 }
 
+/** 仅保留后端真正消费的两项（其余历史字段已删除，见审计 B9）。 */
 export interface AdvancedConfig {
-  "disable-commit-animation": boolean;
-  "log-format": string;
-  "explicit-proxy": boolean;
-  "connect-timeout": number;
-  "read-timeout": number;
-  "write-timeout": number;
-  "geox-url": string;
   "geoip-url": string;
   "geosite-url": string;
-}
-
-export interface ProfilesConfig {
-  proxies: string[];
-  "default-profile": string;
-  "auto-group": string;
-  "manual-group": string;
-  "media-group": string;
-  "ai-group": string;
 }
 
 export interface ClashConfig {
@@ -67,6 +54,10 @@ export interface ClashConfig {
   "geodata-mode": string;
   "geo-auto-update": boolean;
   "auto-update-subscription": boolean;
+  /** 启动后静默检查一次应用更新（只提示，不自动下载 / 安装）。 */
+  "auto-check-update": boolean;
+  /** 域名嗅探（TLS / HTTP / QUIC）：TUN 下纯 IP 连接也能按域名规则分流。 */
+  sniffer: boolean;
   "find-process-mode": string;
   mode: string;
   profile: string;
@@ -76,8 +67,6 @@ export interface ClashConfig {
   tun: TunConfig;
   dns: DnsConfig;
   advanced: AdvancedConfig;
-  profiles: ProfilesConfig;
-  "mixin-enabled": boolean;
   locale: string;
   "rule-providers": Record<string, unknown>;
 }

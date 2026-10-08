@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -40,6 +41,26 @@ internal static class ClashEdgeLauncher
         int nOutBufferSize,
         out int lpBytesReturned,
         IntPtr lpOverlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "DeviceIoControl")]
+    private static extern bool DeviceIoControlSet(
+        IntPtr hDevice,
+        int dwIoControlCode,
+        byte[] lpInBuffer,
+        int nInBufferSize,
+        IntPtr lpOutBuffer,
+        int nOutBufferSize,
+        out int lpBytesReturned,
+        IntPtr lpOverlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageName(
+        IntPtr hProcess, int dwFlags, StringBuilder lpExeName, ref int lpdwSize);
+
+    private const int FsctlSetReparsePoint = 0x000900A4;
 
     private static string GetJunctionTarget(string path)
     {
@@ -87,18 +108,116 @@ internal static class ClashEdgeLauncher
         }
     }
 
+    /// 把 source 下的相对路径平移到 destination 下。只替换**前缀**
+    /// （旧实现用 string.Replace，路径里出现多次 source 子串时会被全部替换）。
+    private static string Rebase(string path, string source, string destination)
+    {
+        string src = source.TrimEnd(Path.DirectorySeparatorChar);
+        string rel = path.Substring(src.Length).TrimStart(Path.DirectorySeparatorChar);
+        return Path.Combine(destination.TrimEnd(Path.DirectorySeparatorChar), rel);
+    }
+
     private static void CopyMissing(string source, string destination)
     {
         if (!Directory.Exists(source)) return;
         Directory.CreateDirectory(destination);
         foreach (var directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
-            Directory.CreateDirectory(directory.Replace(source, destination));
+            Directory.CreateDirectory(Rebase(directory, source, destination));
         foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
         {
-            var target = file.Replace(source, destination);
+            var target = Rebase(file, source, destination);
             Directory.CreateDirectory(Path.GetDirectoryName(target));
             if (!File.Exists(target)) File.Copy(file, target);
         }
+    }
+
+    // --- DefaultData 增量同步 ----------------------------------------------------
+    // CopyMissing 只补缺失文件：新版本随包带来的更新规则 / geodata 永远不会到达老用户。
+    // 对"随包基线文件"（rules/*.yaml、GeoIP.dat、GeoSite.dat、Country.mmdb）记录
+    // 上次拷入时的 SHA256（Data/.default-hashes.txt）：
+    //   * Data 里的文件仍与记录一致（用户 / 签名规则更新器都没动过）且随包版本变了 -> 覆盖；
+    //   * Data 里的文件与记录不一致（已被更新器或用户修改）-> 绝不覆盖；
+    //   * 老用户首次升级（没有记录）：仅当 Data 文件与随包版本相同才开始记录，其余视为已被修改。
+    private static readonly string[] BaselineRootFiles = { "GeoIP.dat", "GeoSite.dat", "Country.mmdb" };
+
+    private static Dictionary<string, string> ReadDefaultHashes(string dataDir)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var line in File.ReadAllLines(Path.Combine(dataDir, ".default-hashes.txt")))
+            {
+                int tab = line.IndexOf('\t');
+                if (tab > 0) map[line.Substring(0, tab)] = line.Substring(tab + 1).Trim();
+            }
+        }
+        catch { }
+        return map;
+    }
+
+    private static void WriteDefaultHashes(string dataDir, Dictionary<string, string> map)
+    {
+        try
+        {
+            var sb = new StringBuilder();
+            foreach (var kv in map) sb.Append(kv.Key).Append('\t').Append(kv.Value).Append('\n');
+            File.WriteAllText(Path.Combine(dataDir, ".default-hashes.txt"), sb.ToString());
+        }
+        catch { }
+    }
+
+    private static void SyncBaselineFile(string defaultFile, string dataFile, string rel,
+        Dictionary<string, string> hashes)
+    {
+        string defHash = Sha256OfFile(defaultFile);
+        if (!File.Exists(dataFile))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(dataFile));
+            File.Copy(defaultFile, dataFile);
+            hashes[rel] = defHash;
+            return;
+        }
+        string dataHash = Sha256OfFile(dataFile);
+        string recorded;
+        if (!hashes.TryGetValue(rel, out recorded))
+        {
+            if (string.Equals(dataHash, defHash, StringComparison.OrdinalIgnoreCase)) hashes[rel] = defHash;
+            return; // 没有记录且内容不同：视为已被修改，不碰
+        }
+        if (string.Equals(dataHash, recorded, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(defHash, recorded, StringComparison.OrdinalIgnoreCase))
+        {
+            string tmp = dataFile + ".new";
+            File.Copy(defaultFile, tmp, true);
+            if (File.Exists(dataFile)) File.Delete(dataFile);
+            File.Move(tmp, dataFile);
+            hashes[rel] = defHash;
+        }
+    }
+
+    private static void SyncDefaultData(string defaultDir, string dataDir)
+    {
+        if (!Directory.Exists(defaultDir)) return;
+        var hashes = ReadDefaultHashes(dataDir);
+        try
+        {
+            foreach (var name in BaselineRootFiles)
+            {
+                string src = Path.Combine(defaultDir, name);
+                if (File.Exists(src)) SyncBaselineFile(src, Path.Combine(dataDir, name), name, hashes);
+            }
+            string rulesDir = Path.Combine(defaultDir, "rules");
+            if (Directory.Exists(rulesDir))
+            {
+                foreach (var f in Directory.GetFiles(rulesDir, "*.yaml"))
+                {
+                    string rel = "rules/" + Path.GetFileName(f);
+                    SyncBaselineFile(f, Path.Combine(dataDir, "rules", Path.GetFileName(f)), rel, hashes);
+                }
+            }
+        }
+        catch { /* 同步失败不应阻止应用启动 */ }
+        WriteDefaultHashes(dataDir, hashes);
     }
 
     private static bool PathExists(string path)
@@ -112,7 +231,7 @@ internal static class ClashEdgeLauncher
         Directory.CreateDirectory(destinationDir);
         foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
         {
-            var target = file.Replace(sourceDir, destinationDir);
+            var target = Rebase(file, sourceDir, destinationDir);
             Directory.CreateDirectory(Path.GetDirectoryName(target));
             if (File.Exists(target))
                 File.Delete(file);
@@ -150,21 +269,69 @@ internal static class ClashEdgeLauncher
         CreateJunction(appDataDirectory, portableDataDirectory);
     }
 
+    /// 创建目录联接（junction）。直接写 IO_REPARSE_TAG_MOUNT_POINT，不再经 `cmd /c mklink`
+    /// （cmd 会展开路径里的 `%VAR%`，含 `%` 的目录会被拼坏）。
     private static void CreateJunction(string appDataDirectory, string portableDataDirectory)
     {
         Directory.CreateDirectory(portableDataDirectory);
-        var shell = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
-        using (var link = Process.Start(new ProcessStartInfo(shell, "/d /c mklink /J \"" + appDataDirectory + "\" \"" + portableDataDirectory + "\"") { UseShellExecute = false, CreateNoWindow = true }))
+        Directory.CreateDirectory(appDataDirectory); // 联接点必须建在一个空目录上
+        string target = Path.GetFullPath(portableDataDirectory).TrimEnd(Path.DirectorySeparatorChar);
+        string substitute = @"\??\" + target;
+        byte[] sub = Encoding.Unicode.GetBytes(substitute);
+        byte[] print = Encoding.Unicode.GetBytes(target);
+        int pathBufferLen = sub.Length + 2 + print.Length + 2;
+        int dataLen = 8 + pathBufferLen;
+        var buf = new byte[8 + dataLen];
+        BitConverter.GetBytes(IoReparseTagMountPoint).CopyTo(buf, 0);
+        BitConverter.GetBytes((ushort)dataLen).CopyTo(buf, 4);
+        // buf[6..7] reserved = 0
+        BitConverter.GetBytes((ushort)0).CopyTo(buf, 8);                       // SubstituteNameOffset
+        BitConverter.GetBytes((ushort)sub.Length).CopyTo(buf, 10);             // SubstituteNameLength
+        BitConverter.GetBytes((ushort)(sub.Length + 2)).CopyTo(buf, 12);       // PrintNameOffset
+        BitConverter.GetBytes((ushort)print.Length).CopyTo(buf, 14);           // PrintNameLength
+        sub.CopyTo(buf, 16);
+        print.CopyTo(buf, 16 + sub.Length + 2);
+
+        // GENERIC_WRITE, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+        IntPtr handle = CreateFile(appDataDirectory, 0x40000000, 0, IntPtr.Zero, 3,
+            0x02000000 | 0x00200000, IntPtr.Zero);
+        if (handle.ToInt64() == -1)
+            throw new InvalidOperationException("无法创建便携数据目录联接（打开目录失败，错误 "
+                + Marshal.GetLastWin32Error() + "）。");
+        try
         {
-            if (link == null) throw new InvalidOperationException("无法创建便携数据目录联接。");
-            link.WaitForExit();
-            if (link.ExitCode != 0 || !Directory.Exists(appDataDirectory)) throw new InvalidOperationException("无法创建便携数据目录联接。");
+            int returned;
+            if (!DeviceIoControlSet(handle, FsctlSetReparsePoint, buf, buf.Length, IntPtr.Zero, 0,
+                    out returned, IntPtr.Zero))
+                throw new InvalidOperationException("无法创建便携数据目录联接（错误 "
+                    + Marshal.GetLastWin32Error() + "）。");
         }
+        finally { CloseHandle(handle); }
+        if (!Directory.Exists(appDataDirectory))
+            throw new InvalidOperationException("无法创建便携数据目录联接。");
     }
 
-    private static string Quote(string value)
+    /// 按 CommandLineToArgvW 规则转义单个参数（处理空格、内嵌引号、尾部反斜杠）。
+    private static string Quote(string arg)
     {
-        return "\"" + value.Replace("\\\"", "\\\\\"") + "\"";
+        if (arg.Length > 0 && arg.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0) return arg;
+        var sb = new StringBuilder("\"");
+        int backslashes = 0;
+        foreach (char c in arg)
+        {
+            if (c == '\\') { backslashes++; continue; }
+            if (c == '"')
+            {
+                sb.Append('\\', backslashes * 2 + 1).Append('"');
+            }
+            else
+            {
+                sb.Append('\\', backslashes).Append(c);
+            }
+            backslashes = 0;
+        }
+        sb.Append('\\', backslashes * 2).Append('"');
+        return sb.ToString();
     }
 
     // --- Portable Updater (P0: transaction-safe断电恢复) ---------------------
@@ -214,14 +381,14 @@ internal static class ClashEdgeLauncher
         string tmp = path + ".tmp";
 
         var sb = new StringBuilder();
-        sb.Append("{\n  \"state\": \"").Append(state).Append("\"");
+        sb.Append("{\n  \"state\": \"").Append(JsonEscape(state)).Append("\"");
         sb.Append(",\n  \"time\": \"").Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")).Append("\"");
         if (launcherOld != null)
-            sb.Append(",\n  \"launcher_old\": \"").Append(launcherOld).Append("\"");
+            sb.Append(",\n  \"launcher_old\": \"").Append(JsonEscape(launcherOld)).Append("\"");
         if (launcherNew != null)
-            sb.Append(",\n  \"launcher_new\": \"").Append(launcherNew).Append("\"");
+            sb.Append(",\n  \"launcher_new\": \"").Append(JsonEscape(launcherNew)).Append("\"");
         if (launcherSha != null)
-            sb.Append(",\n  \"launcher_sha\": \"").Append(launcherSha).Append("\"");
+            sb.Append(",\n  \"launcher_sha\": \"").Append(JsonEscape(launcherSha)).Append("\"");
         sb.Append("\n}\n");
 
         // 写穿：File.WriteAllText 的内容可能滞留 OS 缓存，断电即丢。
@@ -287,6 +454,29 @@ internal static class ClashEdgeLauncher
         return ExtractJsonField(ReadUpdateJournalRaw(root), "state") ?? "";
     }
 
+    private static string JsonEscape(string value)
+    {
+        var sb = new StringBuilder();
+        foreach (char c in value)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"': sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// 提取 JSON 顶层字符串字段，正确处理转义（`\\`、`\"`、`\uXXXX` 等）。
+    /// 旧实现按第一个 `"` 截断，Windows 路径里的 `\\` 与转义引号会被读错。
     private static string ExtractJsonField(string json, string field)
     {
         var key = "\"" + field + "\"";
@@ -294,11 +484,37 @@ internal static class ClashEdgeLauncher
         if (keyIdx < 0) return null;
         int colon = json.IndexOf(':', keyIdx + key.Length);
         if (colon < 0) return null;
-        int open = json.IndexOf('"', colon);
-        if (open < 0) return null;
-        int close = json.IndexOf('"', open + 1);
-        if (close < 0) return null;
-        return json.Substring(open + 1, close - open - 1);
+        int i = colon + 1;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        if (i >= json.Length || json[i] != '"') return null;
+        i++;
+        var sb = new StringBuilder();
+        while (i < json.Length)
+        {
+            char c = json[i++];
+            if (c == '"') return sb.ToString();
+            if (c != '\\') { sb.Append(c); continue; }
+            if (i >= json.Length) return null;
+            char e = json[i++];
+            switch (e)
+            {
+                case 'n': sb.Append('\n'); break;
+                case 'r': sb.Append('\r'); break;
+                case 't': sb.Append('\t'); break;
+                case 'b': sb.Append('\b'); break;
+                case 'f': sb.Append('\f'); break;
+                case 'u':
+                    if (i + 4 > json.Length) return null;
+                    int code;
+                    if (!int.TryParse(json.Substring(i, 4), System.Globalization.NumberStyles.HexNumber,
+                            System.Globalization.CultureInfo.InvariantCulture, out code)) return null;
+                    sb.Append((char)code);
+                    i += 4;
+                    break;
+                default: sb.Append(e); break; // \\ \" \/ 以及未知转义按字面
+            }
+        }
+        return null;
     }
 
     private static string Sha256OfFile(string path)
@@ -372,6 +588,82 @@ internal static class ClashEdgeLauncher
                 Directory.CreateDirectory(Path.GetDirectoryName(destPath));
 
                 entry.ExtractToFile(destPath, overwrite: true);
+            }
+        }
+    }
+
+    /// 更新被推迟（而非失败）：App/ 未被改动，暂存区应原样保留，下次启动再试。
+    private sealed class UpdateDeferredException : Exception
+    {
+        public UpdateDeferredException(string message, Exception inner) : base(message, inner) { }
+    }
+
+    /// 内层应用（App\ClashEdge\ClashEdge.exe）是否正在运行。
+    /// 用 PROCESS_QUERY_LIMITED_INFORMATION 读映像路径——对管理员权限（TUN）运行的进程也可用；
+    /// 排除自身与同名的其它启动器实例。
+    private static bool IsInnerAppRunning(string innerExe)
+    {
+        string wanted = Path.GetFullPath(innerExe);
+        int self = Process.GetCurrentProcess().Id;
+        foreach (var proc in Process.GetProcessesByName("ClashEdge"))
+        {
+            try
+            {
+                if (proc.Id == self) continue;
+                IntPtr h = OpenProcess(0x1000, false, proc.Id);
+                if (h == IntPtr.Zero) continue;
+                try
+                {
+                    var sb = new StringBuilder(1024);
+                    int size = sb.Capacity;
+                    if (QueryFullProcessImageName(h, 0, sb, ref size)
+                        && string.Equals(Path.GetFullPath(sb.ToString()), wanted, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                finally { CloseHandle(h); }
+            }
+            catch { }
+            finally { proc.Dispose(); }
+        }
+        return false;
+    }
+
+    /// 等待指定 PID 的进程退出（应用内"重启并安装"：旧进程退出后才应用更新）。
+    private static void WaitForProcessExit(int pid, int timeoutMs)
+    {
+        try
+        {
+            using (var p = Process.GetProcessById(pid)) { p.WaitForExit(timeoutMs); }
+        }
+        catch (ArgumentException) { /* 已退出 */ }
+        catch { }
+    }
+
+    /// 调用**当前已安装**的内层应用复验暂存更新的签名链（`--verify-staged`）。
+    /// .NET Framework 没有 Ed25519，验签由内层 Rust 代码完成；退出码 0 才允许继续。
+    private static void VerifyStagedWithInnerApp(string root, string staging)
+    {
+        string inner = Path.Combine(root, "App", "ClashEdge", "ClashEdge.exe");
+        if (!File.Exists(inner)) throw new InvalidOperationException("找不到内层应用，无法复验更新。");
+        var psi = new ProcessStartInfo(inner, "--verify-staged " + Quote(staging))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(inner),
+        };
+        using (var p = Process.Start(psi))
+        {
+            if (p == null) throw new InvalidOperationException("无法启动更新复验。");
+            if (!p.WaitForExit(60000))
+            {
+                try { p.Kill(); } catch { }
+                throw new InvalidOperationException("更新签名复验超时。");
+            }
+            if (p.ExitCode != 0)
+            {
+                string detail = "";
+                try { detail = File.ReadAllText(Path.Combine(staging, "verify-error.txt")); } catch { }
+                throw new InvalidOperationException("更新包未通过签名复验，已拒绝安装。" + (detail.Length > 0 ? "\n" + detail : ""));
             }
         }
     }
@@ -600,6 +892,10 @@ internal static class ClashEdgeLauncher
             if (!string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("SHA256 mismatch on staged update");
 
+            // pending.json 里的哈希不是信任根（本地可写）。必须由已安装的内层应用用内置公钥
+            // 复验签名清单，并核对 ZIP 的哈希与清单一致。
+            VerifyStagedWithInnerApp(root, staging);
+
             var extracted = Path.Combine(staging, "extracted");
             if (Directory.Exists(extracted)) Directory.Delete(extracted, true);
             SafeExtractToDirectory(zipPath, extracted);
@@ -648,7 +944,18 @@ internal static class ClashEdgeLauncher
             }
 
             // 原子交换：旧 App → backup，新 App → App/
-            Directory.Move(rootApp, backup);
+            try
+            {
+                Directory.Move(rootApp, backup);
+            }
+            catch (Exception moveEx)
+            {
+                // 旧 App/ 里有文件被占用（应用 / mihomo 仍在运行等）：App/ 完全没动过。
+                // 回到"无事务"状态并保留暂存区，下次启动再试——不能把已验签的更新包丢掉。
+                try { Directory.Delete(tempApp, true); } catch { }
+                ClearUpdateJournal(root);
+                throw new UpdateDeferredException("App 目录被占用，更新已推迟到下次启动。", moveEx);
+            }
             try
             {
                 Directory.Move(tempApp, rootApp);
@@ -695,6 +1002,11 @@ internal static class ClashEdgeLauncher
             if (!silent)
                 MessageBox.Show("ClashEdge 已更新到 " + version + "。", "更新完成",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (UpdateDeferredException ex)
+        {
+            if (!silent)
+                MessageBox.Show(ex.Message, "更新推迟", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
@@ -1027,6 +1339,91 @@ internal static class ClashEdgeLauncher
             Directory.Delete(root, true);
         }
 
+        // T-j1 原生 junction：含 % 与空格的路径也能创建，并通过目标校验、可读写穿透
+        {
+            var root = TestCreateRoot("junction %PATH% x");
+            var target = Path.Combine(root, "Data");
+            var link = Path.Combine(root, "App", "ClashEdge", "data");
+            File.WriteAllText(Path.Combine(target, "probe.txt"), "hello");
+            bool created = true;
+            try { EnsureDataJunction(link, target); } catch (Exception ex) { created = false; Console.WriteLine("   junction error: " + ex.Message); }
+            Console.WriteLine(++total + ". T-j1 junction created: " + (created ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-j1 junction resolves: " + (created && File.Exists(Path.Combine(link, "probe.txt")) ? "PASS" : "FAIL"));
+            bool validated = false;
+            try { ValidateJunctionTarget(link, target); validated = created; } catch { }
+            Console.WriteLine(++total + ". T-j1 junction target validated: " + (validated ? "PASS" : "FAIL"));
+            // 再次调用必须幂等
+            bool again = true;
+            try { EnsureDataJunction(link, target); } catch { again = false; }
+            Console.WriteLine(++total + ". T-j1 junction idempotent: " + (again ? "PASS" : "FAIL"));
+            // 删除联接只移除链接本身，不能删到目标内容
+            try { Directory.Delete(link); } catch { }
+            Console.WriteLine(++total + ". T-j1 target survives unlink: " + (File.Exists(Path.Combine(target, "probe.txt")) ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-s1 JSON 转义往返：Windows 路径 / 引号 / 反斜杠 / Unicode
+        {
+            string nasty = "C:\\Users\\张 三\\Clash \"Edge\"\\Data\\a.zip";
+            string json = "{\n  \"zip_path\": \"" + JsonEscape(nasty) + "\",\n  \"sha256\": \"abc\"\n}";
+            Console.WriteLine(++total + ". T-s1 json roundtrip: " + (ExtractJsonField(json, "zip_path") == nasty ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-s1 json sibling field: " + (ExtractJsonField(json, "sha256") == "abc" ? "PASS" : "FAIL"));
+            // serde_json 风格（\\ 转义反斜杠、\uXXXX）
+            string serde = "{\"zip_path\":\"D:\\\\Tools\\\\Clash Edge\\\\x.zip\",\"v\":\"\\u0041\"}";
+            Console.WriteLine(++total + ". T-s1 serde path: " + (ExtractJsonField(serde, "zip_path") == "D:\\Tools\\Clash Edge\\x.zip" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-s1 unicode escape: " + (ExtractJsonField(serde, "v") == "A" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-s1 missing field: " + (ExtractJsonField(json, "nope") == null ? "PASS" : "FAIL"));
+        }
+
+        // T-q1 命令行转义（CommandLineToArgvW 规则）
+        {
+            Console.WriteLine(++total + ". T-q1 plain: " + (Quote("abc") == "abc" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-q1 space: " + (Quote("a b") == "\"a b\"" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-q1 trailing backslash: " + (Quote("C:\\a b\\") == "\"C:\\a b\\\\\"" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-q1 inner quote: " + (Quote("a\"b") == "\"a\\\"b\"" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-q1 empty: " + (Quote("") == "\"\"" ? "PASS" : "FAIL"));
+        }
+
+        // T-r1 路径平移只替换前缀
+        {
+            // 相对路径里 source 子串重复出现：旧的 string.Replace 会得到 out\out\x.txt
+            string moved = Rebase(@"data\data\x.txt", "data", "out");
+            Console.WriteLine(++total + ". T-r1 rebase prefix only: " + (moved == @"out\data\x.txt" ? "PASS" : "FAIL"));
+            string moved2 = Rebase(@"C:\ab\sub\x.txt", @"C:\ab", @"D:\b");
+            Console.WriteLine(++total + ". T-r1 rebase absolute: " + (moved2 == @"D:\b\sub\x.txt" ? "PASS" : "FAIL"));
+        }
+
+        // T-d1 DefaultData 增量同步：未改动的基线文件被新随包版本覆盖；已被修改的绝不覆盖
+        {
+            var root = TestCreateRoot("defaultdata");
+            var def = Path.Combine(root, "App", "DefaultData");
+            var data = Path.Combine(root, "Data");
+            Directory.CreateDirectory(Path.Combine(def, "rules"));
+            Directory.CreateDirectory(Path.Combine(data, "rules"));
+            File.WriteAllText(Path.Combine(def, "rules", "ai.yaml"), "v1");
+            File.WriteAllText(Path.Combine(def, "rules", "ad.yaml"), "v1");
+            SyncDefaultData(def, data); // 首次：缺失 -> 复制并记录
+            Console.WriteLine(++total + ". T-d1 first copy: " + (File.ReadAllText(Path.Combine(data, "rules", "ai.yaml")) == "v1" ? "PASS" : "FAIL"));
+            File.WriteAllText(Path.Combine(data, "rules", "ad.yaml"), "updated-by-signed-updater");
+            File.WriteAllText(Path.Combine(def, "rules", "ai.yaml"), "v2");
+            File.WriteAllText(Path.Combine(def, "rules", "ad.yaml"), "v2");
+            SyncDefaultData(def, data);
+            Console.WriteLine(++total + ". T-d1 untouched file upgraded: " + (File.ReadAllText(Path.Combine(data, "rules", "ai.yaml")) == "v2" ? "PASS" : "FAIL"));
+            Console.WriteLine(++total + ". T-d1 modified file preserved: " + (File.ReadAllText(Path.Combine(data, "rules", "ad.yaml")) == "updated-by-signed-updater" ? "PASS" : "FAIL"));
+            // 老用户首次升级（无记录）且内容不同：不碰
+            File.Delete(Path.Combine(data, ".default-hashes.txt"));
+            File.WriteAllText(Path.Combine(data, "rules", "ai.yaml"), "user-edited");
+            File.WriteAllText(Path.Combine(def, "rules", "ai.yaml"), "v3");
+            SyncDefaultData(def, data);
+            Console.WriteLine(++total + ". T-d1 no record + differs -> keep: " + (File.ReadAllText(Path.Combine(data, "rules", "ai.yaml")) == "user-edited" ? "PASS" : "FAIL"));
+            Directory.Delete(root, true);
+        }
+
+        // T-p1 运行中检测：本测试进程不是内层应用路径 -> 不应判定为运行中
+        {
+            Console.WriteLine(++total + ". T-p1 not running: " + (!IsInnerAppRunning(Path.Combine(Path.GetTempPath(), "definitely", "ClashEdge.exe")) ? "PASS" : "FAIL"));
+        }
+
         int exitCode = trackingOut.Failures == 0 ? 0 : 1;
         Console.SetOut(originalOut);
         originalOut.WriteLine("\n" + total + " assertions checked; failures: " + trackingOut.Failures + ".");
@@ -1044,6 +1441,23 @@ internal static class ClashEdgeLauncher
         }
 
         bool silent = args.Any(a => a == "--clash-edge-autostart");
+
+        // 内部参数 --wait-pid <pid>：应用内"重启并安装"由旧进程拉起，等它完全退出后再应用更新。
+        // 该参数不转发给内层应用。
+        int waitPid = 0;
+        var passthrough = new List<string>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--wait-pid" && i + 1 < args.Length)
+            {
+                int.TryParse(args[i + 1], out waitPid);
+                i++;
+                continue;
+            }
+            passthrough.Add(args[i]);
+        }
+        if (waitPid > 0) WaitForProcessExit(waitPid, 30000);
+
         try
         {
             var root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
@@ -1059,14 +1473,18 @@ internal static class ClashEdgeLauncher
             var data = Path.Combine(root, "Data");
             CopyMissing(Path.Combine(root, "App", "DefaultData"), data);
             Directory.CreateDirectory(data);
+            // 随包基线文件（规则 / geodata）的增量同步：未被用户 / 更新器改动的才覆盖
+            SyncDefaultData(Path.Combine(root, "App", "DefaultData"), data);
             EnsureDataJunction(Path.Combine(appDirectory, "data"), data);
 
-            // 恢复完成后应用新暂存更新
-            ApplyPendingUpdate(root, silent);
+            // 恢复完成后应用新暂存更新——但内层应用仍在运行时（例如应用已最小化到托盘，
+            // 用户再次双击 ClashEdge.exe）无法替换 App/，直接跳过并保留暂存区。
+            if (!IsInnerAppRunning(executable))
+                ApplyPendingUpdate(root, silent);
 
             var home = Path.Combine(data, "Home");
             Directory.CreateDirectory(home);
-            var forwarded = string.Join(" ", args.Select(Quote));
+            var forwarded = string.Join(" ", passthrough.Select(Quote));
             var start = new ProcessStartInfo(executable, "--user-data-dir=" + Quote(Path.Combine(data, "SessionData")) + " " + forwarded)
             {
                 WorkingDirectory = appDirectory,

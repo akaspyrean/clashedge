@@ -11,6 +11,8 @@ export interface UpdateManifest {
   url: string;
   sha256: string;
   notes?: string;
+  /** 发布时间（unix 秒，信息性） */
+  released_at?: number;
 }
 
 export type UpdateStatus =
@@ -35,5 +37,9 @@ export const updateApi = {
   },
   discard(): Promise<void> {
     return invoke("discard_staged_update");
+  },
+  /** 重启并由启动器安装已暂存的更新（本进程会退出）。 */
+  restartAndApply(): Promise<void> {
+    return invoke("restart_and_apply_update");
   },
 };

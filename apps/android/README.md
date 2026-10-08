@@ -17,6 +17,10 @@ Current state (as of 2026-08-28):
   coordinate in `gradle/libs.versions.toml` is still commented out. The app
   cannot provide a real VPN.
 - **No signing config**: no release keystore / `signingConfig` exists.
+- **Subscription import is a skeleton**: `SubscriptionRepository` keeps only `name/type/server`
+  (credentials are dropped), so generated nodes cannot connect. Real node retention must reuse
+  the Windows normalizer rules before this platform is shipped.
+- **Release-chain guard**: CI fails if any release workflow references `apps/android`.
 
 Prerequisites before Android can enter the release scope:
 
@@ -78,7 +82,7 @@ pinned. The Android-only `mihomo/` module keeps the integration behind the
 `MihomoCore` interface:
 
 - `mihomo/MihomoCore.kt` — interface (startTun / start / stop / setMode / selectProxy).
-- `mihomo/MihomoCoreImpl.kt` — placeholder; wire real JNI calls to the pinned AAR.
+- the no-op stub implementation in `mihomo/MihomoCore.kt` — replace with real JNI calls to the pinned AAR.
 - The dependency coordinate in `gradle/libs.versions.toml` is commented out until
   the artifact is pinned (JitPack / custom maven).
 

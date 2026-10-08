@@ -18,6 +18,7 @@ use crate::config::model::Config;
 use crate::core::controller::{api_url, authorization_headers};
 use crate::core::health::parse_bind_error;
 use crate::core::manager::{CoreManager, CoreStatus, READY_POLL_INTERVAL, READY_TIMEOUT};
+use crate::core::spawn;
 use crate::util::error::{Error, Result};
 
 /// 自动重启的初始退避间隔（按窗口内崩溃次数翻倍：2s, 4s, 8s）
@@ -64,15 +65,10 @@ impl CoreManager {
     /// mihomo 在 bind 失败时会 `level=error` 记录并静默跳过该监听，但进程不退出、
     /// 控制器照常就绪——不检查就会呈现「运行中但代理端口已死」的假象。
     /// 返回第一个 bind 错误的可读描述；无错误则 Ok（不误报其他非 bind 的 error）。
-    pub(super) fn detect_bind_conflict(&self) -> Result<()> {
-        let log_path = self.data_dir.join("logs").join("mihomo-stdout.log");
-        let Ok(content) = std::fs::read_to_string(&log_path) else {
-            return Ok(());
-        };
-        match parse_bind_error(&content) {
-            Some(msg) => Err(Error::Other(msg)),
-            None => Ok(()),
-        }
+    ///
+    /// 日志现在是追加写入，`offset` 之前属于历史会话，只检查本会话新增内容。
+    pub(super) fn detect_bind_conflict(&self, offset: u64) -> Result<()> {
+        detect_bind_conflict_in(&self.data_dir, offset)
     }
 
     /// 子进程监督循环（CoreSupervisor）：
@@ -99,6 +95,7 @@ impl CoreManager {
         let api_client = self.controller.api_client().clone();
         // 自愈重启成功后失效版本缓存（新进程版本可能已变化）
         let version_cache = self.version_cache.clone();
+        let applied_hash = self.applied_hash.clone();
 
         // generation 是否仍然有效（不一致说明有新的 start/stop 接管）
         let gen_valid = |g: &Arc<std::sync::atomic::AtomicU64>, expected: u64| -> bool {
@@ -263,69 +260,20 @@ impl CoreManager {
                         CoreStatus::Error("mihomo binary missing; cannot restart".to_string());
                     break;
                 }
-                // 用当前配置生成运行时配置
+                // 与首次启动共用同一套"写配置 + 追加日志 + 落盘会话 + spawn"实现
+                // （core::spawn），避免两处行为漂移。
                 let cfg = config.read().clone();
-                let runtime_config = data_dir.join("runtime-config.yaml");
-                let profile = {
-                    let name = cfg.general.profile.trim();
-                    if name.is_empty() {
-                        None
-                    } else {
-                        let safe = crate::util::paths::sanitize_profile_name(name).ok();
-                        safe.and_then(|s| {
-                            let p = data_dir.join("profiles").join(format!("{}.yaml", s));
-                            std::fs::read_to_string(&p).ok()
-                        })
-                    }
-                };
-                match crate::core::config::build_runtime_config(&cfg, profile.as_deref()) {
-                    Ok(runtime) => {
-                        let yaml = match serde_yaml::to_string(&runtime) {
-                            Ok(y) => y,
-                            Err(e) => {
-                                error!("Failed to serialize runtime config for restart: {}", e);
-                                break;
-                            }
-                        };
-                        if let Err(e) =
-                            crate::util::atomic::atomic_write(&runtime_config, yaml.as_bytes())
-                        {
-                            error!("Failed to write runtime config for restart: {}", e);
-                            break;
-                        }
-                    }
+                let (runtime_config, hash) = match spawn::write_runtime_config(&data_dir, &cfg) {
+                    Ok(v) => v,
                     Err(e) => {
-                        error!("Failed to build runtime config for restart: {}", e);
-                        break;
-                    }
-                }
-                let mut cmd = tokio::process::Command::new(&mihomo_path);
-                cmd.arg("-d").arg(&data_dir).arg("-f").arg(&runtime_config);
-                cmd.current_dir(&data_dir);
-                let logs_dir = data_dir.join("logs");
-                let _ = std::fs::create_dir_all(&logs_dir);
-                let stdout_file = match std::fs::File::create(logs_dir.join("mihomo-stdout.log")) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        error!("Failed to create stdout log: {}", e);
+                        error!("Failed to write runtime config for restart: {}", e);
                         break;
                     }
                 };
-                let stderr_file = match std::fs::File::create(logs_dir.join("mihomo-stderr.log")) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        error!("Failed to create stderr log: {}", e);
-                        break;
-                    }
-                };
-                cmd.stdout(std::process::Stdio::from(stdout_file))
-                    .stderr(std::process::Stdio::from(stderr_file));
-                #[cfg(target_os = "windows")]
-                {
-                    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-                }
-                match cmd.spawn() {
-                    Ok(child) => {
+                match spawn::spawn_mihomo(&mihomo_path, &data_dir, &runtime_config) {
+                    Ok(spawned) => {
+                        let stdout_offset = spawned.stdout_offset;
+                        let child = spawned.child;
                         // 同步 PID 缓存
                         if let Some(pid) = child.id() {
                             app_handle
@@ -340,9 +288,14 @@ impl CoreManager {
                             api_client: api_client.clone(),
                             config: config.clone(),
                         };
-                        match core_manager_for_check.wait_ready_and_check_port().await {
+                        let ready = core_manager_for_check
+                            .wait_ready_and_check_port()
+                            .await
+                            .and_then(|()| detect_bind_conflict_in(&data_dir, stdout_offset));
+                        match ready {
                             Ok(()) => {
                                 *status_arc.lock().unwrap() = CoreStatus::Running;
+                                *applied_hash.lock().unwrap() = Some(hash.clone());
                                 // 新进程的稳定运行基准从现在起算
                                 *started_at.lock().unwrap() = Some(std::time::Instant::now());
                                 let _ = app_handle.emit(
@@ -423,6 +376,7 @@ impl CoreManager {
                                     state
                                         .core_pid_cache
                                         .store(0, std::sync::atomic::Ordering::SeqCst);
+                                    spawn::clear_session(&data_dir);
                                 }
                                 // 继续循环：下一次 gone 检测会再记一次崩溃并重试，
                                 // 直至熔断窗口打开
@@ -463,6 +417,15 @@ impl CoreManager {
             "system-proxy-changed",
             serde_json::json!({ "enable": false, "error": err.to_string() }),
         );
+    }
+}
+
+/// 读取 stdout 日志 `offset` 之后新增的内容并检测端口绑定失败。
+pub(super) fn detect_bind_conflict_in(data_dir: &std::path::Path, offset: u64) -> Result<()> {
+    let content = spawn::read_log_since(data_dir, offset);
+    match parse_bind_error(&content) {
+        Some(msg) => Err(Error::Other(msg)),
+        None => Ok(()),
     }
 }
 

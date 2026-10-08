@@ -7,6 +7,9 @@
 //! tokio Mutex 不可重入：公开入口持 lifecycle 锁后调用内部 stop()/start()
 //! 会再次 lock 同一把锁 → 永久死锁。因此公开入口只加锁、内部 *_locked
 //! 不再加锁，串行语义不变。
+//!
+//! 进程准备/启动细节（runtime-config、日志、孤儿回收、端口预检）见 `core::spawn`，
+//! 首次启动与崩溃自动重启共用同一实现。
 
 use std::time::Duration;
 
@@ -15,51 +18,19 @@ use tokio::process::Child;
 use tracing::{debug, error, info, warn};
 
 use crate::config::model::Config;
-use crate::core::config::build_runtime_config;
 use crate::core::health::{normalize_dns_listen, probe_str_addr, probe_tcp};
 use crate::core::manager::{CoreManager, CoreStatus, READY_POLL_INTERVAL, READY_TIMEOUT};
+use crate::core::spawn;
 use crate::util::error::{Error, Result};
-use crate::util::paths::sanitize_profile_name;
 
 /// mihomo 端口健康探测超时（probe_tcp 的默认时长，混合端口 + DNS 探测共用）
 const MIXED_PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl CoreManager {
-    /// 生成并原子写入运行时配置（AppConfig + 激活 Profile → runtime-config.yaml）
-    fn write_runtime_config(&self, config: &Config) -> Result<()> {
-        let profile = self.read_active_profile(config);
-        let runtime = build_runtime_config(config, profile.as_deref())?;
-        let yaml = serde_yaml::to_string(&runtime)?;
-
-        let path = self.runtime_config_path();
-        // 原子写入：随机后缀临时文件 + 排他创建 + rename（见 util::atomic）
-        crate::util::atomic::atomic_write(&path, yaml.as_bytes())?;
-        info!("Runtime config written to {:?}", path);
-        Ok(())
-    }
-
-    /// 读取激活 Profile 的原始内容（名称经过净化，防止路径穿越）
-    fn read_active_profile(&self, config: &Config) -> Option<String> {
-        let name = config.general.profile.trim();
-        if name.is_empty() {
-            return None;
-        }
-        let safe = sanitize_profile_name(name).ok()?;
-        let path = self
-            .data_dir
-            .join("profiles")
-            .join(format!("{}.yaml", safe));
-        match std::fs::read_to_string(&path) {
-            Ok(content) => Some(content),
-            Err(_) => {
-                warn!(
-                    "Active profile '{}' not found at {:?}; using builtin preset",
-                    safe,
-                    path.display()
-                );
-                None
-            }
-        }
+    /// 生成并原子写入运行时配置（AppConfig + 激活 Profile → runtime-config.yaml），
+    /// 返回内容哈希（用于判断热重载是否有实质变化）。
+    fn write_runtime_config(&self, config: &Config) -> Result<String> {
+        spawn::write_runtime_config(&self.data_dir, config).map(|(_, hash)| hash)
     }
 
     /// 进入可解释的 Error 状态并推送 `core-status-changed`。
@@ -67,6 +38,7 @@ impl CoreManager {
     /// 假运行 / 假停止 / 永久 Starting。
     fn transition_to_error_and_emit(&self, err: Error) -> Error {
         let text = err.to_string();
+        error!("Core entered error state: {}", text);
         *self.status.lock().unwrap() = CoreStatus::Error(text.clone());
         let _ = self.app_handle.emit(
             "core-status-changed",
@@ -93,7 +65,7 @@ impl CoreManager {
         }
     }
 
-    /// 启动 mihomo 进程：生成运行时配置 → `-d -f` 启动 → 轮询 REST 就绪
+    /// 启动 mihomo 进程：回收孤儿 → 端口预检 → 生成运行时配置 → `-d -f` 启动 → 轮询 REST 就绪
     pub async fn start(&self) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
         self.start_locked().await
@@ -140,86 +112,73 @@ impl CoreManager {
             return Err(self.transition_to_error_and_emit(err));
         }
 
-        // 用当前配置（含激活 Profile）生成运行时配置。
-        // 写盘失败（磁盘只读/空间不足等）绝不能停留在 Starting：
-        // 转为 Error 并推送事件。
-        let config = self.config();
-        if let Err(e) = self.write_runtime_config(&config) {
-            return Err(self.transition_to_error_and_emit(e));
-        }
-
-        let runtime_config = self.runtime_config_path();
-        let mut cmd = tokio::process::Command::new(&mihomo_path);
-        cmd.arg("-d").arg(&data_dir).arg("-f").arg(&runtime_config);
-        cmd.current_dir(&data_dir);
-
-        // 捕获 stdout/stderr 到日志文件（崩溃时有据可查，不再是"日志无痕"）
-        let logs_dir = data_dir.join("logs");
-        let _ = std::fs::create_dir_all(&logs_dir);
-        let stdout_path = logs_dir.join("mihomo-stdout.log");
-        let stderr_path = logs_dir.join("mihomo-stderr.log");
-
-        // 日志保留：上一会话日志超过阈值则轮转为 .old.log（保留排查线索），
-        // 当前会话重新从头写，避免单个日志文件无限增长占满磁盘。
-        const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
-        for path in [&stdout_path, &stderr_path] {
-            if let Ok(meta) = std::fs::metadata(path) {
-                if meta.len() > MAX_LOG_BYTES {
-                    let _ = std::fs::rename(path, path.with_extension("old.log"));
+        // 1. 回收上次会话遗留的孤儿 mihomo（应用被强杀/崩溃后内核仍占着端口）。
+        {
+            let (d, m) = (data_dir.clone(), mihomo_path.clone());
+            match tokio::task::spawn_blocking(move || spawn::reclaim_orphan(&d, &m)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(self.transition_to_error_and_emit(e)),
+                Err(e) => {
+                    return Err(self.transition_to_error_and_emit(Error::Other(format!(
+                        "orphan reclaim task failed: {}",
+                        e
+                    ))))
                 }
             }
         }
 
-        // 日志文件创建失败（磁盘只读/权限）同属启动失败：进入 Error 并推送事件，
-        // 不因 `?` 直接返回而停留在 Starting。
-        let stdout_file = std::fs::File::create(&stdout_path)
-            .map_err(|e| {
-                Error::Io(std::io::Error::other(format!(
-                    "create {}: {}",
-                    stdout_path.display(),
-                    e
-                )))
-            })
-            .map_err(|e| self.transition_to_error_and_emit(e))?;
-        let stderr_file = std::fs::File::create(&stderr_path)
-            .map_err(|e| {
-                Error::Io(std::io::Error::other(format!(
-                    "create {}: {}",
-                    stderr_path.display(),
-                    e
-                )))
-            })
-            .map_err(|e| self.transition_to_error_and_emit(e))?;
-        cmd.stdout(std::process::Stdio::from(stdout_file))
-            .stderr(std::process::Stdio::from(stderr_file));
-
-        // mihomo 是控制台程序：不设 CREATE_NO_WINDOW 会在 Windows 上弹出
-        // 黑色控制台窗口（用户报的"大黑框"）。
-        #[cfg(target_os = "windows")]
+        // 2. 端口预检：mixed-port / DNS 被占用直接报"谁占用了"；控制器端口被占用则
+        //    本次会话改选空闲端口（仅内存生效）。
         {
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let (m, cfg) = (mihomo_path.clone(), self.config());
+            match tokio::task::spawn_blocking(move || spawn::preflight(&m, &cfg)).await {
+                Ok(Ok(pre)) => {
+                    if let Some(addr) = pre.controller_override {
+                        self.config.write().proxy.external_controller = addr;
+                    }
+                }
+                Ok(Err(e)) => return Err(self.transition_to_error_and_emit(e)),
+                Err(e) => {
+                    return Err(self.transition_to_error_and_emit(Error::Other(format!(
+                        "port preflight task failed: {}",
+                        e
+                    ))))
+                }
+            }
         }
 
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                let err = Error::from(e);
-                return Err(self.transition_to_error_and_emit(err));
-            }
+        // 3. 用当前配置（含激活 Profile）生成运行时配置。
+        //    写盘失败（磁盘只读/空间不足等）绝不能停留在 Starting。
+        spawn::ensure_rule_files(&data_dir);
+        let config = self.config();
+        let (runtime_config, hash) = match spawn::write_runtime_config(&data_dir, &config) {
+            Ok(v) => v,
+            Err(e) => return Err(self.transition_to_error_and_emit(e)),
         };
-        *self.child.lock().unwrap() = Some(child);
-        // 同步 PID 缓存（退出清理在锁竞争时的精确清杀依据）
+
+        // 4. 启动（日志追加写入；会话记录落盘）。
+        let spawned = match spawn::spawn_mihomo(&mihomo_path, &data_dir, &runtime_config) {
+            Ok(s) => s,
+            Err(e) => return Err(self.transition_to_error_and_emit(e)),
+        };
+        let stdout_offset = spawned.stdout_offset;
+        *self.child.lock().unwrap() = Some(spawned.child);
+        // 同步 PID 缓存
         self.record_pid_cache();
 
-        // 就绪探测：轮询 REST /version（mihomo 起不来的话这里会超时 → Error，不假成功）
+        // 5. 就绪探测：轮询 REST /version（mihomo 起不来的话这里会超时 → Error，不假成功）
         match self.wait_ready().await {
             Ok(()) => {
-                // 端口冲突检测：REST 就绪只代表控制器可达，不代表 mixed-port / DNS
-                // 已成功监听。旧版 Clash 仍占用 7890/9053 时，mihomo 会静默跳过监听，
-                // 系统代理指向 127.0.0.1:7890 便随之失效——必须显式报错，而非假 Running
-                // （坚持「界面状态 = Mihomo 实际状态」）。
-                if let Err(bind_err) = self.detect_bind_conflict() {
-                    let _ = self.stop_locked().await; // 清掉僵尸进程（stop_locked 先置 Stopping/Stopped）
+                // 端口监听确认：REST 就绪只代表控制器可达，不代表 mixed-port 已监听。
+                // 预检已排除"启动前就被占用"，这里再核对 mihomo 实际应用的端口，
+                // 不依赖日志级别（log-level: silent 时日志解析会失效）。
+                if let Err(e) = self.wait_mixed_port().await {
+                    let _ = self.stop_locked().await; // 清掉僵尸进程
+                    return Err(self.transition_to_error_and_emit(e));
+                }
+                // 日志兜底：只读本会话新增内容中的 bind 错误（如 DNS 监听失败）。
+                if let Err(bind_err) = self.detect_bind_conflict(stdout_offset) {
+                    let _ = self.stop_locked().await;
                     return Err(self.transition_to_error_and_emit(bind_err));
                 }
                 *self.status.lock().unwrap() = CoreStatus::Running;
@@ -229,6 +188,7 @@ impl CoreManager {
                 }
                 // 新进程启动时刻（稳定运行判定基准）
                 *self.started_at.lock().unwrap() = Some(std::time::Instant::now());
+                *self.applied_hash.lock().unwrap() = Some(hash);
                 // 只 spawn 一个携带当前 generation 的 watcher
                 self.spawn_watcher(generation);
                 info!(
@@ -300,6 +260,59 @@ impl CoreManager {
         }
     }
 
+    /// 启动后核对：GET /configs 的 mixed-port 等于期望值，且该端口 TCP 可连接。
+    /// mihomo 的监听器与 API 并发启动，允许短暂重试。
+    async fn wait_mixed_port(&self) -> Result<()> {
+        let expected = self.config.read().general.mixed_port;
+        let mut last: Option<Error> = None;
+        for _ in 0..8 {
+            let live = self.live_mixed_port().await;
+            match live {
+                Ok(Some(p)) if p == expected => {
+                    match probe_tcp(("127.0.0.1", expected), MIXED_PORT_PROBE_TIMEOUT).await {
+                        Ok(()) => return Ok(()),
+                        Err(e) => last = Some(e),
+                    }
+                }
+                Ok(other) => {
+                    last = Some(Error::Other(format!(
+                        "live mixed-port is {:?}, expected {}",
+                        other, expected
+                    )))
+                }
+                Err(e) => last = Some(e),
+            }
+            tokio::time::sleep(READY_POLL_INTERVAL).await;
+        }
+        Err(Error::Other(format!(
+            "端口 {} 未能监听：{}",
+            expected,
+            last.map(|e| e.to_string()).unwrap_or_default()
+        )))
+    }
+
+    async fn live_mixed_port(&self) -> Result<Option<u16>> {
+        let url = self.controller.api_url(&["configs"], None)?;
+        let resp = self
+            .controller
+            .api_client()
+            .get(url)
+            .headers(self.controller.api_headers()?)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::Other(format!(
+                "GET /configs returned {}",
+                resp.status()
+            )));
+        }
+        let live: serde_json::Value = resp.json().await?;
+        Ok(live
+            .get("mixed-port")
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u16::try_from(p).ok()))
+    }
+
     /// 停止 mihomo 进程
     pub async fn stop(&self) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
@@ -309,7 +322,8 @@ impl CoreManager {
     /// stop 实现体（调用方必须已持有 lifecycle 锁，见 start_locked 注释）。
     ///
     /// 停止假成功防护：必须确认进程确实退出才能返回 Ok。`child.kill()` 的
-    /// 错误、`taskkill` 的启动/退出码都逐一检查；杀不掉时**不**置 Stopped，
+    /// 错误逐一检查；仍未退出时按"持句柄 + 映像路径校验"的 `terminate_owned`
+    /// 兜底（不再依赖 taskkill）。杀不掉时**不**置 Stopped，
     /// 而是保留可追踪的 PID 在 `core_pid_cache`（供退出清理继续追踪）并进入
     /// Error + 推送 core-status-changed。绝不按进程名杀进程。
     async fn stop_locked(&self) -> Result<()> {
@@ -327,6 +341,7 @@ impl CoreManager {
                 *self.status.lock().unwrap() = CoreStatus::Stopped;
             }
             self.clear_pid_cache();
+            spawn::clear_session(&self.data_dir);
             return Ok(());
         };
 
@@ -347,40 +362,37 @@ impl CoreManager {
             .await;
         let mut failure_reason: Option<String> = None;
 
-        // 3. 未退出：taskkill /PID /F 强杀，且检查其退出码与进程是否真消失
+        // 3. 未退出：持句柄终止（校验映像路径），并确认进程真消失
         if !stopped {
             match pid {
                 Some(pid) => {
                     warn!(
-                        "mihomo did not exit after kill; taskkill fallback (PID {})",
+                        "mihomo did not exit after kill; handle-based terminate fallback (PID {})",
                         pid
                     );
-                    match std::process::Command::new("taskkill")
-                        .args(["/PID", &pid.to_string(), "/F"])
-                        .status()
-                    {
-                        Ok(status) if status.success() => {
-                            // taskkill 退出码 0 只代表它发出了终止请求，仍需确认进程消失
+                    let path = self.mihomo_path.clone();
+                    let res = tokio::task::spawn_blocking(move || {
+                        crate::util::process::terminate_owned(pid, &path, 2000)
+                    })
+                    .await;
+                    match res {
+                        Ok(Ok(_)) => {
                             stopped = self
                                 .confirm_child_exit(&mut child, Duration::from_secs(2))
                                 .await;
                             if !stopped {
                                 failure_reason = Some(format!(
-                                    "taskkill /PID {} exited 0 but process is still alive",
+                                    "terminate PID {} requested but process is still alive",
                                     pid
                                 ));
                             }
                         }
-                        Ok(status) => {
-                            failure_reason = Some(format!(
-                                "taskkill /PID {} failed with exit code {}",
-                                pid,
-                                status.code().unwrap_or(-1)
-                            ));
+                        Ok(Err(e)) => {
+                            failure_reason = Some(format!("terminate PID {} failed: {}", pid, e));
                         }
                         Err(e) => {
                             failure_reason =
-                                Some(format!("taskkill /PID {} could not be started: {}", pid, e));
+                                Some(format!("terminate task for PID {} failed: {}", pid, e));
                         }
                     }
                 }
@@ -394,6 +406,7 @@ impl CoreManager {
         if stopped {
             // 进程确认退出后立即清空 PID 缓存，防止 PID 被系统复用后误杀
             self.clear_pid_cache();
+            spawn::clear_session(&self.data_dir);
             *self.status.lock().unwrap() = CoreStatus::Stopped;
             info!("mihomo stopped");
             Ok(())
@@ -458,32 +471,18 @@ impl CoreManager {
 
         // 2. GET /configs 核对关键字段（mixed-port）
         let expected_port = self.config.read().general.mixed_port;
-        let cfg_url = self.controller.api_url(&["configs"], None)?;
-        let resp = self
-            .controller
-            .api_client()
-            .get(cfg_url)
-            .headers(self.controller.api_headers()?)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            return Err(Error::Other(format!(
-                "post-reload check: GET /configs returned {}",
-                resp.status()
-            )));
-        }
-        let live: serde_json::Value = resp.json().await.map_err(|e| {
-            Error::Other(format!(
-                "post-reload check: GET /configs decode failed: {}",
-                e
-            ))
-        })?;
-        match live.get("mixed-port").and_then(|v| v.as_u64()) {
-            Some(p) if p == u64::from(expected_port) => {}
-            other => {
+        match self.live_mixed_port().await {
+            Ok(Some(p)) if p == expected_port => {}
+            Ok(other) => {
                 return Err(Error::Other(format!(
                     "post-reload check: live mixed-port is {:?}, expected {}",
                     other, expected_port
+                )));
+            }
+            Err(e) => {
+                return Err(Error::Other(format!(
+                    "post-reload check: GET /configs failed: {}",
+                    e
                 )));
             }
         }
@@ -504,18 +503,32 @@ impl CoreManager {
     /// 供编排层（core::runtime）在持久化后调用，保证下次启动/重载即用新值。
     pub fn regen_runtime_config(&self) -> Result<()> {
         let config = self.config();
-        self.write_runtime_config(&config)
+        self.write_runtime_config(&config).map(|_| ())
     }
 
-    /// 重载配置：重新生成 runtime-config.yaml；运行中用 REST 热重载，
-    /// 热重载后必须通过健康检查；REST 失败、校验失败或未运行时
-    /// 回退整进程重启。
+    /// 重载配置：重新生成 runtime-config.yaml；若与当前已应用的运行时配置
+    /// 内容完全一致（例如只改了语言等应用级字段）则跳过热重载；
+    /// 运行中用 REST 热重载，热重载后必须通过健康检查；
+    /// REST 失败、校验失败或未运行时回退整进程重启。
     pub async fn reload_config(&self) -> Result<()> {
+        self.reload_impl(false).await
+    }
+
+    /// 强制重载（用户显式点击"重载配置"、geodata 文件被替换后等必须重新读盘的场景）。
+    pub async fn reload_config_force(&self) -> Result<()> {
+        self.reload_impl(true).await
+    }
+
+    async fn reload_impl(&self, force: bool) -> Result<()> {
         let _lifecycle_guard = self.lifecycle.lock().await;
         let config = self.config();
-        self.write_runtime_config(&config)?;
+        let hash = self.write_runtime_config(&config)?;
 
         if self.is_running() {
+            if !force && self.applied_hash.lock().unwrap().as_deref() == Some(hash.as_str()) {
+                debug!("Runtime config unchanged (hash {}); skip hot reload", hash);
+                return Ok(());
+            }
             let yaml = std::fs::read_to_string(self.runtime_config_path())?;
             let payload = serde_json::json!({ "path": "", "payload": yaml });
             let url = self
@@ -536,6 +549,7 @@ impl CoreManager {
                     match self.verify_runtime_applied().await {
                         Ok(()) => {
                             info!("Runtime config hot-reloaded via PUT /configs (health OK)");
+                            *self.applied_hash.lock().unwrap() = Some(hash);
                             // 版本缓存失效，重取
                             if let Ok(v) = self.version().await {
                                 *self.version_cache.lock().unwrap() = Some(v);
@@ -563,7 +577,7 @@ impl CoreManager {
         }
 
         info!("Config rewritten, restarting core");
-        // reload_config 已持 lifecycle 锁，直接调 restart_locked
+        // reload 已持 lifecycle 锁，直接调 restart_locked
         // 而非 restart()（后者会再 lock → 死锁）。
         self.restart_locked().await
     }

@@ -37,5 +37,8 @@
 mod client;
 mod guards;
 
-pub use client::{get_direct_first, get_direct_first_streaming};
-pub use guards::{redact_url_for_log, validate_url};
+pub use client::{
+    fake_ip_range_from_config, get_direct_first, get_direct_first_streaming,
+    get_direct_first_with_ua, validate_url_app,
+};
+pub use guards::{redact_url_for_log, validate_url_with};

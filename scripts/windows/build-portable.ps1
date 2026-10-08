@@ -201,6 +201,31 @@ if (Test-Path $ScanScript) {
     Write-Host "  [SKIP] scan script not found at $ScanScript" -ForegroundColor DarkYellow
 }
 
+# 5c. Optional Authenticode signing (audit B11).
+# Unsigned binaries that edit the system proxy, spawn a core and write autostart keys are
+# routinely flagged by SmartScreen / AV. When WINDOWS_CODESIGN_PFX_BASE64 (+ _PASSWORD) are
+# provided (release CI), sign the launcher and the inner app before they are zipped.
+# Without the secret the package is built unsigned and a warning is printed.
+if ($env:WINDOWS_CODESIGN_PFX_BASE64) {
+    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
+                Sort-Object FullName -Descending | Select-Object -First 1
+    if (-not $signtool) { throw "signtool.exe not found (Windows SDK required for code signing)" }
+    $pfxPath = Join-Path ([System.IO.Path]::GetTempPath()) ("clashedge-codesign-" + [guid]::NewGuid().ToString("N") + ".pfx")
+    try {
+        [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_BASE64))
+        foreach ($target in @($launcherOut, (Join-Path $appClashEdgeDir "ClashEdge.exe"))) {
+            Write-Host "==> Authenticode signing $target"
+            & $signtool.FullName sign /f $pfxPath /p $env:WINDOWS_CODESIGN_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $target
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $target (exit $LASTEXITCODE)" }
+        }
+    } finally {
+        if (Test-Path $pfxPath) { Remove-Item $pfxPath -Force }
+    }
+} else {
+    Write-Host "  [WARN] WINDOWS_CODESIGN_PFX_BASE64 not set - binaries are NOT Authenticode-signed." -ForegroundColor DarkYellow
+}
+
 # 6. Single-file distributable archive.
 # Top-level folder "ClashEdge/": extracting the zip yields a ClashEdge directory
 # (matching the user's expectation of a clean folder, not scattered root files).

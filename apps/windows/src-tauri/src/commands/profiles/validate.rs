@@ -23,8 +23,17 @@ pub(super) fn validate_subscription_content(text: &str) -> Result<()> {
             MAX_YAML_CONTENT_BYTES
         )));
     }
-    let value: serde_yaml::Value = serde_yaml::from_str(text)
-        .map_err(|e| Error::Subscription(format!("Invalid YAML: {}", e)))?;
+    let value: serde_yaml::Value = match serde_yaml::from_str(text) {
+        Ok(v) => v,
+        Err(e) => {
+            // Base64 / 分享链接列表不是合法 YAML 也属正常订阅格式（审计 B7），
+            // 归一化阶段会转成 proxies 后再做完整校验。
+            if crate::util::uri_list::looks_like_uri_list(text) {
+                return Ok(());
+            }
+            return Err(Error::Subscription(format!("Invalid YAML: {}", e)));
+        }
+    };
     // 校验节点
     if let Some(proxies) = value.get("proxies").and_then(|v| v.as_sequence()) {
         if proxies.len() > MAX_NODE_COUNT {
@@ -67,6 +76,42 @@ pub(super) fn validate_subscription_content(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// 严格校验（用于手动创建 / 编辑 profile，以及归一化后的最终文本）：
+/// 在 [`validate_subscription_content`] 之上增加节点名约束——
+/// 必须是字符串、不得重复、不得与内置分组 / mihomo 保留策略重名。
+/// 这些冲突若放行，会在 mihomo 启动时才以晦涩错误暴露并触发回滚。
+pub(super) fn validate_profile_strict(text: &str) -> Result<()> {
+    validate_subscription_content(text)?;
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(text) else {
+        return Ok(());
+    };
+    let Some(proxies) = value.get("proxies").and_then(|v| v.as_sequence()) else {
+        return Ok(());
+    };
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, node) in proxies.iter().enumerate() {
+        let Some(name) = node.get("name").and_then(|n| n.as_str()) else {
+            continue; // 缺失 / 非字符串 name 已由 validate_node_protocol 报错
+        };
+        if crate::util::normalizer::is_reserved_node_name(name) {
+            return Err(Error::Subscription(format!(
+                "Node #{} name '{}' conflicts with a built-in group / reserved policy name",
+                i + 1,
+                name
+            )));
+        }
+        if let Some(first) = seen.insert(name.to_string(), i + 1) {
+            return Err(Error::Subscription(format!(
+                "Duplicate node name '{}' (nodes #{} and #{})",
+                name,
+                first,
+                i + 1
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// 按协议校验代理节点必要字段。
 /// 每种协议有各自的必需字段，统一校验可防止字段缺失导致 mihomo 启动失败。
 /// 不使用统一的极小字段白名单——保证 VLESS/Reality/Trojan/Hysteria2/TUIC
@@ -89,6 +134,12 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
     // 缺失 name 会让 Normalizer 的 dedupe_by_name 把多个无名单节点折叠成一个
     // （name="" 全部去重只剩一个），且运行时靠 name 注入内置叶子组——必须显式
     // 拒绝，不做静默修复。
+    if has("name") && get_str("name").is_none() {
+        return Err(Error::Subscription(format!(
+            "Node #{} ({}) 'name' must be a string (quote numeric names, e.g. name: \"123\")",
+            index, protocol
+        )));
+    }
     if !has("name") || name_raw.trim().is_empty() {
         return Err(Error::Subscription(format!(
             "Node #{} ({}) is missing required non-empty field 'name'",
@@ -165,7 +216,7 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
             }
         }
         "hysteria" => {
-            if !has("port") || !has("auth_str") {
+            if !has("port") || !(has("auth_str") || has("auth-str") || has("auth")) {
                 return Err(Error::Subscription(format!(
                     "Node #{} ('{}', {}) requires port, auth_str",
                     index, name, protocol
@@ -173,9 +224,11 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
             }
         }
         "tuic" => {
-            if !has("port") || !has("token") || !has("congestion_control") {
+            // TUIC v5：uuid + password；TUIC v4：token。congestion-controller 可选。
+            let v5 = has("uuid") && has("password");
+            if !has("port") || !(v5 || has("token")) {
                 return Err(Error::Subscription(format!(
-                    "Node #{} ('{}', {}) requires port, token, congestion_control",
+                    "Node #{} ('{}', {}) requires port and (uuid + password) or token",
                     index, name, protocol
                 )));
             }
@@ -239,6 +292,52 @@ mod tests {
         assert!(
             validate_node_protocol(&ok, 4).is_ok(),
             "valid node accepted"
+        );
+    }
+
+    #[test]
+    fn tuic_v5_nodes_are_accepted() {
+        let v5: serde_yaml::Value = serde_yaml::from_str(
+            "name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\nuuid: u\npassword: p\ncongestion-controller: bbr\n",
+        )
+        .unwrap();
+        assert!(validate_node_protocol(&v5, 1).is_ok());
+        let v4: serde_yaml::Value =
+            serde_yaml::from_str("name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\ntoken: x\n")
+                .unwrap();
+        assert!(validate_node_protocol(&v4, 1).is_ok());
+        let bad: serde_yaml::Value =
+            serde_yaml::from_str("name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\n").unwrap();
+        assert!(validate_node_protocol(&bad, 1).is_err());
+    }
+
+    #[test]
+    fn strict_rejects_duplicates_reserved_and_numeric_names() {
+        let node = |n: &str| {
+            format!(
+                "  - name: \"{}\"\n    type: ss\n    server: 1.1.1.1\n    port: 1\n    cipher: a\n    password: p\n",
+                n
+            )
+        };
+        let dup = format!("proxies:\n{}{}", node("a"), node("a"));
+        assert!(validate_profile_strict(&dup).is_err());
+        // 宽松校验（导入前的原始文本）不拒绝重名——归一化会去重
+        assert!(validate_subscription_content(&dup).is_ok());
+        let reserved = format!("proxies:\n{}", node("DIRECT"));
+        assert!(validate_profile_strict(&reserved).is_err());
+        let group = format!("proxies:\n{}", node("人工优选"));
+        assert!(validate_profile_strict(&group).is_err());
+        let ok = format!("proxies:\n{}{}", node("a"), node("b"));
+        assert!(validate_profile_strict(&ok).is_ok());
+        let numeric = "proxies:\n  - name: 123\n    type: ss\n    server: 1.1.1.1\n    port: 1\n    cipher: a\n    password: p\n";
+        let err = validate_profile_strict(numeric).unwrap_err().to_string();
+        assert!(err.contains("string"), "{}", err);
+    }
+
+    #[test]
+    fn share_link_lists_pass_raw_validation() {
+        assert!(
+            validate_subscription_content("trojan://p@a.example:443#a: b\nss://x@h:1#c\n").is_ok()
         );
     }
 

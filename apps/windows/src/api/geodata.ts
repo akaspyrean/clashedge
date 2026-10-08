@@ -15,7 +15,6 @@ export interface GeoDataStatus {
 }
 
 export interface GeoDataUrls {
-  geox_url: string;
   geoip_url: string;
   geosite_url: string;
 }

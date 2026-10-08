@@ -38,40 +38,63 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
     }
 
     /**
-     * Light normalizer: pulls a Clash `proxies:` block and keeps only
-     * name/type/server. MVP — expand full Clash parsing later.
+     * Light normalizer for a Clash `proxies:` section (flow `- { name: a, type: ss, ... }`
+     * and block `- name: a` styles). Keeps only name/type/server — still an MVP: the
+     * credentials are NOT retained, so the generated config cannot connect yet (see README
+     * "Status"). Stops at the next top-level key so `proxy-groups:` etc. are never read as nodes.
      */
     fun normalize(body: String): List<Node> {
         val nodes = mutableListOf<Node>()
-        val proxiesBlock = body.substringAfter("proxies:", "")
-        proxiesBlock.lineSequence().forEach { line ->
-            val t = line.trim()
-            if (!t.startsWith("-")) return@forEach
-            parseClashNode(t)?.let { if (nodes.none { n -> n.name == it.name }) nodes.add(it) }
+        var inProxies = false
+        var cur = mutableMapOf<String, String>()
+
+        fun flush() {
+            val name = cur["name"]
+            val type = cur["type"]
+            val server = cur["server"]
+            if (name != null && type != null && server != null && nodes.none { it.name == name }) {
+                nodes.add(Node(name = name, type = type, server = server))
+            }
+            cur = mutableMapOf()
         }
+
+        for (raw in body.lineSequence()) {
+            val line = raw.trimEnd()
+            if (line.isBlank() || line.trimStart().startsWith("#")) continue
+            val topLevel = !line.first().isWhitespace() && !line.startsWith("-")
+            if (topLevel) {
+                if (inProxies) flush()
+                inProxies = line.startsWith("proxies:")
+                continue
+            }
+            if (!inProxies) continue
+            val t = line.trim()
+            if (t.startsWith("-")) {
+                flush()
+                collectFields(t.removePrefix("-").trim(), cur)
+            } else {
+                collectFields(t, cur)
+            }
+        }
+        if (inProxies) flush()
         return nodes
     }
 
-    private fun parseClashNode(fragment: String): Node? {
-        val name = keyOf(fragment, "name") ?: return null
-        val type = keyOf(fragment, "type") ?: return null
-        val server = keyOf(fragment, "server") ?: return null
-        return Node(name = name, type = type, server = server)
+    /** Parses `k: v` pairs from either a flow mapping (`{ a: 1, b: 2 }`) or a single block line. */
+    private fun collectFields(fragment: String, into: MutableMap<String, String>) {
+        val inner = fragment.trim().removePrefix("{").removeSuffix("}")
+        for (key in listOf("name", "type", "server")) {
+            valueOf(inner, key)?.let { into[key] = it }
+        }
     }
 
-    private fun keyOf(fragment: String, key: String): String? {
-        val idx = fragment.indexOf("$key=")
-        if (idx < 0) return null
-        var rest = fragment.substring(idx + key.length + 1).trim()
-        if (rest.startsWith("\"")) {
-            val end = rest.indexOf('"', 1)
-            return if (end > 0) rest.substring(1, end) else null
-        }
-        if (rest.startsWith("'")) {
-            val end = rest.indexOf('\'', 1)
-            return if (end > 0) rest.substring(1, end) else null
-        }
-        rest = rest.substringBefore(',')
-        return rest.trim().trimEnd('}')
+    private fun valueOf(fragment: String, key: String): String? {
+        val m = Regex("""(?:^|[\s{,])$key\s*[:=]\s*("[^"]*"|'[^']*'|[^,}]+)""").find(fragment) ?: return null
+        val v = m.groupValues[1].trim()
+        return when {
+            v.length >= 2 && v.startsWith("\"") && v.endsWith("\"") -> v.substring(1, v.length - 1)
+            v.length >= 2 && v.startsWith("'") && v.endsWith("'") -> v.substring(1, v.length - 1)
+            else -> v
+        }.ifEmpty { null }
     }
 }

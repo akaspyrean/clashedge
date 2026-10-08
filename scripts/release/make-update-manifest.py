@@ -14,7 +14,8 @@ Output schema (Portable Updater's own format, NOT the Tauri updater
       "version": "0.8.10",
       "url": "https://github.com/<repo>/releases/download/<tag>/ClashEdge-portable-win64.zip",
       "sha256": "<lowercase hex SHA256 of the zip>",
-      "notes": "..."
+      "notes": "...",
+      "released_at": <unix seconds>
     }
 
 The zip hash is computed from the actual staged artifact in --dist, never
@@ -30,6 +31,7 @@ import hashlib
 import json
 import pathlib
 import sys
+import time
 
 ZIP_ASSET = "ClashEdge-portable-win64.zip"
 
@@ -67,6 +69,8 @@ def main() -> int:
         "url": f"https://github.com/{args.repo}/releases/download/{args.tag}/{ZIP_ASSET}",
         "sha256": sha256_of(artifact),
         "notes": args.notes,
+        # informational freshness marker (unix seconds)
+        "released_at": int(time.time()),
     }
     args.out.write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"wrote {args.out} ({ZIP_ASSET}, sha256={manifest['sha256'][:16]}...)")

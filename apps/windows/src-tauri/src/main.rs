@@ -69,8 +69,10 @@ pub struct AppState {
     /// version/url/hash 不参与任何决策。带 TTL：距检查超过
     /// `VERIFIED_UPDATE_TTL` 后缓存失效，必须重新 check_update，
     /// 防止用陈旧清单下载已被撤回/替换的版本。
-    pub verified_update:
-        std::sync::Mutex<Option<(crate::update::UpdateManifest, std::time::Instant)>>,
+    pub verified_update: std::sync::Mutex<Option<crate::update::VerifiedUpdate>>,
+    /// 主窗口"隐藏代数"：每次隐藏到托盘 / 重新显示都会递增，延迟销毁任务据此判断
+    /// 自己是否已过期（窗口在等待期间又被唤起则不销毁）。
+    pub hide_gen: std::sync::atomic::AtomicU64,
 }
 
 impl AppState {
@@ -83,6 +85,7 @@ impl AppState {
             log_stream: std::sync::Mutex::new(None),
             core_pid_cache: std::sync::atomic::AtomicU32::new(0),
             verified_update: std::sync::Mutex::new(None),
+            hide_gen: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -98,11 +101,7 @@ pub fn run() {
             if autostart {
                 return;
             }
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            show_main_window(app);
         }))
         // 文件选择保留 dialog；fs / notification / clipboard / opener 无真实调用，
         // 文件读写与打开目录均走受控 Rust command，因此不注册未使用插件。
@@ -164,79 +163,20 @@ pub fn run() {
             // 创建系统托盘（内部会把 TrayIcon 存入 AppState.tray）
             build_tray(app.handle())?;
 
-            // 设置窗口行为
-            // WebView 导航锁定：仅放行应用自身 origin，其余一律阻止。
-            // 回调返回 true 放行、false 拒绝；拒绝时 WebView 停留在当前页面，
-            // 防止被导航到外部站点（钓鱼 / 恶意注入 / 加载外部脚本）。
-            // 放行清单：
-            //   - tauri://localhost            （Tauri 自定义协议）
-            //   - http/https://tauri.localhost（应用自身资源/IPC origin）
-            //   - debug 构建额外放行 dev 服务器 http://localhost:1420（tauri.conf.json devUrl）
-            //
-            // Tauri 2 仅在 WebviewWindowBuilder 上提供 on_navigation（窗口实例与
-            // 配置式窗口均无此钩子），因此主窗口改为在 setup 中通过 Builder 创建，
-            // 窗口属性与原先 tauri.conf.json app.windows[0] 保持一致。
-            let window =
-                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("ClashEdge")
-                    // 默认尺寸 832×554（紧凑基准 756×504 上浮 10%）；
-                    // 高于前端窄窗阈值 749，侧栏文字正常展示。
-                    .inner_size(832.0, 554.0)
-                    .min_inner_size(560.0, 400.0)
-                    .background_color(tauri::window::Color(0x10, 0x12, 0x14, 0xff))
-                    .decorations(false)
-                    .resizable(true)
-                    .maximizable(true)
-                    .minimizable(true)
-                    .closable(false)
-                    .center()
-                    .visible(false)
-                    .on_navigation(|url| {
-                        let allowed = match (url.scheme(), url.host_str()) {
-                            ("tauri", Some("localhost")) => true,
-                            ("http" | "https", Some("tauri.localhost")) => true,
-                            #[cfg(debug_assertions)]
-                            ("http", Some("localhost")) => url.port() == Some(1420),
-                            _ => false,
-                        };
-                        if !allowed {
-                            warn!(
-                                "Navigation blocked (outside allowed origins): {}",
-                                url.as_str()
-                            );
-                        }
-                        allowed
-                    })
-                    .build()?;
-
-            // 任务栏/窗口图标：与桌面（exe 内嵌 cat.ico 资源）图标保持一致。
-            // Tauri 默认窗口图标可能与 exe 资源图标不一致，这里显式设置。
-            #[cfg(target_os = "windows")]
-            {
-                let bytes = include_bytes!("../icons/cat-256x256.png");
-                match image::load_from_memory(bytes) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = rgba.dimensions();
-                        let icon = tauri::image::Image::new_owned(rgba.into_raw(), w, h);
-                        let _ = window.set_icon(icon);
-                    }
-                    Err(e) => warn!("Failed to decode window icon: {}", e),
-                }
-            }
-            #[cfg(target_os = "windows")]
-            {
-                let _ = window.set_decorations(false);
+            // 主窗口：见 create_main_window（导航锁定 / 图标 / 关闭到托盘 / 延迟销毁）。
+            create_main_window(app.handle())?;
+            // 自启动静默驻留托盘：窗口从未显示，同样按"隐藏超时"回收 WebView 内存。
+            if std::env::args().any(|a| a == "--clash-edge-autostart") {
+                schedule_webview_destroy(app.handle());
             }
 
-            // 处理窗口关闭事件（最小化到托盘）
-            let app_handle = app.handle().clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = app_handle.get_webview_window("main").map(|w| w.hide());
+            // 清理 profiles 目录里上次异常退出遗留的临时文件（>1 小时）
+            if let Ok(dir) = crate::util::paths::get_profiles_dir(app.handle()) {
+                let n = crate::util::temp::sweep_stale(&dir, std::time::Duration::from_secs(3600));
+                if n > 0 {
+                    info!("Swept {} stale temp files from profiles/", n);
                 }
-            });
+            }
 
             // 启动核心服务（异步任务内部重新加锁）。
             // 顺序：先启动 mihomo 并确认监听就绪，再启用系统代理。
@@ -333,6 +273,58 @@ pub fn run() {
                 });
             }
 
+            // GeoData / 规则集自动更新：仅在用户开启 `geo-auto-update` 时，启动 90s 后
+            // 检查一次，距上次成功更新 >24h 才执行（无常驻定时器）。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let enabled = app_handle
+                        .state::<crate::AppState>()
+                        .config_manager
+                        .lock()
+                        .unwrap()
+                        .get_config()
+                        .general
+                        .geo_auto_update;
+                    if !enabled {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+                    crate::geodata::updater::auto_update_if_due(&app_handle).await;
+                });
+            }
+
+            // 启动后静默检查一次应用更新（仅提示，不自动下载 / 安装）。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let enabled = app_handle
+                        .state::<crate::AppState>()
+                        .config_manager
+                        .lock()
+                        .unwrap()
+                        .get_config()
+                        .general
+                        .auto_check_update;
+                    if !enabled {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    match crate::commands::update::check_and_cache(&app_handle).await {
+                        Ok(crate::update::UpdateStatus::Available { manifest, .. }) => {
+                            info!("Update available: v{}", manifest.version);
+                            let _ = tauri::Emitter::emit(
+                                &app_handle,
+                                "update-available",
+                                serde_json::json!({ "version": manifest.version }),
+                            );
+                        }
+                        Ok(_) => info!("Application is up to date"),
+                        Err(e) => info!("Startup update check skipped: {}", e),
+                    }
+                });
+            }
+
             info!("ClashEdge started successfully");
             Ok(())
         })
@@ -384,6 +376,7 @@ pub fn run() {
             crate::commands::profiles::import_profile,
             crate::commands::profiles::import_profile_from_url,
             crate::commands::profiles::update_profile_subscription,
+            crate::commands::profiles::set_profile_user_agent,
             crate::commands::profiles::export_profile,
             // Tray commands
             crate::commands::tray::get_tray_menu_state,
@@ -398,21 +391,30 @@ pub fn run() {
             crate::commands::util::get_supported_locales,
             crate::commands::util::set_locale,
             crate::commands::util::get_i18n_messages,
+            crate::commands::util::export_diagnostics,
             // Portable Updater commands
             crate::commands::update::check_update,
             crate::commands::update::download_update,
             crate::commands::update::get_staged_update,
             crate::commands::update::discard_staged_update,
+            crate::commands::update::restart_and_apply_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
     // 挂接 RunEvent 生命周期：退出时先安全释放系统代理，再停止 mihomo，
     // 否则 mihomo 变成孤儿进程继续代理、系统代理残留指向死端口，全网断开。
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
-            cleanup_on_exit(app_handle);
+    app.run(|app_handle, event| match event {
+        // 主窗口隐藏一段时间后会被销毁以回收 WebView 内存；最后一个窗口销毁会触发
+        // ExitRequested(code=None)——这是托盘常驻应用，必须阻止退出。显式 `app.exit(n)`
+        // 带有退出码，不受影响。
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            if code.is_none() {
+                api.prevent_exit();
+            }
         }
+        tauri::RunEvent::Exit => cleanup_on_exit(app_handle),
+        _ => {}
     });
 }
 
@@ -423,13 +425,7 @@ pub fn run() {
 /// 停止 Mihomo），保持现有 fail-safe。
 fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
-    let mixed_port = state
-        .config_manager
-        .lock()
-        .unwrap()
-        .get_config()
-        .general
-        .mixed_port;
+    let mixed_port = state.config_manager.lock().unwrap().mixed_port();
     let data_dir = match crate::util::paths::get_app_data_dir(app_handle) {
         Ok(dir) => dir,
         Err(e) => {
@@ -516,27 +512,27 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
             .get()
             .map(|c| c.mihomo_binary_path())
             .or_else(|| crate::util::paths::get_mihomo_path(app_handle).ok());
-        if !owns_pid(&pid, expected_path.as_deref()) {
-            // PID 所有权无法确认（映像路径不匹配/解析失败）→ 宁可不动，绝不误杀。
-            error!(
-                "Refusing to kill PID {} on exit: image path does not match ClashEdge's mihomo binary (ownership cannot be confirmed). This PID may have been reused.",
+        match expected_path {
+            None => error!(
+                "Refusing to kill PID {} on exit: expected mihomo path unknown (ownership cannot be confirmed)",
                 pid
-            );
-        } else {
-            info!("Killing mihomo (PID {}) on exit (ownership verified)", pid);
-            let stopped = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .status()
-                .map(|status| status.success())
-                .unwrap_or(false);
-            if !stopped {
-                // journal 已在代理恢复成功后清除；Mihomo 停止失败只记录错误，
-                // 不得重新创建或保留 proxy journal。
-                error!(
-                    "Failed to stop Mihomo PID {} during exit; system proxy was restored and journal already cleared, this error is logged only",
+            ),
+            // 持句柄 + 映像路径校验后终止（无 taskkill、无 PID 复用窗口）。
+            Some(expected) => match crate::util::process::terminate_owned(pid, &expected, 3000) {
+                Ok(true) => {
+                    info!("Killed mihomo (PID {}) on exit (ownership verified)", pid);
+                    crate::core::spawn::clear_session(&data_dir);
+                }
+                Ok(false) => warn!(
+                    "mihomo PID {} was not terminated on exit (already gone, access denied or still running)",
                     pid
-                );
-            }
+                ),
+                // journal 已在代理恢复成功后清除；停止失败只记录，不得重新创建 journal。
+                Err(e) => error!(
+                    "Refusing / failed to stop Mihomo PID {} during exit: {} (system proxy was restored, journal already cleared)",
+                    pid, e
+                ),
+            },
         }
     } else {
         info!(
@@ -546,59 +542,181 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
     }
 }
 
-/// PID 所有权校验——该 PID 对应进程的映像路径是否确认为 ClashEdge
-/// 的 mihomo 二进制。用 OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) +
-/// QueryFullProcessImageNameW 读取映像路径，与期望路径（canonicalize 归一）
-/// 比对。任一环节失败（进程已不存在/权限不足/路径解析失败）一律返回 false
-/// ——fail-closed，绝不误杀无关进程。
-#[cfg(target_os = "windows")]
-fn owns_pid(pid: &u32, expected_path: Option<&std::path::Path>) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    let Some(expected_path) = expected_path else {
-        return false;
-    };
-    let expected =
-        std::fs::canonicalize(expected_path).unwrap_or_else(|_| expected_path.to_path_buf());
-    let expected_upper = expected.to_string_lossy().to_uppercase();
+/// 主窗口隐藏多久后销毁其 WebView（回收 WebView2 常驻内存；托盘唤起时重建）。
+const WEBVIEW_DESTROY_DELAY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, *pid);
-        if handle.is_null() {
-            return false;
+/// 创建主窗口。
+///
+/// WebView 导航锁定：仅放行应用自身 origin，其余一律阻止。回调返回 true 放行、
+/// false 拒绝；拒绝时 WebView 停留在当前页面，防止被导航到外部站点
+/// （钓鱼 / 恶意注入 / 加载外部脚本）。放行清单：
+///   - tauri://localhost            （Tauri 自定义协议）
+///   - http/https://tauri.localhost（应用自身资源/IPC origin）
+///   - debug 构建额外放行 dev 服务器 http://localhost:1420（tauri.conf.json devUrl）
+///
+/// Tauri 2 仅在 WebviewWindowBuilder 上提供 on_navigation，因此主窗口通过 Builder
+/// 创建。窗口被"隐藏超时销毁"后可由 [`show_main_window`] 重新调用本函数重建。
+pub(crate) fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("ClashEdge")
+        // 默认尺寸 832×554（紧凑基准 756×504 上浮 10%）；
+        // 高于前端窄窗阈值 749，侧栏文字正常展示。
+        .inner_size(832.0, 554.0)
+        .min_inner_size(560.0, 400.0)
+        .background_color(tauri::window::Color(0x10, 0x12, 0x14, 0xff))
+        .decorations(false)
+        .resizable(true)
+        .maximizable(true)
+        .minimizable(true)
+        .closable(false)
+        .center()
+        .visible(false)
+        .on_navigation(|url| {
+            let allowed = match (url.scheme(), url.host_str()) {
+                ("tauri", Some("localhost")) => true,
+                ("http" | "https", Some("tauri.localhost")) => true,
+                #[cfg(debug_assertions)]
+                ("http", Some("localhost")) => url.port() == Some(1420),
+                _ => false,
+            };
+            if !allowed {
+                warn!(
+                    "Navigation blocked (outside allowed origins): {}",
+                    url.as_str()
+                );
+            }
+            allowed
+        })
+        .build()?;
+
+    // 任务栏/窗口图标：与桌面（exe 内嵌 cat.ico 资源）图标保持一致。
+    #[cfg(target_os = "windows")]
+    {
+        let bytes = include_bytes!("../icons/cat-256x256.png");
+        match image::load_from_memory(bytes) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let icon = tauri::image::Image::new_owned(rgba.into_raw(), w, h);
+                let _ = window.set_icon(icon);
+            }
+            Err(e) => warn!("Failed to decode window icon: {}", e),
         }
-        let mut buf = [0u16; 1024];
-        let mut size = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
-        CloseHandle(handle);
-        if ok == 0 {
-            return false;
+        let _ = window.set_decorations(false);
+    }
+
+    // 关闭 = 最小化到托盘，并安排一段时间后销毁 WebView 回收内存。
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = handle.get_webview_window("main").map(|w| w.hide());
+            schedule_webview_destroy(&handle);
         }
-        let image = String::from_utf16_lossy(&buf[..size as usize]);
-        let image_path = std::path::PathBuf::from(&image);
-        let image_canonical = std::fs::canonicalize(&image_path).unwrap_or(image_path);
-        let image_norm = image_canonical.to_string_lossy().to_uppercase();
-        let matched = image_norm == expected_upper;
-        if !matched {
-            warn!(
-                "PID {} image path '{}' does not match expected mihomo '{}'; ownership rejected",
-                pid,
-                image,
-                expected.display()
-            );
-        }
-        matched
+    });
+    Ok(window)
+}
+
+/// 显示并聚焦主窗口；窗口已被销毁则先重建。同时取消待执行的延迟销毁。
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
+    app.state::<AppState>()
+        .hide_gen
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let window = match app.get_webview_window("main") {
+        Some(w) => Some(w),
+        None => match create_main_window(app) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                error!("Failed to recreate main window: {}", e);
+                None
+            }
+        },
+    };
+    if let Some(w) = window {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn owns_pid(_pid: &u32, _expected_path: Option<&std::path::Path>) -> bool {
-    // 非 Windows 平台无 taskkill；退出清理路径本就不该杀进程，直接拒绝。
-    false
+/// 安排"窗口持续隐藏 [`WEBVIEW_DESTROY_DELAY`] 后销毁 WebView"。等待期间窗口被再次
+/// 显示（`show_main_window` 递增代数）或仍可见（用户手动打开 / 最小化）都不会销毁。
+pub(crate) fn schedule_webview_destroy(app: &tauri::AppHandle) {
+    let generation = app
+        .state::<AppState>()
+        .hide_gen
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(WEBVIEW_DESTROY_DELAY).await;
+        let state = app.state::<AppState>();
+        if state.hide_gen.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            return;
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            if matches!(w.is_visible(), Ok(false)) {
+                info!("Main window hidden for a while; destroying WebView to free memory");
+                let _ = w.destroy();
+            }
+        }
+    });
 }
 
 fn main() {
+    // 启动器在应用更新前调用 `ClashEdge.exe --verify-staged <dir>` 复验暂存更新
+    // 的签名链；该模式只做校验并以退出码返回，不启动 Tauri。
+    if let Some(code) = crate::update::cli_verify_staged() {
+        std::process::exit(code);
+    }
+    if let Some(code) = crate::update::cli_verify_signature() {
+        std::process::exit(code);
+    }
     run();
+}
+
+#[cfg(test)]
+mod architecture_guards {
+    //! 架构约束守卫（docs/ARCHITECTURE.md）：command / tray 层不得直接
+    //! `config_manager.lock().set_config(..)` / `update_config_with(..)`——
+    //! 所有改状态的入口必须经 `AppController`（事务锁 + 降级守卫 + 回滚）。
+    use std::path::Path;
+
+    fn production_part(text: &str) -> &str {
+        text.split("#[cfg(test)]").next().unwrap_or(text)
+    }
+
+    fn scan(dir: &Path, offenders: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, offenders);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let prod = production_part(&text);
+                for (i, line) in prod.lines().enumerate() {
+                    let t = line.trim_start();
+                    if t.starts_with("//") {
+                        continue;
+                    }
+                    if line.contains(".set_config(") || line.contains(".update_config_with(") {
+                        offenders.push(format!("{}:{}: {}", path.display(), i + 1, t));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn commands_and_tray_never_write_config_directly() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        scan(&root.join("commands"), &mut offenders);
+        scan(&root.join("tray"), &mut offenders);
+        assert!(
+            offenders.is_empty(),
+            "command/tray layers must go through AppController:\n{}",
+            offenders.join("\n")
+        );
+    }
 }

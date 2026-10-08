@@ -13,6 +13,7 @@ import { configApi, type ClashConfig } from "@/api/config";
 import type { GeoDataStatus } from "@/api/geodata";
 import { geodataApi } from "@/api/geodata";
 import { proxyApi } from "@/api/proxy";
+import { updateApi, type PendingUpdate, type UpdateStatus } from "@/api/update";
 import { utilApi } from "@/api/util";
 import { changeLocale } from "@/i18n";
 import { useAppStore } from "@/stores/app";
@@ -62,6 +63,17 @@ const localeLabel = (loc: string): string => localeNames[loc] ?? loc;
 
 const geo = ref<GeoDataStatus | null>(null);
 const geoUpdating = ref(false);
+
+// ---- 应用更新（签名清单 → 下载校验暂存 → 启动器安装）----
+const updateChecking = ref(false);
+const updateDownloading = ref(false);
+const updateStatus = ref<UpdateStatus | null>(null);
+const stagedUpdate = ref<PendingUpdate | null>(null);
+const diagnosticsExporting = ref(false);
+
+const availableVersion = computed(() =>
+  updateStatus.value?.status === "available" ? updateStatus.value.version : "",
+);
 
 const autostartLoading = ref(false);
 
@@ -117,6 +129,7 @@ onMounted(async () => {
   } catch {
     appStore.autostart = false;
   }
+  stagedUpdate.value = await updateApi.staged().catch(() => null);
 
   const onGeoChanged = () => {
     void geodataApi.status().then((s) => (geo.value = s)).catch(() => {});
@@ -125,6 +138,8 @@ onMounted(async () => {
   // 本页 geodata 更新仍为页面级监听（仅设置页关注）。
   unlisteners = [
     await listen("geodata-updated", onGeoChanged),
+    // 启动后的静默检查发现新版本：刷新本页的更新状态（后端已缓存验签材料）
+    await listen("update-available", () => void onCheckUpdate(true)),
   ];
 
   // 容器宽度驱动 tabs 布局（ResizeObserver，无需第三方库）。
@@ -305,6 +320,70 @@ async function onExportConfig() {
   }
 }
 
+/** 检查更新。silent=true（由后台事件触发）时不弹成功 / 失败提示。 */
+async function onCheckUpdate(silent = false) {
+  updateChecking.value = true;
+  try {
+    updateStatus.value = await updateApi.check();
+    if (!silent && updateStatus.value.status === "up_to_date") {
+      ElMessage.success(t("about.up_to_date"));
+    }
+  } catch (e) {
+    if (!silent) ElMessage.error(t("about.update_failed", { error: String(e) }));
+  } finally {
+    updateChecking.value = false;
+  }
+}
+
+async function onDownloadUpdate() {
+  updateDownloading.value = true;
+  try {
+    stagedUpdate.value = await updateApi.download();
+    ElMessage.success(t("about.staged_ready", { version: stagedUpdate.value.version }));
+  } catch (e) {
+    ElMessage.error(t("about.update_failed", { error: String(e) }));
+  } finally {
+    updateDownloading.value = false;
+  }
+}
+
+async function onDiscardUpdate() {
+  try {
+    await updateApi.discard();
+    stagedUpdate.value = null;
+    ElMessage.success(t("about.discarded_staged"));
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+
+async function onRestartApply() {
+  try {
+    await ElMessageBox.confirm(t("about.restart_apply_confirm"), t("common.confirm"), {
+      type: "warning",
+    });
+  } catch {
+    return;
+  }
+  try {
+    await updateApi.restartAndApply(); // 成功时本进程即将退出
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
+}
+
+async function onExportDiagnostics() {
+  diagnosticsExporting.value = true;
+  try {
+    const path = await utilApi.exportDiagnostics();
+    ElMessage.success(`${t("about.diagnostics_done")}${path}`);
+  } catch (e) {
+    ElMessage.error(String(e));
+  } finally {
+    diagnosticsExporting.value = false;
+  }
+}
+
 async function onUpdateGeo() {
   geoUpdating.value = true;
   try {
@@ -442,6 +521,14 @@ async function onUpdateGeo() {
           </div>
           <div class="pref-row">
             <div class="pref-info">
+              <div class="pref-title">{{ $t("general.auto_check_update") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg['auto-check-update']" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
               <div class="pref-title">{{ $t("general.proxy_mode") }}</div>
               <div class="pref-hint">{{ $t("general.proxy_mode_hint") }}</div>
             </div>
@@ -479,10 +566,11 @@ async function onUpdateGeo() {
         <div class="pref-list">
           <div class="pref-row">
             <div class="pref-info">
-              <div class="pref-title">{{ $t("proxy.config_mixin") }}</div>
+              <div class="pref-title">{{ $t("general.sniffer") }}</div>
+              <div class="pref-hint">{{ $t("general.sniffer_hint") }}</div>
             </div>
             <div class="pref-control">
-              <el-switch v-model="cfg['mixin-enabled']" />
+              <el-switch v-model="cfg.sniffer" />
             </div>
           </div>
           <div class="pref-row">
@@ -548,6 +636,14 @@ async function onUpdateGeo() {
           </div>
           <div class="pref-row">
             <div class="pref-info">
+              <div class="pref-title">{{ $t("tun.strict_route") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-switch v-model="cfg.tun['strict-route']" />
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
               <div class="pref-title">{{ $t("tun.interface_name") }}</div>
             </div>
             <div class="pref-control">
@@ -608,14 +704,6 @@ async function onUpdateGeo() {
           </div>
           <div class="pref-row">
             <div class="pref-info">
-              <div class="pref-title">{{ $t("advanced.geox_url") }}</div>
-            </div>
-            <div class="pref-control pref-control-wide">
-              <el-input v-model="cfg.advanced['geox-url']" clearable />
-            </div>
-          </div>
-          <div class="pref-row">
-            <div class="pref-info">
               <div class="pref-title">{{ $t("advanced.geoip_url") }}</div>
             </div>
             <div class="pref-control pref-control-wide">
@@ -669,6 +757,53 @@ async function onUpdateGeo() {
             {{ coreStore.status.version ?? "—" }}
           </el-descriptions-item>
         </el-descriptions>
+
+        <div class="pref-list about-actions">
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("about.check_update") }}</div>
+              <div v-if="availableVersion" class="pref-hint">
+                {{ $t("about.new_version", { version: availableVersion }) }}
+              </div>
+              <div v-else-if="updateStatus?.status === 'up_to_date'" class="pref-hint">
+                {{ $t("about.up_to_date") }}
+              </div>
+              <div v-if="stagedUpdate" class="pref-hint">
+                {{ $t("about.staged_ready", { version: stagedUpdate.version }) }}
+                · {{ $t("about.update_staged", { version: stagedUpdate.version }) }}
+              </div>
+            </div>
+            <div class="pref-control about-buttons">
+              <el-button :loading="updateChecking" @click="onCheckUpdate(false)">
+                {{ updateChecking ? $t("about.checking") : $t("about.check_now") }}
+              </el-button>
+              <el-button
+                v-if="availableVersion && !stagedUpdate"
+                type="primary"
+                :loading="updateDownloading"
+                @click="onDownloadUpdate"
+              >
+                {{ updateDownloading ? $t("about.downloading") : $t("about.download_btn") }}
+              </el-button>
+              <el-button v-if="stagedUpdate" type="primary" @click="onRestartApply">
+                {{ $t("about.restart_apply") }}
+              </el-button>
+              <el-button v-if="stagedUpdate" plain @click="onDiscardUpdate">
+                {{ $t("about.discard_staged") }}
+              </el-button>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{{ $t("about.export_diagnostics") }}</div>
+            </div>
+            <div class="pref-control">
+              <el-button :loading="diagnosticsExporting" @click="onExportDiagnostics">
+                {{ $t("about.export_diagnostics") }}
+              </el-button>
+            </div>
+          </div>
+        </div>
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -692,6 +827,17 @@ async function onUpdateGeo() {
  * 标题(+副文本) 居左、控件 居右，细分隔线分行；去"表单"感。 */
 .pref-list {
   max-width: 680px;
+}
+
+.about-actions {
+  margin-top: 16px;
+}
+
+.about-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .pref-row {

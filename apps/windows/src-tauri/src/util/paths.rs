@@ -304,24 +304,15 @@ pub fn get_logs_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
     Ok(logs_dir)
 }
 
-/// 获取 GeoData 目录
-pub fn get_geodata_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
-    let data_dir = get_app_data_dir(app_handle)?;
-    let geodata_dir = data_dir.join("geodata");
-    std::fs::create_dir_all(&geodata_dir)?;
-    Ok(geodata_dir)
-}
-
-/// 获取 GeoIP 文件路径
+/// GeoIP 文件路径：mihomo 以 `-d <Data>` 启动，只读取 Data 根目录下的 `GeoIP.dat`
+/// （审计 B3：旧实现写到 `Data/geodata/`，mihomo 永远读不到）。
 pub fn get_geoip_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
-    let geodata_dir = get_geodata_dir(app_handle)?;
-    Ok(geodata_dir.join("geoip.dat"))
+    Ok(get_app_data_dir(app_handle)?.join("GeoIP.dat"))
 }
 
-/// 获取 GeoSite 文件路径
+/// GeoSite 文件路径（同上，Data 根目录下的 `GeoSite.dat`）
 pub fn get_geosite_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
-    let geodata_dir = get_geodata_dir(app_handle)?;
-    Ok(geodata_dir.join("geosite.dat"))
+    Ok(get_app_data_dir(app_handle)?.join("GeoSite.dat"))
 }
 
 /// 在资源管理器中打开目录

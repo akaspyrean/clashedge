@@ -8,7 +8,7 @@
 //! 而不是 OS 日志目录 `%APPDATA%`（否则整体复制/换电脑后日志散落在用户目录）。
 
 use log::LevelFilter;
-use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
 /// 构建日志插件（供 main.rs 的 `.plugin(...)` 使用）
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -36,9 +36,25 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         targets.push(Target::new(TargetKind::LogDir { file_name: None }));
     }
 
+    // 应用自身日志级别：debug 构建 Debug；release 默认 Info。
+    // 排查问题时可设置环境变量 `CLASH_EDGE_LOG=debug`（或 trace）开启诊断级别。
+    let app_level = match std::env::var("CLASH_EDGE_LOG")
+        .map(|v| v.to_ascii_lowercase())
+        .as_deref()
+    {
+        Ok("trace") => LevelFilter::Trace,
+        Ok("debug") => LevelFilter::Debug,
+        _ if cfg!(debug_assertions) => LevelFilter::Debug,
+        _ => LevelFilter::Info,
+    };
+
     tauri_plugin_log::Builder::new()
         .targets(targets)
-        .level_for("clash_edge", LevelFilter::Debug)
+        // 默认单文件上限很小，且只保留 1 份，崩溃现场很快被轮转掉；
+        // 显式设置 2 MiB 并保留最近 5 份。
+        .max_file_size(2 * 1024 * 1024)
+        .rotation_strategy(RotationStrategy::KeepSome(5))
+        .level_for("clash_edge", app_level)
         .level(LevelFilter::Info)
         .build()
 }

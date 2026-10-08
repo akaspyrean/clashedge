@@ -38,18 +38,23 @@ pub fn redact_url_for_log(url: &str) -> String {
     }
 }
 
-/// SSRF 防护：校验目标 URL 是否允许被拉取（异步，含非 IP 主机名 DNS 检查）。
+/// SSRF 防护：校验目标 URL 是否允许被拉取（异步，含非 IP 主机名 DNS 检查），
+/// 并感知 TUN + fake-ip 场景（审计 A3）。
 ///
-/// 拒绝：
-/// - 非 http/https scheme；
-/// - `localhost` / `*.localhost` / `*.local` 主机名；
-/// - 字面 IP 不是全球可路由公网地址（严格白名单，见 `is_globally_routable`）；
-/// - 非 IP 主机名解析出的地址中**只要存在**任一非全球地址即拒绝
-///   （防止 DNS rebinding / 混合解析绕过）；
-/// - DNS 解析失败即拒绝（不保守放行，防止 DNS 故障时放行内网地址）。
+/// 拒绝：非 http/https scheme、`localhost` / `*.localhost` / `*.local`、非全球可路由的
+/// 字面 IP、解析结果中**任一**非全球地址（防 DNS rebinding / 混合解析）、DNS 失败
+/// （fail-closed）。返回已校验的解析地址列表（供调用方钉定连接，关闭 TOCTOU）。
 ///
-/// 返回已校验的解析地址列表（供调用方钉定连接，关闭 TOCTOU）。
-pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
+/// 开启 TUN 且 `dns.enhanced-mode: fake-ip` 时，本机系统解析会被 mihomo 劫持，
+/// 非字面 IP 的主机名一律解析到 `fake_ip` 段（默认 198.18.0.0/16，属于
+/// "非全球可路由"）。此时**解析结果全部落在 fake-ip 段**被视为"尚未解析的域名"：
+/// 返回**空列表**（不可钉定），调用方必须改走本地代理并把域名交给 mihomo 解析
+/// （`socks5h`），而不是把假地址当作真实目标。scheme / 主机名黑名单与字面 IP
+/// 白名单不受影响；解析结果混入非 fake-ip 的内网地址仍然整体拒绝。
+pub async fn validate_url_with(
+    url: &str,
+    fake_ip: Option<&ipnet::IpNet>,
+) -> Result<Vec<SocketAddr>> {
     validate_url_sync(url)?;
     let parsed =
         Url::parse(url).map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
@@ -80,6 +85,9 @@ pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
             host
         )));
     }
+    if all_in_fake_ip_range(&addrs, fake_ip) {
+        return Ok(Vec::new());
+    }
     // DNS rebinding / 混合解析防护：只要存在任一非全球可路由地址即整体拒绝
     ensure_all_globally_routable(host, &addrs)?;
     // Windows/代理链对 IPv4 的可用性通常更稳定；优先尝试 IPv4，但保留全部
@@ -87,6 +95,15 @@ pub async fn validate_url(url: &str) -> Result<Vec<SocketAddr>> {
     addrs.sort_by_key(|addr| addr.is_ipv6());
     addrs.dedup();
     Ok(addrs)
+}
+
+/// 解析结果是否**全部**落在 fake-ip 段内（纯函数，便于单测）。
+/// `fake_ip` 为 None（未启用 TUN + fake-ip）时恒为 false。
+fn all_in_fake_ip_range(addrs: &[SocketAddr], fake_ip: Option<&ipnet::IpNet>) -> bool {
+    match fake_ip {
+        Some(net) => !addrs.is_empty() && addrs.iter().all(|a| net.contains(&a.ip())),
+        None => false,
+    }
 }
 
 /// DNS 校验循环（独立成函数便于单测）：解析结果中只要存在任一非全球可路由
@@ -461,12 +478,31 @@ mod tests {
         );
     }
 
+    /// A3：fake-ip 判定只在显式传入 fake-ip 段且解析结果全部落入时成立。
+    #[test]
+    fn fake_ip_range_detection() {
+        let net: ipnet::IpNet = "198.18.0.1/16".parse().unwrap();
+        let fake = SocketAddr::new(Ipv4Addr::new(198, 18, 3, 4).into(), 443);
+        let real = SocketAddr::new(Ipv4Addr::new(8, 8, 8, 8).into(), 443);
+        let private = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 5).into(), 443);
+        assert!(all_in_fake_ip_range(&[fake], Some(&net)));
+        // 未启用 fake-ip：198.18.x.x 仍按"非全球可路由"拒绝
+        assert!(!all_in_fake_ip_range(&[fake], None));
+        assert!(ensure_all_globally_routable("h", &[fake]).is_err());
+        // 混入真实/内网地址：不算 fake-ip，走严格校验
+        assert!(!all_in_fake_ip_range(&[fake, real], Some(&net)));
+        assert!(!all_in_fake_ip_range(&[private], Some(&net)));
+        assert!(ensure_all_globally_routable("h", &[fake, private]).is_err());
+        assert!(!all_in_fake_ip_range(&[], Some(&net)));
+    }
+
     /// DNS 失败 fail-closed：不存在的域名必须拒绝（不能保守放行）。
     /// 依赖 `.invalid` TLD（RFC 2606 保留、不会分配）本地解析失败；若 CI
     /// 环境存在 DNS 劫持/通配解析导致解析"成功"，请给本测试加 `#[ignore]`。
     #[tokio::test]
     async fn validate_url_rejects_unresolvable_host() {
-        let result = validate_url("http://nonexistent-host-clashedge-test.invalid/").await;
+        let result =
+            validate_url_with("http://nonexistent-host-clashedge-test.invalid/", None).await;
         assert!(
             result.is_err(),
             "unresolvable host must be rejected (fail-closed), got {:?}",

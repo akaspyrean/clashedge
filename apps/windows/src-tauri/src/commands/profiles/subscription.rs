@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
 use super::files::{profile_path, temp_path_for};
-use super::validate::validate_subscription_content;
+use super::validate::{validate_profile_strict, validate_subscription_content};
 use crate::util::error::{Error, Result};
 use crate::util::paths::get_profiles_dir;
 
@@ -40,16 +40,146 @@ pub(super) fn extract_subscribe_url(content: &str) -> Option<String> {
     })
 }
 
-/// 去掉 `# subscribe-url:` 注释头，返回订阅正文（供归一化解析）。
+/// 去掉 `# subscribe-url:` / `# subscription-userinfo:` / `# subscribe-user-agent:`
+/// 注释头，返回订阅正文（供归一化解析；Base64 订阅不能夹杂注释行）。
 pub(super) fn strip_subscribe_header(content: &str) -> String {
     content
         .lines()
         .filter(|l| {
             let t = l.trim_start();
-            !(t.starts_with("# subscribe-url:") || t.starts_with("#subscribe-url:"))
+            !(t.starts_with("# subscribe-url:")
+                || t.starts_with("#subscribe-url:")
+                || t.starts_with("# subscription-userinfo:")
+                || t.starts_with("# subscribe-user-agent:")
+                || t.starts_with("#subscribe-user-agent:"))
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// 只读取 profile 文件开头的一小段（头注释都在文件最前面）。
+/// `list_profiles` / 静默刷新不再把最大 10 MB 的订阅整个读进内存只为取一行 URL。
+pub(super) fn read_profile_head(path: &Path) -> String {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let mut buf = vec![0u8; 4096];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf.truncate(n);
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+/// 从 profile 头注释提取 `Subscription-Userinfo`（`upload=..; download=..; total=..; expire=..`）。
+pub(super) fn extract_subscription_userinfo(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("# subscription-userinfo:")?;
+        let v = rest.trim();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.to_string())
+        }
+    })
+}
+
+/// 从 profile 头注释提取自定义 User-Agent（`# subscribe-user-agent: <ua>`，
+/// 审计 B7：部分服务端按 UA 决定返回格式，允许为单个订阅覆盖）。
+pub(super) fn extract_subscribe_user_agent(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let line = line.trim();
+        let rest = line
+            .strip_prefix("# subscribe-user-agent:")
+            .or_else(|| line.strip_prefix("#subscribe-user-agent:"))?;
+        let v = rest.trim();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.to_string())
+        }
+    })
+}
+
+/// 自定义 User-Agent 白名单净化：仅保留可见 ASCII（0x20–0x7E），删除控制字符
+/// 与 DEL（防止头注释注入换行、HTTP 头注入与 `HeaderValue` 构造失败），
+/// 限长 200；trim 后非空才有效，空/全不可用返回 None（回到内置默认 UA）。
+pub(super) fn sanitize_user_agent(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| ('\x20'..='\x7e').contains(c))
+        .take(200)
+        .collect();
+    let cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// 响应头 `Subscription-Userinfo` 白名单净化：仅保留数字 / 字母 / `=;. _-`，
+/// 限长，防止头注释注入换行或超长内容。
+pub(super) fn sanitize_userinfo(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '=' | ';' | '.' | ' ' | '_' | '-'))
+        .take(200)
+        .collect();
+    let cleaned = cleaned.trim().to_string();
+    if cleaned.contains('=') {
+        Some(cleaned)
+    } else {
+        None
+    }
+}
+
+/// 组装 profile 头注释（订阅地址 + 可选流量信息 + 可选自定义 UA）。
+pub(super) fn build_header(url: &str, userinfo: Option<&str>, user_agent: Option<&str>) -> String {
+    let mut h = format!("# subscribe-url: {}\n", url);
+    if let Some(u) = userinfo {
+        h.push_str(&format!("# subscription-userinfo: {}\n", u));
+    }
+    if let Some(ua) = user_agent {
+        h.push_str(&format!("# subscribe-user-agent: {}\n", ua));
+    }
+    h
+}
+
+/// 更新 profile 头注释中的自定义 User-Agent 行（纯函数，可测）：
+/// - `Some(ua)`：替换既有行，或插入到 `# subscribe-url:` 行之后（无则插到最前）；
+/// - `None`：移除该行（回到内置默认 UA）。
+///
+/// 保留原文的结尾换行风格。
+pub(super) fn apply_header_user_agent(content: &str, user_agent: Option<&str>) -> String {
+    let ends_with_newline = content.ends_with('\n');
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let ua_idx = lines.iter().position(|l| {
+        let t = l.trim_start();
+        t.starts_with("# subscribe-user-agent:") || t.starts_with("#subscribe-user-agent:")
+    });
+    match (user_agent, ua_idx) {
+        (Some(ua), Some(i)) => lines[i] = format!("# subscribe-user-agent: {}", ua),
+        (Some(ua), None) => {
+            let insert_at = lines
+                .iter()
+                .position(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("# subscribe-url:") || t.starts_with("#subscribe-url:")
+                })
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            lines.insert(insert_at, format!("# subscribe-user-agent: {}", ua));
+        }
+        (None, Some(i)) => {
+            lines.remove(i);
+        }
+        (None, None) => {}
+    }
+    let mut out = lines.join("\n");
+    if ends_with_newline {
+        out.push('\n');
+    }
+    out
 }
 
 /// 归一化订阅正文为 proxies-only 的 YAML 文档（Subscription Normalizer）。
@@ -90,14 +220,33 @@ pub(super) fn redact_subscribe_url(url: &str) -> Option<String> {
 ///   避免 `resp.text().await` 把恶意超大响应先整个读进内存。
 /// - `header` 先行写入临时文件（订阅地址注释头，供「更新」命令读回 URL）；
 ///   其字节数计入总量上限。
+///
+/// 失败（含下载中途的读写错误）时一律删除临时文件，不留 `.tmp.*` 残留。
+/// 成功返回响应头里的（已净化）`Subscription-Userinfo`。
 pub(super) async fn download_subscription_streaming(
     app: &AppHandle,
     url: &str,
     header: &str,
     temp_path: &Path,
-) -> Result<()> {
-    // 拉取动作直连优先：直连不通自动切应用自身代理兜底（软件代理模式不变）
-    let mut resp = crate::util::fetch::get_direct_first(app, url).await?;
+    user_agent: Option<&str>,
+) -> Result<Option<String>> {
+    let result = download_subscription_inner(app, url, header, temp_path, user_agent).await;
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_path);
+    }
+    result
+}
+
+async fn download_subscription_inner(
+    app: &AppHandle,
+    url: &str,
+    header: &str,
+    temp_path: &Path,
+    user_agent: Option<&str>,
+) -> Result<Option<String>> {
+    // 拉取动作直连优先：直连不通自动切应用自身代理兜底（软件代理模式不变）。
+    // 单个订阅可覆盖 User-Agent（审计 B7）；None 用内置 mihomo 兼容 UA。
+    let mut resp = crate::util::fetch::get_direct_first_with_ua(app, url, user_agent).await?;
 
     if !resp.status().is_success() {
         return Err(Error::Other(format!(
@@ -114,6 +263,12 @@ pub(super) async fn download_subscription_streaming(
             )));
         }
     }
+
+    let userinfo = resp
+        .headers()
+        .get("subscription-userinfo")
+        .and_then(|v| v.to_str().ok())
+        .and_then(sanitize_userinfo);
 
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -135,7 +290,7 @@ pub(super) async fn download_subscription_streaming(
         file.write_all(&chunk)?;
     }
     file.flush()?;
-    Ok(())
+    Ok(userinfo)
 }
 
 /// 订阅刷新核心逻辑（供命令与启动时静默刷新共用）：重新拉取订阅内容
@@ -151,6 +306,8 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     let content = std::fs::read_to_string(&file_path)?;
     let url = extract_subscribe_url(&content)
         .ok_or_else(|| Error::NotFound("Profile has no subscription URL".to_string()))?;
+    // 单个订阅的自定义 UA（审计 B7）：头注释携带，随刷新持久保留
+    let custom_ua = extract_subscribe_user_agent(&content);
 
     // 校验 scheme（与导入一致）
     let parsed = reqwest::Url::parse(&url)
@@ -164,8 +321,8 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         }
     }
 
-    // C2 SSRF 防护：parse+scheme 校验后再做禁段校验
-    crate::util::fetch::validate_url(&url).await?;
+    // C2 SSRF 防护：parse+scheme 校验后再做禁段校验（感知 TUN + fake-ip，见 A3）
+    crate::util::fetch::validate_url_app(app, &url).await?;
 
     info!("Updating subscription from {}", redact_url(&url));
 
@@ -174,8 +331,12 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     // URL 用规范化后的 parsed.as_str()，防止原始字符串反射注入。
     // 此阶段任何失败都不触碰现有文件，原订阅保持可用。
     let temp_path = temp_path_for(&file_path);
-    let header = format!("# subscribe-url: {}\n", parsed.as_str());
-    download_subscription_streaming(app, &url, &header, &temp_path).await?;
+    // RAII：任何提前返回（含 `?`）都会清理临时文件（成功提交后文件已被 rename 走，删除为空操作）
+    let _temp_guard = crate::util::temp::TempFile::new(temp_path.clone());
+    let header = build_header(parsed.as_str(), None, custom_ua.as_deref());
+    let userinfo =
+        download_subscription_streaming(app, &url, &header, &temp_path, custom_ua.as_deref())
+            .await?;
 
     // 内容校验在替换前完成；失败则清理临时文件并返回 Err
     let text = match std::fs::read_to_string(&temp_path) {
@@ -201,8 +362,12 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     if !warnings.is_empty() {
         warn!("Update '{}': {}", redact_url(&url), warnings.join("；"));
     }
-    let final_text = format!("# subscribe-url: {}\n{}", parsed.as_str(), normalized);
-    if let Err(e) = validate_subscription_content(&final_text) {
+    let final_text = format!(
+        "{}{}",
+        build_header(parsed.as_str(), userinfo.as_deref(), custom_ua.as_deref()),
+        normalized
+    );
+    if let Err(e) = validate_profile_strict(&final_text) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(e);
     }
@@ -300,9 +465,7 @@ pub async fn auto_refresh_stale_subscriptions(app: &AppHandle) {
                 None
             }
         };
-        let has_url = std::fs::read_to_string(&path)
-            .map(|c| extract_subscribe_url(&c).is_some())
-            .unwrap_or(false);
+        let has_url = extract_subscribe_url(&read_profile_head(&path)).is_some();
         candidates.push((name, has_url, mtime));
     }
 
@@ -334,6 +497,110 @@ mod tests {
         assert_eq!(redact_url("https://host/path"), "https://host/…");
         // 解析失败不泄露原始串
         assert_eq!(redact_url("not a url \n bad"), "***");
+    }
+
+    #[test]
+    fn userinfo_is_sanitized_and_roundtrips_through_header() {
+        let raw = "upload=1; download=2; total=3; expire=4\r\n# evil: x";
+        let clean = sanitize_userinfo(raw).unwrap();
+        assert!(!clean.contains('\n') && !clean.contains('#') && !clean.contains(':'));
+        let header = build_header("https://h.example/sub", Some(&clean), None);
+        assert_eq!(
+            extract_subscribe_url(&header).as_deref(),
+            Some("https://h.example/sub")
+        );
+        assert_eq!(
+            extract_subscription_userinfo(&header).as_deref(),
+            Some(clean.as_str())
+        );
+        // 头注释不进入正文
+        let body = strip_subscribe_header(&format!("{}proxies: []\n", header));
+        assert!(!body.contains("subscription-userinfo") && body.contains("proxies"));
+        assert!(sanitize_userinfo("no equals sign").is_none());
+    }
+
+    // ---- 单个订阅自定义 User-Agent（审计 B7）----
+
+    /// 净化：删除控制字符/换行（防头注释与 HTTP 头注入）、限长、trim；
+    /// 空 / 全不可用返回 None。
+    #[test]
+    fn user_agent_is_sanitized_and_rejects_unusable() {
+        let raw = "ClashEdge/1.0\r\nX-Evil: injected";
+        let clean = sanitize_user_agent(raw).unwrap();
+        assert!(!clean.contains('\n') && !clean.contains('\r'));
+        assert_eq!(clean, "ClashEdge/1.0X-Evil: injected");
+        // 非可见 ASCII（DEL / 控制字符）被删除
+        assert_eq!(
+            sanitize_user_agent("a\u{7f}b\u{1}c").as_deref(),
+            Some("abc")
+        );
+        // 限长 200
+        let long = "x".repeat(300);
+        assert_eq!(sanitize_user_agent(&long).map(|s| s.len()), Some(200));
+        // 空与全不可用
+        assert!(sanitize_user_agent("").is_none());
+        assert!(sanitize_user_agent("   ").is_none());
+        assert!(sanitize_user_agent("\r\n\u{1}").is_none());
+    }
+
+    /// 头注释 roundtrip：build → extract → strip（UA 行不进入正文）
+    #[test]
+    fn user_agent_roundtrips_through_header() {
+        let header = build_header(
+            "https://h.example/sub",
+            Some("upload=1; total=2"),
+            Some("ClashEdge/1.0 (custom)"),
+        );
+        assert_eq!(
+            extract_subscribe_url(&header).as_deref(),
+            Some("https://h.example/sub")
+        );
+        assert_eq!(
+            extract_subscribe_user_agent(&header).as_deref(),
+            Some("ClashEdge/1.0 (custom)")
+        );
+        let body = strip_subscribe_header(&format!("{}proxies: []\n", header));
+        assert!(!body.contains("subscribe-user-agent"));
+        assert!(!body.contains("subscription-userinfo"));
+        assert!(body.contains("proxies"));
+        // 无 UA 行：extract 返回 None
+        assert!(extract_subscribe_user_agent("# subscribe-url: https://h/").is_none());
+    }
+
+    /// apply_header_user_agent：替换既有行 / 插入到 subscribe-url 之后 / None 移除，
+    /// 且保留结尾换行风格。
+    #[test]
+    fn header_user_agent_replace_insert_and_remove() {
+        // 替换既有行
+        let doc = "# subscribe-url: https://h/\n# subscribe-user-agent: old\nproxies: []\n";
+        let out = apply_header_user_agent(doc, Some("new"));
+        assert_eq!(
+            out,
+            "# subscribe-url: https://h/\n# subscribe-user-agent: new\nproxies: []\n"
+        );
+        // 插入到 subscribe-url 行之后
+        let doc = "# subscribe-url: https://h/\nproxies: []\n";
+        let out = apply_header_user_agent(doc, Some("custom"));
+        assert_eq!(
+            out,
+            "# subscribe-url: https://h/\n# subscribe-user-agent: custom\nproxies: []\n"
+        );
+        // 移除既有行
+        let out = apply_header_user_agent(
+            "# subscribe-url: https://h/\n# subscribe-user-agent: old\nproxies: []\n",
+            None,
+        );
+        assert_eq!(out, "# subscribe-url: https://h/\nproxies: []\n");
+        // 无行可移除：原文不变
+        assert_eq!(
+            apply_header_user_agent("proxies: []\n", None),
+            "proxies: []\n"
+        );
+        // 无 subscribe-url 行时插到最前
+        assert_eq!(
+            apply_header_user_agent("proxies: []", Some("u")),
+            "# subscribe-user-agent: u\nproxies: []"
+        );
     }
 
     // ---- 启动时一次性订阅静默刷新 ----

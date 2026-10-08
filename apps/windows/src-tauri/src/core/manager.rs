@@ -106,6 +106,9 @@ pub struct CoreManager {
     pub(super) crash_times: Arc<Mutex<Vec<std::time::Instant>>>,
     /// 当前子进程的启动时刻（稳定运行判定用）
     pub(super) started_at: Arc<Mutex<Option<std::time::Instant>>>,
+    /// 最近一次成功应用到运行中核心的 runtime-config 内容哈希。
+    /// reload 时哈希未变则跳过热重载（审计 B8）。
+    pub(super) applied_hash: Arc<Mutex<Option<String>>>,
     /// 生命周期互斥锁：start/stop/restart/reload_config 串行执行，
     /// 只读 REST 操作（get_connections/get_proxy_groups/version 等）不需要此锁。
     pub(super) lifecycle: tokio::sync::Mutex<()>,
@@ -155,6 +158,7 @@ impl CoreManager {
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             crash_times: Arc::new(Mutex::new(Vec::new())),
             started_at: Arc::new(Mutex::new(None)),
+            applied_hash: Arc::new(Mutex::new(None)),
             lifecycle: tokio::sync::Mutex::new(()),
         })
     }

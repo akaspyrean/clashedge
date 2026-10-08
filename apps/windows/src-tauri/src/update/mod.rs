@@ -20,6 +20,11 @@
 //! 启动器带更新事务 journal，断电可恢复；Data/ 永不被替换）
 //! ```
 //!
+//! 暂存目录同时保存已验签的 `manifest.json` + `manifest.minisig`。启动器（.NET
+//! Framework，没有 Ed25519）在应用更新前调用**当前已安装**的内层程序
+//! `ClashEdge.exe --verify-staged <staging>` 重新验签并核对 ZIP 的 SHA256，
+//! 使 `pending.json` 里的哈希与签名信任链绑定，而不是只信 `pending.json` 自带的值。
+//!
 //! 安全边界：
 //! - 签名不是 optional：公钥未配置或验签失败时更新功能整体不可用；
 //! - 前端传入的 version/url/hash 一律不信任——`download_update` 命令无参数，
@@ -47,6 +52,10 @@ pub const UPDATE_PUBLIC_KEY: &str = match option_env!("CLASHEDGE_UPDATE_PUBKEY")
     None => "",
 };
 
+/// 更新包下载地址必须落在本仓库的 Release 下载路径（纵深防御：清单已验签，
+/// 但签名密钥一旦泄露也不能把客户端导向任意主机）。
+pub const DOWNLOAD_URL_PREFIX: &str = "https://github.com/akaspyrean/clashedge/releases/download/";
+
 /// 单次下载大小上限（便携包 ZIP 正常 <100 MB）
 const MAX_UPDATE_BYTES: u64 = 300 * 1024 * 1024;
 /// 整体下载 deadline
@@ -61,6 +70,25 @@ pub struct UpdateManifest {
     pub sha256: String,
     #[serde(default)]
     pub notes: String,
+    /// 发布时间（unix 秒，信息性字段；由发布脚本写入）
+    #[serde(default)]
+    pub released_at: u64,
+}
+
+/// 已验签的清单及其原始字节 / 签名文本（暂存时原样落盘供启动器复验）。
+#[derive(Debug, Clone)]
+pub struct VerifiedUpdate {
+    pub manifest: UpdateManifest,
+    pub raw: Vec<u8>,
+    pub signature: String,
+    pub at: std::time::Instant,
+}
+
+/// 检查结果 + 验签材料
+pub struct CheckOutcome {
+    pub status: UpdateStatus,
+    pub raw: Vec<u8>,
+    pub signature: String,
 }
 
 /// 检查结果
@@ -161,7 +189,7 @@ async fn fetch_signature_text(app: &tauri::AppHandle) -> Result<String> {
 /// 检查更新：下载 manifest + 签名 → 验签 → 解析比较版本。
 /// 签名无效 / 清单非法 / 网络失败一律返回 Err——不假装"已是最新"。
 /// 成功返回的 manifest 已通过信任链，可直接用于下载暂存。
-pub async fn check_for_update(app: &tauri::AppHandle) -> Result<UpdateStatus> {
+pub async fn check_for_update(app: &tauri::AppHandle) -> Result<CheckOutcome> {
     if UPDATE_PUBLIC_KEY.trim().is_empty() {
         return Err(Error::Other(
             "自动更新不可用：客户端未内置更新公钥（构建配置缺失）".to_string(),
@@ -191,8 +219,16 @@ pub async fn check_for_update(app: &tauri::AppHandle) -> Result<UpdateStatus> {
             "update manifest missing url or sha256".to_string(),
         ));
     }
+    if !manifest.url.starts_with(DOWNLOAD_URL_PREFIX) {
+        return Err(Error::Other(format!(
+            "update manifest url is outside the release download path: {}",
+            crate::util::fetch::redact_url_for_log(&manifest.url)
+        )));
+    }
+    // 回滚防护：拒绝比本机已见过的最高版本更旧的（重放的）已签名清单。
+    guard_against_rollback(app, &manifest.version)?;
     // SSRF：manifest 的 url 也必须过禁段校验（下载时 get_direct_first 还会再验）
-    crate::util::fetch::validate_url(&manifest.url).await?;
+    crate::util::fetch::validate_url_app(app, &manifest.url).await?;
 
     info!(
         "Update manifest signature verified (v{}, sha256 {}...)",
@@ -201,11 +237,65 @@ pub async fn check_for_update(app: &tauri::AppHandle) -> Result<UpdateStatus> {
     );
 
     let current = current_version().to_string();
-    if is_newer(&manifest.version, &current) {
-        Ok(UpdateStatus::Available { current, manifest })
+    let status = if is_newer(&manifest.version, &current) {
+        UpdateStatus::Available { current, manifest }
     } else {
-        Ok(UpdateStatus::UpToDate { current })
+        UpdateStatus::UpToDate { current }
+    };
+    Ok(CheckOutcome {
+        status,
+        raw: manifest_bytes.to_vec(),
+        signature: sig_text,
+    })
+}
+
+/// 记录并检查本机见过的最高清单版本（`Data/update-state.json`）。
+fn guard_against_rollback(app: &tauri::AppHandle, version: &str) -> Result<()> {
+    let path = crate::util::paths::get_app_data_dir(app)?.join("update-state.json");
+    let seen: Option<String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| {
+            v.get("highest_version")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+        });
+    if let (Some(seen), Some(new)) = (
+        seen.as_deref().and_then(parse_version),
+        parse_version(version),
+    ) {
+        if new < seen {
+            return Err(Error::Other(format!(
+                "update manifest v{} is older than a previously seen v{}; rejected (rollback protection)",
+                version,
+                seen.0.to_string() + "." + &seen.1.to_string() + "." + &seen.2.to_string()
+            )));
+        }
     }
+    let record = match (
+        seen.as_deref().and_then(parse_version),
+        parse_version(version),
+    ) {
+        (Some(s), Some(n)) if s >= n => seen.unwrap_or_else(|| version.to_string()),
+        _ => version.to_string(),
+    };
+    let body = serde_json::json!({ "highest_version": record });
+    let _ = crate::util::atomic::atomic_write(&path, body.to_string().as_bytes());
+    Ok(())
+}
+
+/// 版本号作为文件名片段：只允许 `[0-9A-Za-z._-]`，其余替换为 `_`。
+fn safe_version_component(v: &str) -> String {
+    v.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(32)
+        .collect()
 }
 
 /// 暂存目录：Data/update-staging/
@@ -234,10 +324,14 @@ pub fn clear_staging(app: &tauri::AppHandle) {
 /// → 写 pending.json。任何一步失败都清理暂存并返回 Err。
 pub async fn download_and_stage(
     app: &tauri::AppHandle,
-    manifest: &UpdateManifest,
+    verified: &VerifiedUpdate,
 ) -> Result<PendingUpdate> {
+    let manifest = &verified.manifest;
     let dir = staging_dir(app)?;
-    let zip_path = dir.join(format!("ClashEdge-{}.zip", manifest.version));
+    let zip_path = dir.join(format!(
+        "ClashEdge-{}.zip",
+        safe_version_component(&manifest.version)
+    ));
     let tmp_path = dir.join("update.zip.download");
 
     // 清掉上次残留的半截下载
@@ -324,8 +418,15 @@ pub async fn download_and_stage(
         zip_path: zip_path.to_string_lossy().to_string(),
         sha256: expected,
     };
+    // 已验签清单原样落盘：启动器据此调用 `--verify-staged` 复验信任链。
+    crate::util::atomic::atomic_write(&dir.join("manifest.json"), &verified.raw)?;
+    crate::util::atomic::atomic_write(
+        &dir.join("manifest.minisig"),
+        verified.signature.as_bytes(),
+    )?;
     let pending_json =
         serde_json::to_string_pretty(&pending).map_err(|e| Error::Other(e.to_string()))?;
+    // pending.json 最后写入：它的存在 = 暂存完整（启动器以它为触发条件）
     crate::util::atomic::atomic_write(&dir.join("pending.json"), pending_json.as_bytes())?;
     info!(
         "Update {} staged and verified (sha256 ok); launcher will apply on next start",
@@ -336,6 +437,113 @@ pub async fn download_and_stage(
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn sha256_file(path: &std::path::Path) -> Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_encode(&hasher.finalize()))
+}
+
+/// 复验暂存目录：签名有效（由 `verify_sig` 决定）、清单 / pending / ZIP 三方
+/// 版本与 SHA256 一致、ZIP 位于暂存目录内。任何不一致 → Err。
+pub fn verify_staged_with<F>(dir: &std::path::Path, verify_sig: F) -> Result<()>
+where
+    F: Fn(&[u8], &str) -> Result<()>,
+{
+    let pending: PendingUpdate = serde_json::from_slice(&std::fs::read(dir.join("pending.json"))?)
+        .map_err(|e| Error::Other(format!("pending.json invalid: {}", e)))?;
+    let raw = std::fs::read(dir.join("manifest.json"))
+        .map_err(|e| Error::Other(format!("staged manifest.json missing: {}", e)))?;
+    let sig = std::fs::read_to_string(dir.join("manifest.minisig"))
+        .map_err(|e| Error::Other(format!("staged manifest.minisig missing: {}", e)))?;
+    verify_sig(&raw, &sig)?;
+    let manifest: UpdateManifest = serde_json::from_slice(&raw)
+        .map_err(|e| Error::Other(format!("staged manifest invalid: {}", e)))?;
+
+    if !manifest.url.starts_with(DOWNLOAD_URL_PREFIX) {
+        return Err(Error::Other(
+            "staged manifest url outside release path".into(),
+        ));
+    }
+    if manifest.version != pending.version {
+        return Err(Error::Other(
+            "staged version differs from signed manifest".into(),
+        ));
+    }
+    if !manifest.sha256.eq_ignore_ascii_case(&pending.sha256) {
+        return Err(Error::Other(
+            "pending sha256 differs from signed manifest".into(),
+        ));
+    }
+    let zip = std::path::PathBuf::from(&pending.zip_path);
+    let zip_canon = std::fs::canonicalize(&zip)?;
+    let dir_canon = std::fs::canonicalize(dir)?;
+    if !zip_canon.starts_with(&dir_canon) {
+        return Err(Error::Other(
+            "staged zip is outside the staging directory".into(),
+        ));
+    }
+    let actual = sha256_file(&zip_canon)?;
+    if !actual.eq_ignore_ascii_case(&manifest.sha256) {
+        return Err(Error::Other(
+            "staged zip sha256 differs from signed manifest".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 命令行入口 `ClashEdge.exe --verify-signature <file> <sig>`：用**编译进本二进制的公钥**
+/// 验证任意文件的 minisign 签名。发布流水线签名后用刚构建出的客户端自己验一遍——
+/// 私钥与内置公钥不配对时，发布出去的所有客户端都会永远验签失败，必须在发布前拦住。
+pub fn cli_verify_signature() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+    let idx = args.iter().position(|a| a == "--verify-signature")?;
+    let (Some(file), Some(sig)) = (args.get(idx + 1), args.get(idx + 2)) else {
+        return Some(2);
+    };
+    let result = std::fs::read(file).map_err(Error::from).and_then(|bytes| {
+        let sig_text = std::fs::read_to_string(sig)?;
+        verify_manifest_signature(UPDATE_PUBLIC_KEY, &bytes, &sig_text)
+    });
+    match result {
+        Ok(()) => Some(0),
+        Err(e) => {
+            let _ = std::fs::write(format!("{}.verify-error.txt", file), e.to_string());
+            Some(1)
+        }
+    }
+}
+
+/// 命令行入口 `ClashEdge.exe --verify-staged <staging-dir>`：由启动器在应用更新前调用。
+/// 返回 `Some(exit_code)` 表示已处理（调用方应直接退出进程），`None` 表示不是该模式。
+/// 失败原因写入 `<staging>/verify-error.txt`（GUI 子系统没有控制台输出）。
+pub fn cli_verify_staged() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+    let idx = args.iter().position(|a| a == "--verify-staged")?;
+    let Some(dir) = args.get(idx + 1) else {
+        return Some(2);
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let result = verify_staged_with(&dir, |raw, sig| {
+        verify_manifest_signature(UPDATE_PUBLIC_KEY, raw, sig)
+    });
+    match result {
+        Ok(()) => Some(0),
+        Err(e) => {
+            let _ = std::fs::write(dir.join("verify-error.txt"), e.to_string());
+            Some(1)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +564,69 @@ mod tests {
         assert_eq!(parse_version("v1.2.3"), Some((1, 2, 3)));
         assert_eq!(parse_version("1.2"), Some((1, 2, 0)));
         assert_eq!(parse_version(""), None);
+    }
+
+    fn stage_fixture(tag: &str, zip_bytes: &[u8], tamper_manifest_sha: bool) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("clashedge-stage-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("ClashEdge-9.9.9.zip");
+        std::fs::write(&zip, zip_bytes).unwrap();
+        let sha = hex_encode(&Sha256::digest(zip_bytes));
+        let manifest_sha = if tamper_manifest_sha {
+            "0".repeat(64)
+        } else {
+            sha.clone()
+        };
+        let manifest = serde_json::json!({
+            "version": "9.9.9",
+            "url": format!("{}v9.9.9/ClashEdge-portable-win64.zip", DOWNLOAD_URL_PREFIX),
+            "sha256": manifest_sha,
+            "notes": ""
+        });
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+        std::fs::write(dir.join("manifest.minisig"), "sig").unwrap();
+        let pending = PendingUpdate {
+            version: "9.9.9".into(),
+            zip_path: zip.to_string_lossy().to_string(),
+            sha256: sha,
+        };
+        std::fs::write(
+            dir.join("pending.json"),
+            serde_json::to_vec(&pending).unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn verify_staged_accepts_consistent_staging() {
+        let dir = stage_fixture("ok", b"zip-bytes", false);
+        verify_staged_with(&dir, |_, _| Ok(())).unwrap();
+        // 签名校验失败 → 拒绝
+        assert!(verify_staged_with(&dir, |_, _| Err(Error::Other("bad sig".into()))).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_staged_rejects_swapped_zip_or_manifest_mismatch() {
+        // 清单 sha 与 pending 不一致（pending.json 被伪造）
+        let dir = stage_fixture("mismatch", b"zip-bytes", true);
+        assert!(verify_staged_with(&dir, |_, _| Ok(())).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+        // ZIP 被替换：pending/manifest 一致，但文件内容哈希对不上
+        let dir = stage_fixture("swap", b"zip-bytes", false);
+        std::fs::write(dir.join("ClashEdge-9.9.9.zip"), b"malicious").unwrap();
+        assert!(verify_staged_with(&dir, |_, _| Ok(())).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn version_component_is_filename_safe() {
+        assert_eq!(safe_version_component("1.2.3"), "1.2.3");
+        assert_eq!(safe_version_component("..\\evil/x"), ".._evil_x");
+        assert!(!safe_version_component("a/b\\c:d").contains(['/', '\\', ':']));
     }
 
     #[test]

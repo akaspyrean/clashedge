@@ -20,7 +20,7 @@
 
 use std::path::Path;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tracing::error;
 
 use crate::config::model::Config;
@@ -164,30 +164,90 @@ impl AppController {
         self.commit_config_locked(app, &state, new_config).await
     }
 
-    /// 切换托盘「配置覆写 mixin」开关：翻转配置并持久化 → 刷新托盘 → 通知前端。
-    ///
-    /// mixin_enabled 是应用级字段（不影响 runtime-config.yaml），
-    /// 切换不需要 reload mihomo，但仍要持事务锁串行，避免与
-    /// update_config / apply_* 等并发事务在 config_manager
-    /// 上交错（否则可能撞上正在 reload 的事务拿到中间态配置）。
-    pub async fn toggle_config_mixin(&self, app: &AppHandle) -> Result<bool> {
+    /// 降级模式守卫（无确认参数的轻量设置入口使用）：配置损坏、应用以默认值降级运行时，
+    /// 任何会 `set_config` 的入口都会静默覆盖损坏的原文件。普通设置必须先走
+    /// 设置页的「我确认覆盖损坏的配置文件」流程（update_config_fields）。
+    fn ensure_not_degraded(state: &tauri::State<'_, crate::AppState>) -> Result<()> {
+        if state.config_manager.lock().unwrap().is_degraded() {
+            return Err(Error::Other(
+                "检测到 config.yaml 损坏，应用正以默认配置降级运行。为保护你的数据，\
+                 原文件（已备份为 config.yaml.corrupt-*.bak）不会被静默覆盖。\
+                 请先在设置页确认覆盖损坏的配置文件后再修改此项。"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 切换界面语言：持事务锁 + 降级守卫 + 持久化 + 刷新托盘文案。
+    /// 语言只影响应用级文案，不进入 runtime-config，因此无需重载核心。
+    pub async fn set_locale(&self, app: &AppHandle, locale: String) -> Result<()> {
+        if !crate::i18n::loader::supported_locales()
+            .iter()
+            .any(|l| *l == locale)
+        {
+            return Err(Error::InvalidArgument(format!(
+                "unsupported locale '{}'",
+                locale
+            )));
+        }
         let _tx = self.tx.lock().await;
         let state = app.state::<crate::AppState>();
-        let new_val = {
+        Self::ensure_not_degraded(&state)?;
+        {
             let mut cfg = state.config_manager.lock().unwrap();
             let mut c = cfg.get_config();
-            c.mixin_enabled = !c.mixin_enabled;
-            let v = c.mixin_enabled;
+            c.locale = locale;
             cfg.set_config(c)?;
-            v
-        };
-        // 刷新托盘菜单勾选态，并通知前端同步 UI 状态。
-        crate::core::runtime::refresh_tray(app).await?;
-        let _ = app.emit(
-            "config-mixin-changed",
-            serde_json::json!({ "enable": new_val }),
-        );
-        Ok(new_val)
+        }
+        crate::core::runtime::refresh_tray(app).await
+    }
+
+    /// 更新自定义 GeoIP / GeoSite 下载地址（空串 = 清除自定义源）。
+    /// 仅接受 http(s) URL；持事务锁 + 降级守卫。
+    pub async fn set_geodata_urls(
+        &self,
+        app: &AppHandle,
+        geoip_url: Option<String>,
+        geosite_url: Option<String>,
+    ) -> Result<()> {
+        for (label, v) in [("geoip_url", &geoip_url), ("geosite_url", &geosite_url)] {
+            if let Some(u) = v.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+                let parsed = reqwest::Url::parse(u).map_err(|e| {
+                    Error::InvalidArgument(format!("{}: invalid URL: {}", label, e))
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(Error::InvalidArgument(format!(
+                        "{}: URL scheme must be http or https",
+                        label
+                    )));
+                }
+            }
+        }
+        let _tx = self.tx.lock().await;
+        let state = app.state::<crate::AppState>();
+        Self::ensure_not_degraded(&state)?;
+        let mut cfg = state.config_manager.lock().unwrap();
+        let mut c = cfg.get_config();
+        if let Some(u) = geoip_url {
+            c.advanced.geoip_url = u.trim().to_string();
+        }
+        if let Some(u) = geosite_url {
+            c.advanced.geosite_url = u.trim().to_string();
+        }
+        cfg.set_config(c)?;
+        Ok(())
+    }
+
+    /// 删除 Profile 复合事务（前置存在性校验已由命令完成）。
+    pub async fn delete_profile(
+        &self,
+        app: &AppHandle,
+        name: &str,
+        file_path: &Path,
+    ) -> Result<()> {
+        let _tx = self.tx.lock().await;
+        crate::commands::profiles::delete_profile_locked(app, name, file_path).await
     }
 
     /// 重命名 Profile 复合事务（前置校验已由命令完成）：rename 文件 →
@@ -236,6 +296,20 @@ impl AppController {
             app, name, file_path, temp_path, final_text,
         )
         .await
+    }
+
+    /// 设置订阅自定义 User-Agent 的轻量事务（审计 B7）：仅替换 profile 头注释元数据，
+    /// 不进入 mihomo 运行时配置，无需热重载。持事务锁串行化，避免与并发的
+    /// 订阅刷新/重命名互相覆盖文件。
+    pub async fn set_profile_user_agent(
+        &self,
+        _app: &AppHandle,
+        _name: &str,
+        file_path: &Path,
+        user_agent: Option<String>,
+    ) -> Result<()> {
+        let _tx = self.tx.lock().await;
+        crate::commands::profiles::set_profile_user_agent_locked(file_path, user_agent).await
     }
 
     /// 整包配置事务主体（调用方必须已持有事务锁）。字段级入口

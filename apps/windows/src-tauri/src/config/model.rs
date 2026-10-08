@@ -31,14 +31,6 @@ pub struct Config {
     #[serde(default)]
     pub advanced: AdvancedConfig,
 
-    /// 配置文件管理
-    #[serde(default)]
-    pub profiles: ProfilesConfig,
-
-    /// 配置混入开关（应用级）
-    #[serde(default)]
-    pub mixin_enabled: bool,
-
     /// 界面语言
     #[serde(default = "default_locale")]
     pub locale: String,
@@ -75,8 +67,6 @@ impl Default for Config {
             tun: TunConfig::default(),
             dns: DnsConfig::default(),
             advanced: AdvancedConfig::default(),
-            profiles: ProfilesConfig::default(),
-            mixin_enabled: false,
             locale: default_locale(),
             rule_providers: default_rule_providers(),
             proxy_groups: default_proxy_groups(),
@@ -135,6 +125,16 @@ pub struct GeneralConfig {
     #[serde(default = "default_auto_update_subscription")]
     pub auto_update_subscription: bool,
 
+    /// 启动后静默检查一次更新（只检查并提示，不自动下载 / 安装）。
+    /// 与订阅自动刷新一样是显式开关：无常驻定时器，仅启动后单次。
+    #[serde(default = "default_auto_check_update")]
+    pub auto_check_update: bool,
+
+    /// 启用域名嗅探（TLS / HTTP / QUIC）：TUN 下纯 IP 连接也能按域名规则分流。
+    /// 默认关闭以保持既有行为。订阅自带的 sniffer 配置仍一律不透传。
+    #[serde(default)]
+    pub sniffer: bool,
+
     #[serde(default = "default_find_process_mode")]
     pub find_process_mode: String,
 
@@ -169,6 +169,9 @@ fn default_find_process_mode() -> String {
 fn default_auto_update_subscription() -> bool {
     true
 }
+fn default_auto_check_update() -> bool {
+    true
+}
 fn default_proxy_mode() -> String {
     "rule".to_string()
 }
@@ -185,6 +188,8 @@ impl Default for GeneralConfig {
             geodata_mode: default_geodata_mode(),
             geo_auto_update: false,
             auto_update_subscription: true,
+            auto_check_update: true,
+            sniffer: false,
             find_process_mode: default_find_process_mode(),
             proxy_mode: default_proxy_mode(),
             profile: String::new(),
@@ -331,8 +336,14 @@ pub struct TunConfig {
     pub auto_detect_interface: bool,
 
     /// 网卡名称（当 auto_detect_interface 为 false 时使用）
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface_name: Option<String>,
+
+    /// 严格路由（mihomo `strict-route`）：强制所有流量经 TUN，避免 Windows 多网卡
+    /// 并行 DNS 解析造成的 DNS 泄漏；代价是可能影响个别依赖物理网卡直连的软件。
+    /// 默认 false 以保持既有行为。
+    #[serde(default)]
+    pub strict_route: bool,
 
     /// TUN 内核接管 DNS 的劫持地址列表（mihomo `dns-hijack`）。
     /// 默认 any:53 + tcp://any:53，接管本机所有 DNS 请求交给 mihomo DNS 处理，
@@ -352,6 +363,7 @@ impl Default for TunConfig {
             auto_route: default_tun_auto_route(),
             auto_detect_interface: default_tun_auto_detect_interface(),
             interface_name: None,
+            strict_route: false,
             dns_hijack: default_dns_hijack(),
         }
     }
@@ -470,173 +482,67 @@ fn default_dns_proxy_server_nameserver() -> Vec<String> {
 }
 
 /// --- AdvancedConfig ---
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// 只保留真正被后端消费的字段。历史上的 disable-commit-animation / log-format /
+/// explicit-proxy / connect|read|write-timeout / geox-url 从未接入任何逻辑
+/// （审计 B9），已删除；旧配置里的这些键反序列化时被忽略，不影响加载。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct AdvancedConfig {
-    /// 禁用提交按钮动画
-    #[serde(default)]
-    pub disable_commit_animation: bool,
-
-    /// 日志输出格式
-    #[serde(default = "default_log_format")]
-    pub log_format: String,
-
-    /// 是否显式代理
-    #[serde(default)]
-    pub explicit_proxy: bool,
-
-    /// 连接超时（秒）
-    #[serde(default = "default_advanced_connect_timeout")]
-    pub connect_timeout: u64,
-
-    /// 读取超时（秒）
-    #[serde(default = "default_advanced_read_timeout")]
-    pub read_timeout: u64,
-
-    /// 写入超时（秒）
-    #[serde(default = "default_advanced_write_timeout")]
-    pub write_timeout: u64,
-
-    /// Geox URL (GeoIP/GeoSite 下载地址)
-    #[serde(default)]
-    pub geox_url: String,
-
-    /// GeoIP URL
+    /// GeoIP 自定义下载地址（空 = 使用内置源）。仅作用于手动 / 自动 GeoData 更新。
     #[serde(default)]
     pub geoip_url: String,
 
-    /// GeoSite URL
+    /// GeoSite 自定义下载地址（空 = 使用内置源）
     #[serde(default)]
     pub geosite_url: String,
 }
 
-/// 派生 Default 会让超时字段变成 0、log_format 变空。手写 Default 对齐字段默认值。
-impl Default for AdvancedConfig {
-    fn default() -> Self {
-        Self {
-            disable_commit_animation: false,
-            log_format: default_log_format(),
-            explicit_proxy: false,
-            connect_timeout: default_advanced_connect_timeout(),
-            read_timeout: default_advanced_read_timeout(),
-            write_timeout: default_advanced_write_timeout(),
-            geox_url: String::new(),
-            geoip_url: String::new(),
-            geosite_url: String::new(),
-        }
-    }
-}
-
-fn default_log_format() -> String {
-    "text".to_string()
-}
-fn default_advanced_connect_timeout() -> u64 {
-    30
-}
-fn default_advanced_read_timeout() -> u64 {
-    30
-}
-fn default_advanced_write_timeout() -> u64 {
-    30
-}
-
-/// --- ProfilesConfig ---
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct ProfilesConfig {
-    /// 配置文件列表
-    #[serde(default)]
-    pub proxies: Vec<String>,
-
-    /// 默认配置文件名
-    #[serde(default = "default_profiles_default_profile")]
-    pub default_profile: String,
-
-    /// 自动模式组名称
-    #[serde(default = "default_profiles_auto_group")]
-    pub auto_group: String,
-
-    /// 手动模式组名称
-    #[serde(default = "default_profiles_manual_group")]
-    pub manual_group: String,
-
-    /// 自定义模式组名称
-    #[serde(default = "default_profiles_media_group")]
-    pub media_group: String,
-
-    /// AI 模式组名称
-    #[serde(default = "default_profiles_ai_group")]
-    pub ai_group: String,
-}
-
-/// 派生 Default 会把 default-profile 等变成空串（字段级 default= 只在该节
-/// 存在时生效）。手写 Default 对齐字段默认值。
-impl Default for ProfilesConfig {
-    fn default() -> Self {
-        Self {
-            proxies: Vec::new(),
-            default_profile: default_profiles_default_profile(),
-            auto_group: default_profiles_auto_group(),
-            manual_group: default_profiles_manual_group(),
-            media_group: default_profiles_media_group(),
-            ai_group: default_profiles_ai_group(),
-        }
-    }
-}
-
-fn default_profiles_default_profile() -> String {
-    "DIRECT".to_string()
-}
-fn default_profiles_auto_group() -> String {
-    "自动".to_string()
-}
-fn default_profiles_manual_group() -> String {
-    "手动".to_string()
-}
-fn default_profiles_media_group() -> String {
-    "媒体".to_string()
-}
-fn default_profiles_ai_group() -> String {
-    "AI".to_string()
-}
+/// 内置规则集名称（顺序无关）
+pub const BUILTIN_RULE_SETS: &[&str] = &["direct", "ai", "media", "proxy", "ad"];
 
 /// 内置规则提供者：默认基线的 rule-providers 定义。
-/// `path: ./rules/<name>.yaml` 相对 mihomo 的 `-d` 目录（Data/），随包附带这些文件，
-/// 离线也能加载；联网后按 interval 自动更新。
+///
+/// 一律是本地 `type: file`（`./rules/<name>.yaml`，相对 mihomo 的 `-d` 目录 Data/）：
+/// 随包附带这些文件，离线也能加载；刷新由 `geodata::rules` 的**签名清单更新器**
+/// 负责（验签 + 逐文件 SHA256 + 回滚保护），不再让 mihomo 自行从 `main` 分支
+/// 浮动拉取未经校验的内容（审计 A4）。
 pub fn default_rule_providers() -> HashMap<String, serde_yaml::Value> {
-    const YAML: &str = r#"
-direct:
-  type: http
-  behavior: classical
-  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/direct.yaml
-  path: ./rules/direct.yaml
-  interval: 86400
-ai:
-  type: http
-  behavior: classical
-  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/ai.yaml
-  path: ./rules/ai.yaml
-  interval: 86400
-media:
-  type: http
-  behavior: classical
-  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/media.yaml
-  path: ./rules/media.yaml
-  interval: 86400
-proxy:
-  type: http
-  behavior: classical
-  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/proxy.yaml
-  path: ./rules/proxy.yaml
-  interval: 86400
-ad:
-  type: http
-  behavior: classical
-  url: https://raw.githubusercontent.com/akaspyrean/external/main/rules/ad.yaml
-  path: ./rules/ad.yaml
-  interval: 86400
-"#;
-    serde_yaml::from_str(YAML).unwrap_or_default()
+    BUILTIN_RULE_SETS
+        .iter()
+        .map(|name| (name.to_string(), builtin_rule_provider(name)))
+        .collect()
+}
+
+fn builtin_rule_provider(name: &str) -> serde_yaml::Value {
+    serde_yaml::from_str(&format!(
+        "type: file\nbehavior: classical\npath: ./rules/{}.yaml\n",
+        name
+    ))
+    .unwrap_or_default()
+}
+
+/// 把旧配置里持久化的内置 `type: http` 规则集（指向外部仓库 main 分支）迁移为本地
+/// `type: file`。用户自定义的其它规则集、以及指向别处的同名 provider 保持原样。
+/// 返回是否发生了迁移。
+pub fn migrate_builtin_rule_providers(providers: &mut HashMap<String, serde_yaml::Value>) -> bool {
+    let mut changed = false;
+    for name in BUILTIN_RULE_SETS {
+        let Some(v) = providers.get(*name) else {
+            providers.insert(name.to_string(), builtin_rule_provider(name));
+            changed = true;
+            continue;
+        };
+        let is_old_http = v.get("type").and_then(|t| t.as_str()) == Some("http")
+            && v.get("url").and_then(|u| u.as_str()).is_some_and(|u| {
+                u.starts_with("https://raw.githubusercontent.com/akaspyrean/external/")
+            });
+        if is_old_http {
+            providers.insert(name.to_string(), builtin_rule_provider(name));
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// 内置代理组：默认基线的 proxy-groups 段。

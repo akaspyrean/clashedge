@@ -7,7 +7,7 @@
 //! - 启动 / 重载时由 `build_runtime_config` 从「AppConfig + 激活 Profile 内容」
 //!   生成只含 mihomo 顶层合法键的运行时配置，以 `-f` 交给 mihomo。
 
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use crate::config::model::Config;
 use crate::util::error::{Error, Result};
@@ -51,6 +51,23 @@ const EXTRA_ALLOWED_KEYS: &[&str] = &[];
 /// 语义不同，这些值不会写给 mihomo）。
 const APP_GEODATA_MODES: &[&str] = &["manual", "use-external", "remote"];
 
+/// 内置域名嗅探配置（`general.sniffer` 开启时写入运行时配置）。
+/// `override-destination: false`：只用嗅探结果做规则匹配，不改写连接目标，
+/// 对不支持域名目标的应用最保守。
+const SNIFFER_YAML: &str = r#"
+enable: true
+force-dns-mapping: true
+parse-pure-ip: true
+override-destination: false
+sniff:
+  TLS:
+    ports: [443, 8443]
+  HTTP:
+    ports: [80, 8080-8880]
+  QUIC:
+    ports: [443, 8443]
+"#;
+
 /// 合并配置规则 - 运行时语义校验与归一：
 /// - 校验并修正代理模式（rule / global / direct）
 /// - 校验 geodata_mode（应用级值，仅空串回退 manual，不覆盖 mihomo 语义值）
@@ -93,9 +110,9 @@ pub(crate) fn merge_rules(config: Config) -> Config {
         warn!("Invalid tun stack, defaulting to 'mixed'");
     }
 
-    // 规则提供者：为空则使用默认订阅源（由订阅管理器填充）
-    if config.rule_providers.is_empty() {
-        debug!("No rule-providers configured, will use default subscription sources");
+    // 规则提供者：旧版持久化的内置 http provider（浮动拉取 main 分支）迁移为本地 file
+    if crate::config::model::migrate_builtin_rule_providers(&mut config.rule_providers) {
+        info!("Builtin rule-providers migrated to local files (signed updater)");
     }
 
     // 确保默认配置文件存在
@@ -194,6 +211,13 @@ pub fn build_runtime_config(
     );
     put!("secret", serde_yaml::Value::from(app.proxy.secret.clone()));
     put!("tun", serde_yaml::to_value(&app.tun)?);
+    // 域名嗅探（可选）：应用自己的 sniffer 配置；订阅里的 sniffer 仍一律不透传。
+    if app.general.sniffer {
+        put!(
+            "sniffer",
+            serde_yaml::from_str::<serde_yaml::Value>(SNIFFER_YAML)?
+        );
+    }
     put!("dns", serde_yaml::to_value(&app.dns)?);
 
     // geodata-mode：仅透传 mihomo 语义值（bool / "metax" / "v2ray"）；
@@ -314,7 +338,7 @@ pub fn build_runtime_config(
     //    故零节点时不生成自动优选组，并从其余组的 proxies 引用中同步剔除，
     //    保证不存在悬空引用；人工优选（select）补 DIRECT 兜底保持直连可用。
     //    一旦订阅提供节点，step 5 会注入真实节点名，自动优选恢复生成。
-    let mut has_auto_group = false;
+    let mut drop_auto_group = false;
     for group in groups.iter_mut() {
         let Some(gmap) = group.as_mapping_mut() else {
             continue;
@@ -329,11 +353,11 @@ pub fn build_runtime_config(
                 .map(|s| s.is_empty())
                 .unwrap_or(true);
             if is_empty {
-                has_auto_group = true;
+                drop_auto_group = true;
             }
         }
     }
-    if has_auto_group {
+    if drop_auto_group {
         groups.retain(|g| g.get("name").and_then(|n| n.as_str()) != Some("自动优选"));
         for group in groups.iter_mut() {
             let Some(gmap) = group.as_mapping_mut() else {
@@ -891,6 +915,73 @@ proxies:
             .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
             .collect();
         assert_eq!(names, vec!["FromProfile"]);
+    }
+
+    /// C7：sniffer 默认不写入；开启后写入内置嗅探配置；订阅的 sniffer 永不透传。
+    #[test]
+    fn sniffer_is_opt_in_and_never_from_subscription() {
+        let mut app = Config::default();
+        let profile = "sniffer:\n  enable: true\n  evil: 1\nproxies: []\n";
+        let off = build_runtime_config(&app, Some(profile)).unwrap();
+        assert!(off.as_mapping().unwrap().get("sniffer").is_none());
+        app.general.sniffer = true;
+        let on = build_runtime_config(&app, Some(profile)).unwrap();
+        let sn = on.as_mapping().unwrap().get("sniffer").unwrap();
+        assert_eq!(sn.get("enable").and_then(|v| v.as_bool()), Some(true));
+        assert!(
+            sn.get("evil").is_none(),
+            "subscription sniffer must not leak in"
+        );
+        assert_eq!(
+            sn.get("override-destination").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    /// C7：strict-route 随配置输出；未设置网卡名时不输出 `interface-name: null`。
+    #[test]
+    fn tun_strict_route_and_no_null_interface_name() {
+        let mut app = Config::default();
+        app.tun.strict_route = true;
+        let rt = build_runtime_config(&app, None).unwrap();
+        let tun = rt.as_mapping().unwrap().get("tun").unwrap();
+        assert_eq!(
+            tun.get("strict-route").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(tun.get("interface-name").is_none());
+    }
+
+    /// A4：旧配置里的内置 http provider 迁移为本地 file；自定义 provider 不动。
+    #[test]
+    fn merge_rules_migrates_builtin_http_rule_providers() {
+        let mut app = Config::default();
+        let old: serde_yaml::Value = serde_yaml::from_str(
+            "type: http\nbehavior: classical\nurl: https://raw.githubusercontent.com/akaspyrean/external/main/rules/ai.yaml\npath: ./rules/ai.yaml\ninterval: 86400\n",
+        )
+        .unwrap();
+        app.rule_providers.insert("ai".into(), old);
+        let custom: serde_yaml::Value = serde_yaml::from_str(
+            "type: http\nbehavior: domain\nurl: https://example.com/mine.yaml\npath: ./rules/mine.yaml\n",
+        )
+        .unwrap();
+        app.rule_providers.insert("mine".into(), custom.clone());
+        let merged = merge_rules(app);
+        assert_eq!(merged.rule_providers["ai"]["type"].as_str(), Some("file"));
+        assert_eq!(
+            merged.rule_providers["ai"]["path"].as_str(),
+            Some("./rules/ai.yaml")
+        );
+        assert_eq!(merged.rule_providers["mine"], custom);
+        // 缺失的内置项被补齐
+        for n in crate::config::model::BUILTIN_RULE_SETS {
+            assert_eq!(
+                merged.rule_providers[*n]["type"].as_str(),
+                Some("file"),
+                "{}",
+                n
+            );
+        }
     }
 
     #[test]

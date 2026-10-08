@@ -92,7 +92,23 @@ const levelClass = (level: string): string =>
         ? "lv-debug"
         : "lv-info";
 
+/** 窗口隐藏到托盘时暂停后端 SSE 日志流，重新可见时恢复（省 CPU / IPC 事件）。 */
+let pausedByHidden = false;
+function onVisibilityChange() {
+  if (document.hidden) {
+    if (connected.value || connecting.value) {
+      pausedByHidden = true;
+      void logsApi.stop().catch(() => {});
+      connected.value = false;
+    }
+  } else if (pausedByHidden) {
+    pausedByHidden = false;
+    void connect();
+  }
+}
+
 onMounted(async () => {
+  document.addEventListener("visibilitychange", onVisibilityChange);
   unlisteners.push(
     await listen<{ level: string; message: string }>("log-line", (ev) => {
       connected.value = true;
@@ -118,6 +134,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("visibilitychange", onVisibilityChange);
   unlisteners.forEach((u) => u());
   void logsApi.stop().catch(() => {});
 });

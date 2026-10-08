@@ -26,7 +26,6 @@ export const useConfigStore = defineStore("config", {
     systemProxy: (s) => s.config?.["system-proxy"] ?? false,
     locale: (s) => s.config?.locale ?? "zh-CN",
     tunEnabled: (s) => s.config?.tun?.enable ?? false,
-    mixinEnabled: (s) => s.config?.["mixin-enabled"] ?? false,
   },
   actions: {
     async load() {

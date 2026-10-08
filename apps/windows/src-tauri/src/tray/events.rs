@@ -4,7 +4,7 @@
 //! This module handles all tray icon events including:
 //! - Proxy group selection
 //! - Mode changes (global/rule/direct)
-//! - System proxy / TUN / config mixin toggles
+//! - System proxy / TUN toggles
 //! - Geo data update
 //! - Connection management
 //! - Quit/restart operations
@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 /// corresponding action. It handles:
 /// - Proxy mode changes
 /// - Proxy group selection
-/// - System proxy / TUN / config mixin toggles
+/// - System proxy / TUN toggles
 /// - Geo data update
 /// - Connection management
 /// - Quit/restart operations
@@ -40,11 +40,7 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
     match item_id.as_str() {
         // Show / focus the main window
         "control_panel" => {
-            if let Some(w) = app_handle.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.unminimize();
-                let _ = w.set_focus();
-            }
+            crate::show_main_window(app_handle);
         }
 
         // Proxy mode changes（mode_script 不是 mihomo 合法模式，菜单中已移除）
@@ -78,18 +74,6 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             let state = app_handle.state::<crate::AppState>();
             let new_val = !state.config_manager.lock().unwrap().get_config().tun.enable;
             state.controller.apply_tun(app_handle, new_val).await?;
-        }
-
-        // Config mixin toggle
-        "config_mixin" => {
-            info!("Tray: toggling config mixin");
-            let state = app_handle.state::<crate::AppState>();
-            // mixin_enabled 是应用级字段（不影响 runtime-config.yaml），
-            // 切换不需要 reload mihomo，但仍要经 AppController 持事务锁串行，
-            // 避免与 update_config / apply_* 等并发事务在 config_manager
-            // 上交错（否则可能撞上正在 reload 的事务拿到中间态配置）。
-            // 刷新托盘菜单勾选态 + 通知前端同步 UI 状态均在控制器事务内完成。
-            state.controller.toggle_config_mixin(app_handle).await?;
         }
 
         // 开机自启开关（注册表 Run 键 → 根启动器 --clash-edge-autostart）

@@ -1,13 +1,12 @@
 // src/main.ts - 应用入口
 import { createApp } from "vue";
 import { createPinia } from "pinia";
-import ElementPlus from "element-plus";
-import "element-plus/dist/index.css";
-import * as ElementPlusIconsVue from "@element-plus/icons-vue";
+import { ElNotification } from "element-plus";
+import { installElementPlus } from "./element-plus";
 import { listen, type UnlistenFn, type Event } from "@tauri-apps/api/event";
 import App from "./App.vue";
 import router from "./router";
-import { setupI18n } from "./i18n";
+import { setupI18n, t as tr } from "./i18n";
 import { useAppStore } from "@/stores/app";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
@@ -42,16 +41,12 @@ async function bootstrap() {
   const app = createApp(App);
   app.use(createPinia());
 
-  // 图标全局注册：模板中可直接使用 <Odometer /> 等组件名。
-  for (const [name, comp] of Object.entries(ElementPlusIconsVue)) {
-    app.component(name, comp);
-  }
-
   // 等待 i18n 初始化（先读后端配置的语言，再拉取消息表）。
   const i18n = await setupI18n();
   app.use(i18n);
 
-  app.use(ElementPlus);
+  // 按需注册 Element Plus 组件与样式；图标由使用方显式 import（见 element-plus.ts）。
+  installElementPlus(app);
   app.use(router);
   app.mount("#app");
 
@@ -68,6 +63,17 @@ async function bootstrap() {
   // 但前端代理组列表仍是旧数据 → 监听 profile-activated 主动拉取最新 /proxies。
   registerListener("profile-activated", () => {
     void useProxyStore().loadGroups();
+  });
+
+  // 启动后的静默更新检查发现新版本：只提示，用户在「设置 → 关于」里决定是否更新。
+  registerListener("update-available", (e) => {
+    const payload = e.payload as { version?: string } | undefined;
+    ElNotification({
+      title: tr("about.update_notice_title"),
+      message: tr("about.update_notice_body").replace("{version}", payload?.version ?? ""),
+      type: "info",
+      duration: 8000,
+    });
   });
 
   // 托盘右键修改的配置（代理模式/系统代理/TUN/配置混合）须同步回 UI：

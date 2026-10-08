@@ -1,4 +1,6 @@
-# ClashEdge 工具链锁定：使用官方 stable，不依赖本机 Delta 项目的自定义工具链
+# ClashEdge toolchain pin: fixed stable release so `clippy -D warnings` and CI results
+# are reproducible (a floating "stable" lets new lints break the gate at random).
+# Bump deliberately together with a clippy/fmt pass.
 [toolchain]
-channel = "stable"
+channel = "1.97.1"
 components = ["clippy", "rustfmt"]
