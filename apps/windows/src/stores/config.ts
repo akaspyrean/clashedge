@@ -5,6 +5,8 @@
 
 import { defineStore } from "pinia";
 import { configApi, type ClashConfig } from "@/api/config";
+import { proxyApi } from "@/api/proxy";
+import { changeLocale } from "@/i18n";
 
 export const useConfigStore = defineStore("config", {
   state: () => ({
@@ -95,6 +97,65 @@ export const useConfigStore = defineStore("config", {
           base[key] = JSON.parse(JSON.stringify(next[key as keyof ClashConfig]));
         }
       }
+    },
+    /** 把已由后端确认生效的字段同步进内存与基线（不触发保存）。
+     *  必须同时改基线：否则下次 save() 的差异计算会把它当成"用户改动"再提交一次。 */
+    commitApplied(key: keyof ClashConfig, value: unknown) {
+      if (this.config) (this.config as unknown as Record<string, unknown>)[key] = value;
+      if (this.baseline) {
+        (this.baseline as unknown as Record<string, unknown>)[key] = JSON.parse(JSON.stringify(value));
+      }
+    },
+    /** 代理模式：走编排层（持久化 + PATCH 运行中核心 + 托盘刷新）。 */
+    async setProxyMode(mode: string) {
+      await proxyApi.setProxyMode(mode);
+      this.commitApplied("mode", mode);
+    },
+    /** 系统代理：走编排层（持久化意图 + 写注册表真实生效）。 */
+    async setSystemProxy(enable: boolean) {
+      await proxyApi.setSystemProxy(enable);
+      this.commitApplied("system-proxy", enable);
+    },
+    /** TUN 开关：走编排层；失败时后端已回退，这里从后端恢复真实状态再抛出。 */
+    async setTunMode(enable: boolean) {
+      try {
+        await proxyApi.setTunMode(enable);
+      } catch (e) {
+        await this.load().catch(() => {});
+        throw e;
+      }
+      if (this.config) {
+        this.config.tun.enable = enable;
+        if (this.baseline) this.baseline.tun.enable = enable;
+      }
+    },
+    /** 界面语言：后端落盘成功后再热替换消息表；失败回读后端真实值。 */
+    async setLocale(locale: string) {
+      try {
+        await this.patch({ locale });
+        await changeLocale(locale);
+      } catch (e) {
+        await this.load().catch(() => {});
+        throw e;
+      }
+    },
+    /** 从文件导入配置（文件选择与读取在 Rust 侧）；用户取消返回 false。 */
+    async importFromFile(): Promise<boolean> {
+      const content = await configApi.pickImportFile();
+      if (content === null) return false;
+      await configApi.import(content);
+      await this.load();
+      return true;
+    },
+    /** 导出完整 mihomo 配置，返回生成文件路径。 */
+    exportToFile(): Promise<string> {
+      return configApi.export();
+    },
+    /** 降级模式：用户确认覆盖损坏的 config.yaml（后端持锁写盘并退出降级）。 */
+    async confirmOverwriteCorrupt() {
+      await configApi.confirmOverwriteCorrupt();
+      await this.loadDegradedInfo();
+      await this.load();
     },
     async reset() {
       // 失败时抛错，由调用方处理并恢复内存状态。
