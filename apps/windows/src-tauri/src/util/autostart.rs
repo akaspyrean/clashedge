@@ -170,8 +170,18 @@ fn approved_state() -> Option<bool> {
 /// 3. 未被 StartupApproved 标记为禁用。
 pub fn get_autostart() -> Result<bool> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let run = hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_READ)?;
-    let value: OsString = run.get_value(VALUE_NAME)?;
+    let run = match hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_READ) {
+        Ok(k) => k,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    // 值不存在 = 未开启（默认状态 / 关闭自启后）。不能把 NotFound 当错误上抛：
+    // 托盘的切换处理用 `!get_autostart()?`，否则未开启时永远无法从托盘开启。
+    let value: OsString = match run.get_value(VALUE_NAME) {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(Error::Io(e)),
+    };
     if !value.to_string_lossy().contains(AUTOSTART_ARG) {
         return Ok(false);
     }
@@ -293,6 +303,17 @@ mod tests {
     #[test]
     fn rejects_unclosed_quote() {
         assert_eq!(launcher_path(r#""D:\foo"#), None);
+    }
+
+    /// 回归：Run 键下不存在的值读取必须是 NotFound（get_autostart 据此返回 Ok(false)）。
+    #[test]
+    fn missing_run_value_reports_not_found() {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let run = hkcu
+            .open_subkey_with_flags(RUN_KEY_PATH, KEY_READ)
+            .expect("Run key exists");
+        let r: std::io::Result<OsString> = run.get_value("ClashEdgeNoSuchValue-regression");
+        assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]

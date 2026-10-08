@@ -3,6 +3,8 @@ name = "clash-edge"
 version = "1.0.9"
 description = "ClashEdge - Lightweight Clash Client for Windows"
 authors = ["akaspyrean"]
+license = "MIT"
+publish = false
 edition = "2021"
 
 [[bin]]

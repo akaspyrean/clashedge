@@ -152,21 +152,14 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             }
         }
 
-        // Restart core
+        // Restart core（经 AppController：与配置事务串行，成功后刷新托盘）
         "restart" => {
             info!("Tray: restarting core");
             let state = app_handle.state::<crate::AppState>();
-            {
-                // restart 在 tokio Mutex 临界区内执行（跨 await 持有 OK）；
-                // 块结束后 guard 释放，refresh_tray 才安全（tokio Mutex 不可重入）。
-                let core = state.core_manager.get();
-                if let Some(c) = core.as_ref() {
-                    c.restart().await?;
-                }
-            }
-            // 重启后代理组菜单刷新（节点列表可能变化）。
-            // core-status-changed 已由 start() 推送，前端同步刷新核心/代理组。
-            crate::core::runtime::refresh_tray(app_handle).await?;
+            state
+                .controller
+                .core_op(app_handle, crate::core::app_controller::CoreOp::Restart)
+                .await?;
         }
 
         // Open dev tools for the main window（仅 debug 构建；release 不暴露调试面）

@@ -92,6 +92,8 @@ impl CoreManager {
         let mihomo_path: PathBuf = self.mihomo_path.clone();
         let data_dir = self.data_dir.clone();
         let config = self.config.clone();
+        let controller_override = self.controller_override.clone();
+        let lifecycle = self.lifecycle.clone();
         let api_client = self.controller.api_client().clone();
         // 自愈重启成功后失效版本缓存（新进程版本可能已变化）
         let version_cache = self.version_cache.clone();
@@ -103,8 +105,14 @@ impl CoreManager {
         };
 
         tokio::spawn(async move {
+            let mut ticks: u64 = 0;
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                ticks += 1;
+                // 每 ~60 s 裁剪一次运行中的内核日志（上限 20 MiB），避免长期运行无限增长。
+                if ticks.is_multiple_of(120) {
+                    spawn::trim_running_logs(&data_dir, 20 * 1024 * 1024);
+                }
 
                 // generation 已变化 → 新流程接管，本 watcher 立即退出。
                 // 这是消除「多个 watcher 同时盯一个 child、重复重启」的关键。
@@ -183,7 +191,8 @@ impl CoreManager {
                             Self::give_up_system_proxy_after_restore_failure(
                                 &app_handle,
                                 &Error::Other("system proxy ownership changed".to_string()),
-                            );
+                            )
+                            .await;
                             None
                         }
                         Err(e) => {
@@ -248,6 +257,13 @@ impl CoreManager {
                     break;
                 }
 
+                // 重启与用户发起的 start/stop/reload 共用 lifecycle 锁，二者不会同时 spawn。
+                // 守卫只覆盖"spawn + 就绪探测"，系统代理恢复前释放（它会取事务锁，而事务
+                // 持有者可能正在等 lifecycle——持锁等事务锁会死锁）。
+                let lifecycle_guard = lifecycle.lock().await;
+                if !gen_valid(&gen_counter, generation) {
+                    break;
+                }
                 // 尝试重启
                 *status_arc.lock().unwrap() = CoreStatus::Starting;
                 let _ = app_handle.emit(
@@ -262,7 +278,10 @@ impl CoreManager {
                 }
                 // 与首次启动共用同一套"写配置 + 追加日志 + 落盘会话 + spawn"实现
                 // （core::spawn），避免两处行为漂移。
-                let cfg = config.read().clone();
+                let mut cfg = config.read().clone();
+                if let Some(addr) = controller_override.read().clone() {
+                    cfg.proxy.external_controller = addr;
+                }
                 let (runtime_config, hash) = match spawn::write_runtime_config(&data_dir, &cfg) {
                     Ok(v) => v,
                     Err(e) => {
@@ -287,11 +306,13 @@ impl CoreManager {
                             child: child_handle.clone(),
                             api_client: api_client.clone(),
                             config: config.clone(),
+                            controller_override: controller_override.clone(),
                         };
                         let ready = core_manager_for_check
                             .wait_ready_and_check_port()
                             .await
                             .and_then(|()| detect_bind_conflict_in(&data_dir, stdout_offset));
+                        drop(lifecycle_guard);
                         match ready {
                             Ok(()) => {
                                 *status_arc.lock().unwrap() = CoreStatus::Running;
@@ -329,7 +350,7 @@ impl CoreManager {
                                             Self::give_up_system_proxy_after_restore_failure(
                                                 &app_handle,
                                                 &e,
-                                            );
+                                            ).await;
                                         }
                                     }
                                 } else if sys_proxy_intent {
@@ -349,7 +370,7 @@ impl CoreManager {
                                                 "system proxy ownership could not be confirmed after core restart"
                                                     .to_string(),
                                             ),
-                                        );
+                                        ).await;
                                     }
                                 }
                                 info!("mihomo auto-restarted successfully");
@@ -400,23 +421,14 @@ impl CoreManager {
     /// 此时绝不能让 UI 继续把系统代理当作 ON——
     /// ownership helper 已负责安全恢复/保留 journal；这里仅把配置意图改回 false
     /// 并推送事件，绝不再直接写注册表形成第四套恢复逻辑。
-    fn give_up_system_proxy_after_restore_failure(app_handle: &AppHandle, err: &Error) {
-        {
-            let state = app_handle.state::<crate::AppState>();
-            let mut cfg_mgr = state.config_manager.lock().unwrap();
-            let mut cfg = cfg_mgr.get_config();
-            cfg.general.system_proxy = false;
-            if let Err(e) = cfg_mgr.set_config(cfg) {
-                error!(
-                    "Failed to persist system_proxy=false after restore failure: {}",
-                    e
-                );
-            }
-        }
-        let _ = app_handle.emit(
-            "system-proxy-changed",
-            serde_json::json!({ "enable": false, "error": err.to_string() }),
-        );
+    async fn give_up_system_proxy_after_restore_failure(app_handle: &AppHandle, err: &Error) {
+        // 经 AppController：持事务锁（避免与进行中的配置事务读-改-写互相覆盖）+
+        // 降级模式只改内存。
+        let state = app_handle.state::<crate::AppState>();
+        state
+            .controller
+            .disable_system_proxy_intent(app_handle, &err.to_string())
+            .await;
     }
 }
 
@@ -436,12 +448,16 @@ struct AutoRestartChecker {
     child: Arc<Mutex<Option<Child>>>,
     api_client: reqwest::Client,
     config: Arc<RwLock<Config>>,
+    controller_override: Arc<RwLock<Option<String>>>,
 }
 
 impl AutoRestartChecker {
     /// 轮询 /version 就绪 + 代理端口健康检查，全部通过才返回 Ok。
     async fn wait_ready_and_check_port(&self) -> Result<()> {
-        let addr = self.config.read().proxy.external_controller.clone();
+        let addr = crate::core::controller::effective_controller_addr(
+            &self.config,
+            &self.controller_override,
+        );
         let base = if addr.starts_with("http://") || addr.starts_with("https://") {
             addr
         } else {

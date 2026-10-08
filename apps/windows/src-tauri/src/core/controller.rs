@@ -17,10 +17,24 @@ use tracing::{info, warn};
 use crate::config::model::Config;
 use crate::util::error::{Error, Result};
 
+/// 会话覆盖优先、其次配置值的控制器地址。
+pub(crate) fn effective_controller_addr(
+    config: &RwLock<Config>,
+    controller_override: &RwLock<Option<String>>,
+) -> String {
+    controller_override
+        .read()
+        .clone()
+        .unwrap_or_else(|| config.read().proxy.external_controller.clone())
+}
+
 /// 外部控制器 HTTP 客户端：只做 REST 调用，不持有进程状态。
 pub(crate) struct ControllerClient {
     /// 共享配置（与 ConfigManager 同一 Arc，单一数据源）
     config: Arc<RwLock<Config>>,
+    /// 本次会话的控制器地址覆盖（配置端口被占用时改选的空闲端口）。
+    /// 只存在于运行期：绝不写回共享配置（共享配置会被任意设置保存落盘）。
+    controller_override: Arc<RwLock<Option<String>>>,
     /// 外部控制器 HTTP 客户端
     api_client: reqwest::Client,
 }
@@ -29,6 +43,7 @@ impl ControllerClient {
     pub(crate) fn new(config: Arc<RwLock<Config>>) -> Result<Self> {
         Ok(Self {
             config,
+            controller_override: Arc::new(RwLock::new(None)),
             api_client: reqwest::Client::builder()
                 // 低危：REST 客户端统一超时，避免对控制器请求无限阻塞
                 .timeout(Duration::from_secs(10))
@@ -39,9 +54,19 @@ impl ControllerClient {
         })
     }
 
+    /// 覆盖句柄（CoreManager / watcher 共享同一份）
+    pub(crate) fn override_handle(&self) -> Arc<RwLock<Option<String>>> {
+        self.controller_override.clone()
+    }
+
+    /// 当前生效的控制器地址：会话覆盖优先，其次配置值。
+    pub(crate) fn effective_addr(&self) -> String {
+        effective_controller_addr(&self.config, &self.controller_override)
+    }
+
     /// 外部控制器基础地址（确保带 http://）
     fn api_base(&self) -> String {
-        let addr = self.config.read().proxy.external_controller.clone();
+        let addr = self.effective_addr();
         if addr.starts_with("http://") || addr.starts_with("https://") {
             addr
         } else {

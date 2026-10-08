@@ -21,6 +21,9 @@ const SCHEMES: &[&str] = &[
     "tuic://",
 ];
 
+/// 解析出的节点数上限（略大于归一化阶段的 MAX_NODE_COUNT=1000，使其能报"节点过多"）。
+const MAX_PARSED_NODES: usize = 1000;
+
 /// 解析结果
 pub struct UriListResult {
     pub proxies: Vec<Value>,
@@ -124,7 +127,19 @@ pub fn parse(text: &str) -> UriListResult {
         return UriListResult { proxies, warnings };
     };
     let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 每个基础名下一次尝试的序号：重名编号不再从 2 重头扫（否则 n 个同名节点是 O(n²)，
+    // 实测 2 万行同名 ≈ 60 s，恶意订阅可借此长时间占满一个 CPU）。
+    let mut next_suffix: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for (idx, raw) in body.lines().enumerate() {
+        // 超出节点数上限即停止解析（归一化收尾会据此报"节点过多"）。
+        if proxies.len() > MAX_PARSED_NODES {
+            warnings.push(format!(
+                "line {}: too many nodes; remaining lines ignored",
+                idx + 1
+            ));
+            break;
+        }
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -142,10 +157,10 @@ pub fn parse(text: &str) -> UriListResult {
                     .unwrap_or("node")
                     .to_string();
                 let mut name = base.clone();
-                let mut n = 2;
+                let n = next_suffix.entry(base.clone()).or_insert(2);
                 while !used.insert(name.clone()) {
-                    name = format!("{} #{}", base, n);
-                    n += 1;
+                    name = format!("{} #{}", base, *n);
+                    *n += 1;
                 }
                 if let Some(m) = node.as_mapping_mut() {
                     put(m, "name", s(&name));
@@ -679,6 +694,28 @@ fn parse_tuic(line: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归：大量同名节点不得是二次复杂度（曾 2 万行 ≈ 60 s），且名称唯一。
+    #[test]
+    fn duplicate_names_are_numbered_in_linear_time() {
+        let line = "ss://YWVzLTEyOC1nY206cHc@1.1.1.1:8388#same\n";
+        let body = line.repeat(900);
+        let t = std::time::Instant::now();
+        let r = parse(&body);
+        assert!(t.elapsed().as_secs() < 2);
+        let names: std::collections::HashSet<_> = r
+            .proxies
+            .iter()
+            .filter_map(|n| n.get("name").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        assert_eq!(names.len(), 900);
+        // 超过上限立即停止解析，不处理 25 万行
+        let huge = line.repeat(250_000);
+        let t = std::time::Instant::now();
+        let r = parse(&huge);
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        assert!(r.proxies.len() <= MAX_PARSED_NODES + 1);
+    }
 
     fn field<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
         v.get(k)
