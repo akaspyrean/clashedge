@@ -1,0 +1,52 @@
+name: Upstream check
+
+# The bundled mihomo core is a network-facing process pinned in assets.lock.json.
+# A pin that silently falls behind keeps known CVEs (it was 12 releases / several
+# Go crypto-tls CVEs behind once). Weekly: compare the pin with the latest upstream
+# release and open an issue when it is more than MAX_BEHIND patch releases behind.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  MAX_BEHIND: "3"
+
+jobs:
+  mihomo-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Compare pinned mihomo with latest upstream
+        id: cmp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pinned=$(jq -r '.assets[] | select(.name=="mihomo") | .version' assets.lock.json)
+          latest=$(gh api repos/MetaCubeX/mihomo/releases/latest --jq .tag_name | sed 's/^v//')
+          echo "pinned=$pinned latest=$latest"
+          # Only patch releases of the same minor are compared (1.19.x).
+          if [ "${pinned%.*}" = "${latest%.*}" ]; then
+            behind=$(( ${latest##*.} - ${pinned##*.} ))
+          else
+            behind=999
+          fi
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Open an issue when the pin is stale
+        if: ${{ fromJSON(steps.cmp.outputs.behind) > fromJSON(env.MAX_BEHIND) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="mihomo pin is behind upstream (${{ steps.cmp.outputs.pinned }} -> ${{ steps.cmp.outputs.latest }})"
+          if [ -z "$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')" ]; then
+            gh issue create --title "$title" --body "assets.lock.json pins mihomo ${{ steps.cmp.outputs.pinned }}; upstream is ${{ steps.cmp.outputs.latest }}. Review the upstream release notes for security fixes, then update url / sha256 / extracted_sha256 in assets.lock.json and run scripts/assets/prepare.ps1."
+          fi

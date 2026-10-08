@@ -187,10 +187,10 @@ internal static class ClashEdgeLauncher
         if (string.Equals(dataHash, recorded, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(defHash, recorded, StringComparison.OrdinalIgnoreCase))
         {
+            // 原子替换：先删后移在两步之间断电会丢失用户 Data 里的这份文件。
             string tmp = dataFile + ".new";
             File.Copy(defaultFile, tmp, true);
-            if (File.Exists(dataFile)) File.Delete(dataFile);
-            File.Move(tmp, dataFile);
+            File.Replace(tmp, dataFile, null);
             hashes[rel] = defHash;
         }
     }
@@ -1424,10 +1424,80 @@ internal static class ClashEdgeLauncher
             Console.WriteLine(++total + ". T-p1 not running: " + (!IsInnerAppRunning(Path.Combine(Path.GetTempPath(), "definitely", "ClashEdge.exe")) ? "PASS" : "FAIL"));
         }
 
+        // T-p2 运行中检测（正例）：把 cmd.exe 复制成 <tmp>\ClashEdge.exe 并让它存活 -> 必须判定为运行中
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "clashedge-launcher-test-p2-" + DateTime.Now.Ticks);
+            Directory.CreateDirectory(dir);
+            var fake = Path.Combine(dir, "ClashEdge.exe");
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), fake);
+            var psi = new ProcessStartInfo(fake, "/c ping -n 6 127.0.0.1 >nul") { UseShellExecute = false, CreateNoWindow = true };
+            using (var p = Process.Start(psi))
+            {
+                bool running = false;
+                for (int i = 0; i < 20 && !running; i++) { running = IsInnerAppRunning(fake); if (!running) System.Threading.Thread.Sleep(100); }
+                Console.WriteLine(++total + ". T-p2 running detected: " + (running ? "PASS" : "FAIL"));
+                try { p.Kill(); p.WaitForExit(3000); } catch { }
+            }
+            try { Directory.Delete(dir, true); } catch { }
+        }
+
+        // T-g1 启动器互斥门：持有期间，另一线程在短超时内拿不到；释放后可获得
+        {
+            var root = Path.Combine(Path.GetTempPath(), "clashedge-launcher-test-g1-" + DateTime.Now.Ticks);
+            Directory.CreateDirectory(root);
+            using (var first = AcquireLauncherGate(root, 2000))
+            {
+                bool secondHeld = true;
+                var t = new System.Threading.Thread(() => { using (var second = AcquireLauncherGate(root, 300)) secondHeld = second.Held; });
+                t.Start(); t.Join();
+                Console.WriteLine(++total + ". T-g1 first holds: " + (first.Held ? "PASS" : "FAIL"));
+                Console.WriteLine(++total + ". T-g1 second blocked: " + (!secondHeld ? "PASS" : "FAIL"));
+            }
+            bool again = false;
+            var t2 = new System.Threading.Thread(() => { using (var g = AcquireLauncherGate(root, 2000)) again = g.Held; });
+            t2.Start(); t2.Join();
+            Console.WriteLine(++total + ". T-g1 reacquired after release: " + (again ? "PASS" : "FAIL"));
+            try { Directory.Delete(root, true); } catch { }
+        }
+
         int exitCode = trackingOut.Failures == 0 ? 0 : 1;
         Console.SetOut(originalOut);
         originalOut.WriteLine("\n" + total + " assertions checked; failures: " + trackingOut.Failures + ".");
         return exitCode;
+    }
+
+    /// 包根级互斥门：持有期间独占"恢复 / 基线同步 / 应用更新"。Dispose 时释放。
+    private sealed class LauncherGate : IDisposable
+    {
+        private readonly System.Threading.Mutex _mutex;
+        private bool _held;
+
+        public LauncherGate(System.Threading.Mutex mutex, bool held) { _mutex = mutex; _held = held; }
+
+        public bool Held { get { return _held; } }
+
+        public void Dispose()
+        {
+            if (_held) { try { _mutex.ReleaseMutex(); } catch { } _held = false; }
+            _mutex.Dispose();
+        }
+    }
+
+    /// 以包根路径命名（同一份便携包唯一；不同目录的多份包互不阻塞）。最多等待 60 秒：
+    /// 等不到说明另一个启动器卡住了——不再无限阻塞用户，退化为原行为（无门）继续启动。
+    private static LauncherGate AcquireLauncherGate(string root, int timeoutMs = 60000)
+    {
+        string key;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+        {
+            var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToLowerInvariant()));
+            key = BitConverter.ToString(hash, 0, 8).Replace("-", "");
+        }
+        var mutex = new System.Threading.Mutex(false, @"Local\ClashEdge.Launcher." + key);
+        bool held;
+        try { held = mutex.WaitOne(timeoutMs); }
+        catch (System.Threading.AbandonedMutexException) { held = true; } // 前一个启动器崩溃：已获得所有权
+        return new LauncherGate(mutex, held);
     }
 
     [STAThread]
@@ -1462,25 +1532,32 @@ internal static class ClashEdgeLauncher
         {
             var root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
 
-            // P0：先恢复中断的更新——App/ 可能被改名走，ClashEdge.exe 可能不存在。
-            // 必须在检查 executable 存在性之前执行，否则 old_renamed 状态下会直接报错退出。
-            RecoverInterruptedUpdate(root, silent);
-
             var appDirectory = Path.Combine(root, "App", "ClashEdge");
             var executable = Path.Combine(appDirectory, "ClashEdge.exe");
-            if (!File.Exists(executable)) throw new FileNotFoundException("找不到 ClashEdge 主程序。请完整解压后再启动。", executable);
-
             var data = Path.Combine(root, "Data");
-            CopyMissing(Path.Combine(root, "App", "DefaultData"), data);
-            Directory.CreateDirectory(data);
-            // 随包基线文件（规则 / geodata）的增量同步：未被用户 / 更新器改动的才覆盖
-            SyncDefaultData(Path.Combine(root, "App", "DefaultData"), data);
-            EnsureDataJunction(Path.Combine(appDirectory, "data"), data);
 
-            // 恢复完成后应用新暂存更新——但内层应用仍在运行时（例如应用已最小化到托盘，
-            // 用户再次双击 ClashEdge.exe）无法替换 App/，直接跳过并保留暂存区。
-            if (!IsInnerAppRunning(executable))
-                ApplyPendingUpdate(root, silent);
+            // 同一包根下同一时刻只允许一个启动器执行"恢复 / 同步 / 应用更新"：
+            // 双击两次、或开机自启与手动启动并发，否则两份实例会同时改写 App/ 与暂存区。
+            // 门在拉起内层应用之前释放（内层应用自带单实例保护）。
+            using (var gate = AcquireLauncherGate(root))
+            {
+                // P0：先恢复中断的更新——App/ 可能被改名走，ClashEdge.exe 可能不存在。
+                // 必须在检查 executable 存在性之前执行，否则 old_renamed 状态下会直接报错退出。
+                RecoverInterruptedUpdate(root, silent);
+
+                if (!File.Exists(executable)) throw new FileNotFoundException("找不到 ClashEdge 主程序。请完整解压后再启动。", executable);
+
+                CopyMissing(Path.Combine(root, "App", "DefaultData"), data);
+                Directory.CreateDirectory(data);
+                // 随包基线文件（规则 / geodata）的增量同步：未被用户 / 更新器改动的才覆盖
+                SyncDefaultData(Path.Combine(root, "App", "DefaultData"), data);
+                EnsureDataJunction(Path.Combine(appDirectory, "data"), data);
+
+                // 恢复完成后应用新暂存更新——但内层应用仍在运行时（例如应用已最小化到托盘，
+                // 用户再次双击 ClashEdge.exe）无法替换 App/，直接跳过并保留暂存区。
+                if (!IsInnerAppRunning(executable))
+                    ApplyPendingUpdate(root, silent);
+            }
 
             var home = Path.Combine(data, "Home");
             Directory.CreateDirectory(home);
