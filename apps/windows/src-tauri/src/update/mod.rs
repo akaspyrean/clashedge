@@ -153,7 +153,12 @@ pub fn verify_manifest_signature(
             "更新验签公钥未配置（CLASHEDGE_UPDATE_PUBKEY）；拒绝接受未签名清单".to_string(),
         ));
     }
+    // minisign-verify 0.3 把公钥解析拆成两个方法：from_base64 只吃纯 base64，
+    // decode 吃完整 minisign.pub 格式（含 untrusted comment 行）。0.2.5 的
+    // from_base64 两者都吃；为兼容以完整 minisign.pub 格式注入的 Secret，这里
+    // 先试 from_base64，失败再回退 decode，两种格式都能用。
     let pk = minisign_verify::PublicKey::from_base64(pubkey_b64.trim())
+        .or_else(|_| minisign_verify::PublicKey::decode(pubkey_b64.trim()))
         .map_err(|e| Error::Other(format!("内置更新公钥非法：{}", e)))?;
     let signature = minisign_verify::Signature::decode(sig_file_text)
         .map_err(|e| Error::Other(format!("签名解码失败（.minisig 格式非法）：{}", e)))?;
@@ -651,6 +656,19 @@ mod tests {
             .expect("prehashed minisign signature must verify");
         verify_manifest_signature(TEST_PUBKEY, TEST_MESSAGE, TEST_SIG_LEGACY)
             .expect("legacy minisign signature must verify via fallback");
+    }
+
+    /// 回归：CLASHEDGE_UPDATE_PUBKEY 可能以完整 minisign.pub 格式（含
+    /// untrusted comment 行）注入。minisign-verify 0.3 的 from_base64 只吃纯
+    /// base64，必须经 decode fallback 才能解析完整格式——这条路径正是
+    /// 0.2.5 -> 0.3.0 升级后 release publish 验签失败的根因。
+    #[test]
+    fn full_minisign_pub_format_pubkey_accepted() {
+        let full = format!("untrusted comment: minisign public key\n{}\n", TEST_PUBKEY);
+        verify_manifest_signature(&full, TEST_MESSAGE, TEST_SIG_PREHASHED)
+            .expect("full minisign.pub format pubkey must verify via decode fallback");
+        verify_manifest_signature(&full, TEST_MESSAGE, TEST_SIG_LEGACY)
+            .expect("legacy signature must also verify with full-format pubkey");
     }
 
     #[test]
