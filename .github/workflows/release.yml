@@ -102,19 +102,19 @@ jobs:
       # No rust-cache here: a cache written by an earlier branch/PR run must not
       # be able to inject build outputs into a release artifact.
 
-      # A tag whose version diverges from tauri.conf.json would make the ZIP,
-      # manifest and updater paths contradict each other — fail before any
-      # external side effect.
-      - name: Guard — tag version must match tauri.conf.json
+      # A tag whose version diverges from Cargo.toml (the single source of the
+      # app version) would make the ZIP, manifest and updater paths contradict
+      # each other — fail before any external side effect.
+      - name: Guard — tag version must match Cargo.toml
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $raw = Get-Content .\apps\windows\src-tauri\tauri.conf.json -Encoding UTF8 -Raw
-          $m = [regex]::Match($raw, '"version"\s*:\s*"([^"]+)"')
-          if (-not $m.Success) { throw "Cannot extract version from tauri.conf.json" }
+          $raw = Get-Content .\apps\windows\src-tauri\Cargo.toml -Encoding UTF8 -Raw
+          $m = [regex]::Match($raw, '^version = "([^"]+)"', 'Multiline')
+          if (-not $m.Success) { throw "Cannot extract version from Cargo.toml" }
           $version = $m.Groups[1].Value
           if ($tag -ne "v$version") {
-            throw "Tag '$tag' does not match tauri.conf.json version '$version' — bump the version or fix the tag."
+            throw "Tag '$tag' does not match Cargo.toml version '$version' — bump the version or fix the tag."
           }
           Add-Content $env:GITHUB_OUTPUT "version=$version"
         id: meta
