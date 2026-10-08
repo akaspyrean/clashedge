@@ -309,9 +309,13 @@ mod tests {
     #[test]
     fn missing_run_value_reports_not_found() {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let run = hkcu
-            .open_subkey_with_flags(RUN_KEY_PATH, KEY_READ)
-            .expect("Run key exists");
+        // CI/精简用户配置下 Run 键可能不存在；此时 get_autostart 走键 NotFound 分支同样返回 Ok(false)，
+        // 与「值不存在」语义一致，直接视为回归通过，避免对环境做硬性假设。
+        let run = match hkcu.open_subkey_with_flags(RUN_KEY_PATH, KEY_READ) {
+            Ok(k) => k,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => panic!("unexpected error opening Run key: {e}"),
+        };
         let r: std::io::Result<OsString> = run.get_value("ClashEdgeNoSuchValue-regression");
         assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
