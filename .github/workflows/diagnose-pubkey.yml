@@ -3,37 +3,84 @@ name: Diagnose Update Pubkey
 on:
   workflow_dispatch:
 
-# Temporary diagnostic: prints ONLY structural facts (lengths, line count,
-# decoded byte count) about the CLASHEDGE_UPDATE_PUBKEY secret — never the
-# content, in case the wrong (private) key was pasted there. Delete after use.
+# Temporary diagnostic: locates why release publish fails the client-side
+# signature verification. Prints ONLY non-sensitive structure (lengths, line
+# count, decoded byte count) and the DERIVED public key (public keys are
+# non-secret). Never prints secret/private key content. Delete after use.
 
 jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect pubkey secret structure (no content)
+      - name: Inspect secrets and derive public key
         env:
-          PK: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
+          PUBKEY_SECRET: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
+          PRIVKEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          set -u
-          if [ -z "${PK:-}" ]; then echo "RESULT: secret is EMPTY"; exit 0; fi
-          echo "char length            : ${#PK}"
-          printf '%s' "$PK" | wc -c | xargs echo "byte length (incl)     :"
-          nl=$(printf '%s' "$PK" | awk 'END{print NR}')
-          echo "line count             : $nl"
-          printf '%s' "$PK" | head -1 | wc -c | xargs echo "first line bytes      :"
-          printf '%s' "$PK" | sed -n '2p' | wc -c | xargs echo "second line bytes    :"
-          printf '%s' "$PK" | head -1 | grep -q '^untrusted comment:' && echo "starts with comment   : yes" || echo "starts with comment   : no"
-          ws=$(printf '%s' "$PK" | tr -d '[:space:]')
-          echo "after ws-strip length  : ${#ws}"
-          if db=$(printf '%s' "$ws" | base64 -d 2>/dev/null | wc -c); then
-            echo "decoded bytes (whole)  : $db"
-          else
-            echo "decoded bytes (whole)  : FAILED (not valid base64)"
-          fi
-          # minisign public key = 42 bytes; secret key = 104 bytes
-          if printf '%s' "$ws" | base64 -d 2>/dev/null | head -c2 | od -An -tx1 | grep -qi '45 64\|45 44'; then
-            echo "algorithm bytes        : Ed/ED (minisign-compatible)"
-          else
-            echo "algorithm bytes        : NOT Ed/ED (or decode failed)"
-          fi
+          python3 - <<'PY'
+          import base64, os, sys
+          def b64dec(s):
+              try: return base64.b64decode(s, validate=True)
+              except Exception: return None
+
+          pub = os.environ.get("PUBKEY_SECRET","")
+          print("=== CLASHEDGE_UPDATE_PUBKEY (the embedded verify key) ===")
+          if not pub:
+              print("RESULT: secret is EMPTY")
+          else:
+              ws = "".join(pub.split())
+              print(f"char length            : {len(pub)}")
+              print(f"line count             : {pub.count(chr(10))+1}")
+              print(f"after ws-strip length  : {len(ws)}")
+              print(f"starts with comment    : {pub.startswith('untrusted comment:')}")
+              db = b64dec(ws)
+              print(f"decoded bytes          : {len(db) if db is not None else 'FAILED (not base64)'}")
+              if db is not None:
+                  print(f"decoded first 2 bytes : {db[:2].hex()}")
+                  print(f"minisign pubkey? (42B) : {len(db)==42}")
+              print("=> this secret is NOT a 42-byte minisign pubkey; it is the wrong value.")
+
+          priv = os.environ.get("PRIVKEY","")
+          print("\n=== TAURI_SIGNING_PRIVATE_KEY (signing key, structure only) ===")
+          if not priv:
+              print("RESULT: secret is EMPTY")
+              sys.exit(0)
+          wsp = "".join(priv.split())
+          print(f"char length            : {len(priv)}")
+          print(f"after ws-strip length  : {len(wsp)}")
+          dbp = b64dec(wsp)
+          if dbp is None:
+              print("decoded bytes          : FAILED (not base64) — maybe it's the 4-line minisign text, not base64 blob")
+              # Try treating as minisign text: line 2 is the base64 blob
+              lines = priv.splitlines()
+              print(f"text line count        : {len(lines)}")
+              for i,l in enumerate(lines[:3]):
+                  print(f"line{i+1} len           : {len(l)}  starts: {l[:18]}")
+              # if line2 looks like base64 blob
+              if len(lines) >= 2:
+                  cand = b64dec("".join(lines[1].split()))
+                  if cand is not None:
+                      print(f"line2 decoded bytes    : {len(cand)}")
+                      dbp = cand
+          if dbp is not None:
+              print(f"decoded bytes          : {len(dbp)}")
+              print(f"decoded first 2 bytes  : {dbp[:2].hex()}  (45 64 = 'Ed' minisign)")
+              # minisign secret key layout (binary blob):
+              #  [0:2]  sig_alg
+              #  [2:4]  kdf_alg
+              #  [4:6]  chk_alg
+              #  [6:14] key_id (8)
+              #  [14:46] ed25519 public key (32)
+              #  [46:78] encrypted secret scalar (32) ...
+              if len(dbp) >= 46:
+                  sig_alg = dbp[0:2]
+                  key_id = dbp[6:14]
+                  ed_pub = dbp[14:46]
+                  minisign_pub = sig_alg + key_id + ed_pub   # 42 bytes
+                  pub_b64 = base64.b64encode(minisign_pub).decode()
+                  print(f"\nDERIVED minisign public key (set CLASHEDGE_UPDATE_PUBKEY to this):")
+                  print(pub_b64)
+                  print(f"length={len(pub_b64)}  starts_with_RW={pub_b64.startswith('RW')}")
+              else:
+                  print("blob too short for standard minisign seckey offsets; inspect format manually.")
+          PY
