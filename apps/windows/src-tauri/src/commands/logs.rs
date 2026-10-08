@@ -19,10 +19,13 @@ pub async fn start_log_stream(app: AppHandle) -> Result<()> {
 
     let (controller, secret) = {
         let cfg = state.config_manager.lock().unwrap().get_config();
-        (
-            cfg.proxy.external_controller.clone(),
-            cfg.proxy.secret.clone(),
-        )
+        // 会话覆盖（配置端口被占用时的改选端口）优先于配置值。
+        let addr = state
+            .core_manager
+            .get()
+            .map(|c| c.controller_addr())
+            .unwrap_or_else(|| cfg.proxy.external_controller.clone());
+        (addr, cfg.proxy.secret.clone())
     };
 
     let handle = crate::core::logs::spawn_log_stream(app.clone(), &controller, &secret);

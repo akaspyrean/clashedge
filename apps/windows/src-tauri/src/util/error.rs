@@ -20,7 +20,7 @@ pub enum Error {
     Tauri(#[from] tauri::Error),
 
     #[error("Reqwest error: {0}")]
-    Reqwest(#[from] reqwest::Error),
+    Reqwest(reqwest::Error),
 
     #[error("Invalid state: {0}")]
     InvalidState(String),
@@ -42,6 +42,14 @@ pub enum Error {
 
     #[error("{0}")]
     Other(String),
+}
+
+/// reqwest 的 Display 会追加 ` for url (完整URL)`，订阅地址里的 token 会因此进入
+/// 日志、诊断包与前端错误提示。统一在转换处剥离 URL（`redact_url_for_log` 的约定）。
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        Error::Reqwest(e.without_url())
+    }
 }
 
 impl From<anyhow::Error> for Error {
@@ -70,5 +78,30 @@ impl serde::Serialize for Error {
         S: serde::Serializer,
     {
         serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reqwest_errors_never_carry_the_request_url() {
+        // 连接 127.0.0.1:1 必然失败；URL 中的 token 不得出现在错误文本里。
+        let err = reqwest::Client::new()
+            .get("http://127.0.0.1:1/api/v1/client/SECRET_TOKEN?key=SECRET_KEY")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("SECRET_TOKEN"),
+            "premise: raw error leaks url"
+        );
+        let text = Error::from(err).to_string();
+        assert!(
+            !text.contains("SECRET_TOKEN") && !text.contains("SECRET_KEY"),
+            "{}",
+            text
+        );
     }
 }

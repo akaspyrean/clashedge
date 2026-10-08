@@ -27,6 +27,14 @@ use crate::config::model::Config;
 use crate::proxy::system_proxy::SystemProxyConfig;
 use crate::util::error::{Error, Result};
 
+/// 用户发起的核心进程操作（见 [`AppController::core_op`]）。
+#[derive(Debug, Clone, Copy)]
+pub enum CoreOp {
+    Start,
+    Restart,
+    Reload,
+}
+
 /// 应用事务控制器：持有配置/运行态事务串行锁（tokio Mutex，可跨 `.await`）。
 pub struct AppController {
     /// 事务串行锁（原 `AppState.config_tx`，语义不变）。锁的是 `()`——
@@ -56,6 +64,7 @@ impl AppController {
     pub async fn apply_proxy_mode(&self, app: &AppHandle, mode: &str) -> Result<()> {
         crate::core::runtime::validate_proxy_mode(mode)?;
         let _tx = self.tx.lock().await;
+        Self::ensure_not_degraded(&app.state::<crate::AppState>())?;
         crate::core::runtime::apply_proxy_mode_locked(app, mode).await
     }
 
@@ -69,6 +78,7 @@ impl AppController {
     pub async fn apply_tun(&self, app: &AppHandle, enable: bool) -> Result<()> {
         crate::core::runtime::validate_tun_permission(enable)?;
         let _tx = self.tx.lock().await;
+        Self::ensure_not_degraded(&app.state::<crate::AppState>())?;
         crate::core::runtime::apply_tun_locked(app, enable).await
     }
 
@@ -88,6 +98,11 @@ impl AppController {
 
         // 全程持有事务锁，串行整段事务。
         let _tx = self.tx.lock().await;
+        // 降级模式下只允许"关闭"（不写配置的恢复路径由 *_unless_degraded 兜底），
+        // 开启会持久化默认配置覆盖损坏原文件。
+        if enable {
+            Self::ensure_not_degraded(&app.state::<crate::AppState>())?;
+        }
         crate::core::runtime::apply_system_proxy_locked(app, enable).await
     }
 
@@ -119,12 +134,53 @@ impl AppController {
         Ok(())
     }
 
+    /// 用户发起的核心 启动 / 重启 / 重载：与配置事务共用事务锁，避免在某个配置事务
+    /// "已持久化、尚未应用 / 尚未回滚"的中间态插入进程操作（锁序固定为 tx → lifecycle）。
+    pub async fn core_op(&self, app: &AppHandle, op: CoreOp) -> Result<()> {
+        let _tx = self.tx.lock().await;
+        {
+            let state = app.state::<crate::AppState>();
+            let core_guard = state.core_manager.get();
+            let Some(core) = core_guard.as_ref() else {
+                return Err(Error::InvalidState("Core not initialized".to_string()));
+            };
+            match op {
+                CoreOp::Start => core.start().await?,
+                CoreOp::Restart => core.restart().await?,
+                CoreOp::Reload => core.reload_config().await?,
+            }
+        }
+        // 托盘菜单（运行态图标 / 代理组子菜单）跟随刷新。
+        crate::core::runtime::refresh_tray(app).await
+    }
+
     /// 激活 Profile：校验名称合法且文件存在 → 持久化激活名 → 重新生成运行时配置 →
     /// 热重载运行中的核心 → 失败回滚。空内容的 Profile 不阻塞：build_runtime_config
     /// 会回退到内置模板。
     pub async fn activate_profile(&self, app: &AppHandle, name: &str) -> Result<()> {
         let _tx = self.tx.lock().await;
+        Self::ensure_not_degraded(&app.state::<crate::AppState>())?;
         crate::core::runtime::activate_profile_locked(app, name).await
+    }
+
+    /// 用户在降级横幅里显式确认"覆盖损坏的配置文件"：持锁写盘并退出降级模式。
+    /// 原文件已在启动时备份为 `config.yaml.corrupt-*.bak`。
+    pub async fn confirm_overwrite_corrupt_config(&self, app: &AppHandle) -> Result<()> {
+        let _tx = self.tx.lock().await;
+        let state = app.state::<crate::AppState>();
+        state
+            .config_manager
+            .lock()
+            .unwrap()
+            .confirm_overwrite_degraded()?;
+        crate::core::runtime::refresh_tray(app).await
+    }
+
+    /// 把"系统代理意图"落回关闭（崩溃自愈 / 启动恢复失败后，使配置与 Windows 实际状态一致）。
+    /// 持事务锁，避免与进行中的配置事务读-改-写互相覆盖；降级模式只改内存不写盘。
+    pub async fn disable_system_proxy_intent(&self, app: &AppHandle, reason: &str) {
+        let _tx = self.tx.lock().await;
+        crate::core::runtime::mark_system_proxy_failed(app, reason).await;
     }
 
     /// 整包配置事务：校验已完成，这里执行
@@ -172,7 +228,7 @@ impl AppController {
             return Err(Error::Other(
                 "检测到 config.yaml 损坏，应用正以默认配置降级运行。为保护你的数据，\
                  原文件（已备份为 config.yaml.corrupt-*.bak）不会被静默覆盖。\
-                 请先在设置页确认覆盖损坏的配置文件后再修改此项。"
+                 请先在窗口顶部的横幅中确认覆盖损坏的配置文件后再修改此项。"
                     .to_string(),
             ));
         }

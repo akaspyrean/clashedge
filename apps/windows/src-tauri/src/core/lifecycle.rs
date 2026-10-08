@@ -130,12 +130,12 @@ impl CoreManager {
         // 2. 端口预检：mixed-port / DNS 被占用直接报"谁占用了"；控制器端口被占用则
         //    本次会话改选空闲端口（仅内存生效）。
         {
-            let (m, cfg) = (mihomo_path.clone(), self.config());
+            // 预检看"配置的"端口（不含上次会话的覆盖），保证每次启动重新判定。
+            let (m, cfg) = (mihomo_path.clone(), self.config.read().clone());
             match tokio::task::spawn_blocking(move || spawn::preflight(&m, &cfg)).await {
                 Ok(Ok(pre)) => {
-                    if let Some(addr) = pre.controller_override {
-                        self.config.write().proxy.external_controller = addr;
-                    }
+                    // 仅会话覆盖；每次启动重新判定（旧覆盖在端口恢复空闲后自然失效）。
+                    *self.controller_override.write() = pre.controller_override;
                 }
                 Ok(Err(e)) => return Err(self.transition_to_error_and_emit(e)),
                 Err(e) => {

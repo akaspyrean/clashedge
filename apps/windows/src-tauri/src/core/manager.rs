@@ -91,6 +91,8 @@ pub struct CoreManager {
     /// 外部控制器 REST 客户端（Config + HTTP client 都封装在此，
     /// 与进程生命周期字段解耦，见 core/controller.rs）
     pub(super) controller: ControllerClient,
+    /// 会话级控制器地址覆盖（与 ControllerClient 共享；不进入共享配置）
+    pub(super) controller_override: Arc<RwLock<Option<String>>>,
     /// AppHandle（用于状态变更事件推送）
     pub(super) app_handle: AppHandle,
     /// 用户主动停止标志（stop() 设为 true，start() 清除）。
@@ -111,7 +113,7 @@ pub struct CoreManager {
     pub(super) applied_hash: Arc<Mutex<Option<String>>>,
     /// 生命周期互斥锁：start/stop/restart/reload_config 串行执行，
     /// 只读 REST 操作（get_connections/get_proxy_groups/version 等）不需要此锁。
-    pub(super) lifecycle: tokio::sync::Mutex<()>,
+    pub(super) lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl CoreManager {
@@ -142,6 +144,7 @@ impl CoreManager {
 
         info!("mihomo path: {:?}", mihomo_path);
 
+        let controller = ControllerClient::new(config.clone())?;
         Ok(CoreManager {
             child: Arc::new(Mutex::new(None)),
             // 共享配置 Arc 需要 clone 一份给 CoreManager 字段、一份给 ControllerClient
@@ -152,14 +155,15 @@ impl CoreManager {
             init_error,
             data_dir,
             // REST 客户端（config Arc + HTTP client）收敛到 ControllerClient
-            controller: ControllerClient::new(config)?,
+            controller_override: controller.override_handle(),
+            controller,
             app_handle,
             user_stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             crash_times: Arc::new(Mutex::new(Vec::new())),
             started_at: Arc::new(Mutex::new(None)),
             applied_hash: Arc::new(Mutex::new(None)),
-            lifecycle: tokio::sync::Mutex::new(()),
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -184,8 +188,18 @@ impl CoreManager {
     }
 
     /// 获取配置快照（克隆，调用方自由持有）
+    /// 控制器会话覆盖已应用到 `proxy.external_controller`（用于生成 runtime-config / 预检）。
     pub fn config(&self) -> Config {
-        self.config.read().clone()
+        let mut cfg = self.config.read().clone();
+        if let Some(addr) = self.controller_override.read().clone() {
+            cfg.proxy.external_controller = addr;
+        }
+        cfg
+    }
+
+    /// 当前生效的外部控制器地址（日志流等需要直连控制器的调用方使用）。
+    pub fn controller_addr(&self) -> String {
+        self.controller.effective_addr()
     }
 
     /// 运行时配置文件路径

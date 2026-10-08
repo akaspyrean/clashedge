@@ -137,6 +137,27 @@ impl ConfigManager {
         Ok(())
     }
 
+    /// 内部（非用户显式保存）路径使用的持久化：降级模式下只更新内存、**不写盘**，
+    /// 磁盘上的损坏原文件保持不动，直到用户显式确认覆盖。返回是否真正落盘。
+    pub fn set_config_unless_degraded(&mut self, config: Config) -> Result<bool> {
+        if self.is_degraded() {
+            *self.config.write() = config;
+            return Ok(false);
+        }
+        self.set_config(config).map(|_| true)
+    }
+
+    /// 用户显式确认"覆盖损坏的配置文件"：把当前内存配置写盘并退出降级模式。
+    /// 非降级时为空操作。
+    pub fn confirm_overwrite_degraded(&mut self) -> Result<bool> {
+        if !self.is_degraded() {
+            return Ok(false);
+        }
+        let cfg = self.get_config();
+        self.set_config(cfg)?;
+        Ok(true)
+    }
+
     /// 就地修改：闭包里改完后统一落盘
     pub fn update_config_with<F>(&mut self, f: F) -> Result<()>
     where
@@ -269,6 +290,38 @@ fn backup_corrupt_config(config_path: &Path) {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "config.yaml".to_string());
+    let prefix = format!("{}.corrupt-", file_name);
+    let dir = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    // 已有内容完全相同的备份就不再重复备份（每次启动都解析失败时不会无限堆积）。
+    let current = std::fs::read(config_path).ok();
+    let mut existing: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".bak"))
+        })
+        .collect();
+    existing.sort();
+    if let Some(cur) = &current {
+        if existing
+            .iter()
+            .any(|p| std::fs::read(p).ok().as_ref() == Some(cur))
+        {
+            return;
+        }
+    }
+    // 只保留最新 4 份旧备份（加上本次共 5 份）。
+    let excess = existing.len().saturating_sub(4);
+    for old in existing.into_iter().take(excess) {
+        let _ = std::fs::remove_file(old);
+    }
     let backup = config_path.with_file_name(format!("{}.corrupt-{}.bak", file_name, stamp));
     match std::fs::copy(config_path, &backup) {
         Ok(_) => info!("Original config backed up to {}", backup.display()),
@@ -657,6 +710,42 @@ mod tests {
 
     /// init 遇到坏配置进入降级模式——内存为默认值（应用可用），
     /// 磁盘上的原始文件保持不动。
+    /// 降级模式：内部路径（崩溃自愈 / 启动恢复）只改内存不写盘；
+    /// 用户显式确认后才落盘并退出降级。
+    #[test]
+    fn degraded_internal_writes_never_touch_disk_until_confirmed() {
+        let dir = std::env::temp_dir().join(format!(
+            "clash-edge-degraded-guard-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        let garbage = "app: [unclosed";
+        std::fs::write(&path, garbage).unwrap();
+
+        let mut mgr = ConfigManager::new();
+        mgr.init(&dir).unwrap();
+        assert!(mgr.is_degraded());
+
+        let mut cfg = mgr.get_config();
+        cfg.general.system_proxy = true;
+        assert!(!mgr.set_config_unless_degraded(cfg).unwrap());
+        assert!(mgr.get_config().general.system_proxy, "memory updated");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), garbage);
+        assert!(mgr.is_degraded());
+
+        assert!(mgr.confirm_overwrite_degraded().unwrap());
+        assert!(!mgr.is_degraded());
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), garbage);
+        // 非降级时 confirm 为空操作；内部写盘恢复正常
+        assert!(!mgr.confirm_overwrite_degraded().unwrap());
+        let cfg = mgr.get_config();
+        assert!(mgr.set_config_unless_degraded(cfg).unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn init_enters_degraded_mode_on_corrupt_config() {
         let dir = std::env::temp_dir().join(format!(

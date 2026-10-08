@@ -4,13 +4,13 @@
   "assets": [
     {
       "name": "mihomo",
-      "version": "1.19.20",
+      "version": "1.19.32",
       "variant": "windows-amd64-compatible",
-      "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.20/mihomo-windows-amd64-compatible-v1.19.20.zip",
-      "sha256": "bf0be6e1feaef84311a5d901d3d1e5d1171aaa4be04005d368b78865727eae4e",
+      "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-windows-amd64-compatible-v1.19.32.zip",
+      "sha256": "974a4d7ad69aed27aa2e8f91d61113573c14dadb14562c63e58effabf59816f0",
       "extract": "mihomo-windows-amd64-compatible.exe",
       "out": "mihomo/clash-edge-core.exe",
-      "extracted_sha256": "1b97c10b06c41d78fd0f3821ac49905c3f8ac5812605bd4b2753a48147769801"
+      "extracted_sha256": "04f8d7fc2b314771e1ecbf15951d59f0e1cb7914503c88cfb6972ff6a824e314"
     },
     {
       "name": "wintun",

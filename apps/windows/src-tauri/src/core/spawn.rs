@@ -211,6 +211,28 @@ fn rotate_if_large(path: &Path) {
     }
 }
 
+/// 运行中的内核持续追加写日志（`rotate_if_large` 只在启动时生效）。长时间运行 / debug 级别下
+/// 日志会无限增长，这里在不打断子进程的前提下裁剪：把当前内容备份为 `.old.log` 后原地截断。
+/// 子进程以追加模式持有句柄，截断后继续写到新的文件末尾。可能丢失复制与截断之间的几行。
+pub fn trim_running_logs(data_dir: &Path, max_bytes: u64) {
+    for name in ["mihomo-stdout.log", "mihomo-stderr.log"] {
+        let path = data_dir.join("logs").join(name);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() <= max_bytes {
+            continue;
+        }
+        let old = path.with_extension("old.log");
+        if std::fs::copy(&path, &old).is_err() {
+            continue;
+        }
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&path) {
+            let _ = f.set_len(0);
+        }
+    }
+}
+
 /// 追加方式打开日志并写一行会话分隔，返回 `(文件, 打开前长度)`。
 /// 追加而非 `File::create`：崩溃循环里不会覆盖第一次崩溃的现场。
 fn open_log_append(path: &Path, label: &str) -> Result<(std::fs::File, u64)> {
@@ -315,7 +337,9 @@ fn ensure_bindable(label: &str, host: &str, port: u16, mihomo_path: &Path) -> Re
         return Ok(());
     }
     if let Some((pid, name)) = port_owner(port) {
+        let mut ours = false;
         if owns_pid(pid, Some(mihomo_path)) {
+            ours = true;
             warn!(
                 "{} port {} is held by a leftover ClashEdge mihomo (PID {}); reclaiming",
                 label, port, pid
@@ -328,9 +352,16 @@ fn ensure_bindable(label: &str, host: &str, port: u16, mihomo_path: &Path) -> Re
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
+        let hint = if ours {
+            // 本应用遗留的内核却无法终止：几乎总是权限问题——上次以管理员身份（TUN）运行，
+            // 本次以普通权限启动，无权结束它。
+            "该进程是本应用遗留的内核，但当前权限无法结束它（上次可能以管理员身份运行）。请以管理员身份运行一次 ClashEdge，或在任务管理器中结束它。"
+        } else {
+            "请关闭该程序，或在设置中更换端口后重试。"
+        };
         return Err(Error::Other(format!(
-            "端口 {}（{}）已被进程 {}（PID {}）占用。请关闭该程序，或在设置中更换端口后重试。",
-            port, label, name, pid
+            "端口 {}（{}）已被进程 {}（PID {}）占用。{}",
+            port, label, name, pid, hint
         )));
     }
     Err(Error::Other(format!(
@@ -449,6 +480,27 @@ mod tests {
         // 偏移之后没有历史内容
         let tail = &content.as_bytes()[offset as usize..];
         assert!(tail.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn trim_running_logs_truncates_in_place_and_keeps_a_copy() {
+        let d = scratch("trim");
+        std::fs::create_dir_all(d.join("logs")).unwrap();
+        let p = d.join("logs").join("mihomo-stdout.log");
+        std::fs::write(&p, vec![b'x'; 2048]).unwrap();
+        trim_running_logs(&d, 1024);
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 0);
+        assert_eq!(
+            std::fs::metadata(d.join("logs").join("mihomo-stdout.old.log"))
+                .unwrap()
+                .len(),
+            2048
+        );
+        // 未超限不动
+        std::fs::write(&p, b"small").unwrap();
+        trim_running_logs(&d, 1024);
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 5);
         let _ = std::fs::remove_dir_all(&d);
     }
 
