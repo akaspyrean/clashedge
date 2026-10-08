@@ -1,0 +1,24 @@
+# cargo-deny policy (licenses / bans / sources). Vulnerability advisories are checked by
+# `cargo audit` (see .cargo/audit.toml) in scripts/ci/quality.ps1, so they are not repeated here.
+
+[graph]
+targets = ["x86_64-pc-windows-msvc"]
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+  "MIT", "MIT-0", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "0BSD", "CC0-1.0", "BSL-1.0",
+  "Unicode-3.0", "Unlicense", "MPL-2.0", "CDLA-Permissive-2.0",
+]
+
+[bans]
+# tauri 2.11 pulls reqwest 0.13 / winreg 0.55 next to our pinned reqwest 0.12 / winreg 0.11
+# (see the decision recorded in Cargo.toml); keep them visible without failing the gate.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

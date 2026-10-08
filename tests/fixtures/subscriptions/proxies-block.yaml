@@ -1,0 +1,28 @@
+# Standard Clash subscription with inline proxies (block-style mappings).
+# Sanitized: all server addresses, passwords, and UUIDs are fake.
+proxies:
+  - name: SS-HK-01
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: test-password
+  - name: VMess-JP-01
+    type: vmess
+    server: example.com
+    port: 443
+    uuid: 11111111-1111-1111-1111-111111111111
+    cipher: auto
+    alterId: 0
+  - name: VLESS-US-01
+    type: vless
+    server: 5.6.7.8
+    port: 443
+    uuid: 22222222-2222-2222-2222-222222222222
+    flow: xtls-rprx-vision
+  - name: Trojan-DE-01
+    type: trojan
+    server: example.org
+    port: 443
+    password: test-password
+    sni: example.org

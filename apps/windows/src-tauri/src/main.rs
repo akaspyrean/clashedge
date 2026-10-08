@@ -1,0 +1,726 @@
+// src-tauri/src/main.rs
+//! ClashEdge - Tauri 2 入口
+//!
+//! 架构：
+//! - 后端：Rust (Tauri 2 + Tokio)
+//! - 前端：Vue 3 + TypeScript + Pinia + Element Plus
+//! - 打包：dir target（便携包，无安装器）
+//! - Sidecar：clash-edge-core.exe（mihomo 内核）、wintun.dll
+//! - 便携模式：exe 同目录 App/ 存放程序文件，Data/ 存放用户数据
+//!   （原生便携检测：App/portable.dat 或 App/clash-edge-core.exe 存在即便携）
+
+// Windows GUI 子系统：否则双击内层 exe 会弹一个黑色控制台窗口（大黑框）。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(clippy::needless_return)]
+
+mod commands;
+mod config;
+mod core;
+mod geodata;
+mod i18n;
+mod proxy;
+mod tray;
+mod update;
+mod util;
+
+use crate::config::persistence::ConfigManager;
+use crate::core::manager::CoreManager;
+use crate::tray::builder::build_tray;
+use crate::util::logging::init as init_logging;
+use crate::util::paths::get_app_data_dir;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tracing::{error, info, warn};
+
+/// 应用状态 - 需要公开以便 commands 访问
+///
+/// 注意锁类型：
+/// - `core_manager` 初始化后稳定持有（OnceLock），只读 REST 操作并发执行，
+///   生命周期操作（start/stop/restart/reload）走内部 lifecycle 互斥锁。
+/// - `config_manager` / `tray` 是 std Mutex（同步锁，禁止跨 `.await` 持有），
+///   只保护极短的临界区（读快照、set_config 落盘）。跨 `.await` 的运行时
+///   操作（reload / restart / Windows 副作用）会释放该锁，因此 `config_manager`
+///   **不能**串行整个配置事务——两个并发事务会交错：A 写 V2 后 await reload，
+///   B 读到 V2 写 V3，A 失败回滚到 V1 覆盖 B 的 V3。
+/// - `controller`（`core::app_controller::AppController`）私有持有配置/运行态
+///   事务串行锁（tokio Mutex，可跨 `.await` 持有）。所有改变系统运行态的入口
+///   （update_config / update_config_fields / reset_config / import_config /
+///   apply_proxy_mode / apply_tun / apply_system_proxy / activate_profile /
+///   rename_profile / update_profile_content / 订阅提交 / tray config_mixin /
+///   stop_core）都必须经由控制器方法，锁的获取发生在控制器内部——调用方
+///   既不可能忘记持锁，也不可能绕过它，保证「UI = Config = runtime-config =
+///   Mihomo = Windows」在并发入口下也严格成立。锁的是 `()` —— 纯串行作用，
+///   不承载任何数据。
+pub struct AppState {
+    pub core_manager: std::sync::OnceLock<crate::core::manager::CoreManager>,
+    pub config_manager: std::sync::Mutex<ConfigManager>,
+    /// 应用事务控制器：私有持有配置/运行态事务串行锁，串行所有改
+    /// Config + Mihomo + Windows 的入口。见上文结构注释。
+    pub controller: crate::core::app_controller::AppController,
+    pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
+    /// 日志流任务句柄（前端日志页启用/停止；std Mutex，abort 为同步调用）
+    pub log_stream: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// 最近一次 mihomo 子进程 PID 缓存（CoreSupervisor 在每次成功 spawn
+    /// 后更新、stop 时清零）。退出清理在 core_manager 锁被 async 任务占用时
+    /// 用它做按 PID 精确清杀——「按进程名 taskkill」会误杀用户自己在跑的
+    /// 其他 mihomo 实例。0 = 本会话从未启动过子进程。
+    pub core_pid_cache: std::sync::atomic::AtomicU32,
+    /// 本会话最近一次通过 minisign 验签的更新清单（附验签时刻）。
+    /// `download_update` 只允许下载这份清单指向的包——WebView 传入的
+    /// version/url/hash 不参与任何决策。带 TTL：距检查超过
+    /// `VERIFIED_UPDATE_TTL` 后缓存失效，必须重新 check_update，
+    /// 防止用陈旧清单下载已被撤回/替换的版本。
+    pub verified_update: std::sync::Mutex<Option<crate::update::VerifiedUpdate>>,
+    /// 主窗口"隐藏代数"：每次隐藏到托盘 / 重新显示都会递增，延迟销毁任务据此判断
+    /// 自己是否已过期（窗口在等待期间又被唤起则不销毁）。
+    pub hide_gen: std::sync::atomic::AtomicU64,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            core_manager: std::sync::OnceLock::new(),
+            config_manager: std::sync::Mutex::new(ConfigManager::new()),
+            controller: crate::core::app_controller::AppController::new(),
+            tray: std::sync::Mutex::new(None),
+            log_stream: std::sync::Mutex::new(None),
+            core_pid_cache: std::sync::atomic::AtomicU32::new(0),
+            verified_update: std::sync::Mutex::new(None),
+            hide_gen: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let app = tauri::Builder::default()
+        // 单实例：重复启动时聚焦已存在的主窗口，而不是再起一份
+        // （托盘应用 + 便携包，双实例会导致两个进程同时操作同一份配置）。
+        // 静默自启（--clash-edge-autostart）时已有实例在跑，不应弹窗打扰。
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            let autostart = args.iter().any(|a| a == "--clash-edge-autostart");
+            if autostart {
+                return;
+            }
+            show_main_window(app);
+        }))
+        // 文件选择保留 dialog；fs / notification / clipboard / opener 无真实调用，
+        // 文件读写与打开目录均走受控 Rust command，因此不注册未使用插件。
+        .plugin(tauri_plugin_dialog::init())
+        // Tauri updater 半成品已移除；当前更新链是已实现的 Portable Updater
+        //（minisign manifest → SHA256 → staging → Launcher 事务替换）。
+        .plugin(init_logging())
+        .manage(AppState::new())
+        .setup(|app| {
+            info!("ClashEdge starting...");
+
+            // 获取数据目录（便携 Data/ 或 Tauri 默认 app_data_dir）
+            let app_handle = app.handle().clone();
+            let data_dir = get_app_data_dir(&app_handle)?;
+            info!("Data directory: {:?}", data_dir);
+
+            // 便携包复制/移动/改名后，修复开机自启注册表里可能指向旧位置的路径
+            if let Err(e) = crate::util::autostart::repair_autostart() {
+                warn!("Failed to repair autostart path: {}", e);
+            }
+
+            // 初始化配置管理器
+            {
+                let state = app.state::<AppState>();
+                let mut config_mgr = state.config_manager.lock().unwrap();
+                config_mgr.init(&data_dir)?;
+
+                // 异常恢复与手动关闭/正常退出共用同一 ownership helper。
+                // ownership 已被用户/其他软件拿走时，不写注册表，并把配置意图落回
+                // false，避免核心启动后再次覆盖用户的新代理。
+                let port = config_mgr.get_config().general.mixed_port;
+                match crate::proxy::journal::recover_on_startup(&data_dir, port) {
+                    Ok(crate::proxy::journal::ReleaseOutcome::Restored { message, .. }) => {
+                        warn!("Proxy journal recovery: {}", message);
+                    }
+                    Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost) => {
+                        let mut cfg = config_mgr.get_config();
+                        cfg.general.system_proxy = false;
+                        config_mgr.set_config_unless_degraded(cfg)?;
+                        warn!(
+                            "Proxy ownership changed after abnormal exit; preserving Windows state and disabling ClashEdge proxy intent"
+                        );
+                    }
+                    Ok(crate::proxy::journal::ReleaseOutcome::NoOwnership) => {}
+                    Err(e) => {
+                        warn!("Proxy journal recovery deferred; journal kept: {}", e);
+                    }
+                }
+            }
+
+            // 初始化核心管理器（与 ConfigManager 共享同一个配置 Arc，单一数据源）
+            {
+                let state = app.state::<AppState>();
+                let config_handle = { state.config_manager.lock().unwrap().config_handle() };
+                let core_mgr = CoreManager::new(app.handle().clone(), config_handle)?;
+                state.core_manager.set(core_mgr).ok();
+            }
+
+            // 创建系统托盘（内部会把 TrayIcon 存入 AppState.tray）
+            build_tray(app.handle())?;
+
+            // 主窗口：见 create_main_window（导航锁定 / 图标 / 关闭到托盘 / 延迟销毁）。
+            create_main_window(app.handle())?;
+            // 自启动静默驻留托盘：窗口从未显示，同样按"隐藏超时"回收 WebView 内存。
+            if std::env::args().any(|a| a == "--clash-edge-autostart") {
+                schedule_webview_destroy(app.handle());
+            }
+
+            // 清理 profiles 目录里上次异常退出遗留的临时文件（>1 小时）
+            if let Ok(dir) = crate::util::paths::get_profiles_dir(app.handle()) {
+                let n = crate::util::temp::sweep_stale(&dir, std::time::Duration::from_secs(3600));
+                if n > 0 {
+                    info!("Swept {} stale temp files from profiles/", n);
+                }
+            }
+
+            // 启动核心服务（异步任务内部重新加锁）。
+            // 顺序：先启动 mihomo 并确认监听就绪，再启用系统代理。
+            // 反过来（先写注册表代理再起内核）会在 mihomo 真正监听 7890 之前
+            // 把系统代理指向一个还没人监听的端口，这段时间内所有走代理的请求
+            // （含 WebView2 自身的资源/IPC 回环请求）都会得到 ERR_CONNECTION_REFUSED。
+            // 开机自启时系统刚登录、网络/磁盘可能未就绪，首次启动失败很常见——
+            // 重试数次，避免开机后内核一直不跑。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    let sys_proxy_intent = state
+                        .config_manager
+                        .lock()
+                        .unwrap()
+                        .get_config()
+                        .general
+                        .system_proxy;
+
+                    const START_RETRIES: u32 = 5;
+                    let mut attempt: u32 = 0;
+                    let mut started = false;
+                    loop {
+                        let ok = match state.core_manager.get() {
+                            Some(core) => core.start().await.is_ok(),
+                            None => false,
+                        };
+                        if ok {
+                            started = true;
+                            break;
+                        }
+                        attempt += 1;
+                        if attempt >= START_RETRIES {
+                            error!("Failed to start core after {} attempts", attempt);
+                            break;
+                        }
+                        info!(
+                            "Core start failed (attempt {}/{}); retrying in 2s",
+                            attempt, START_RETRIES
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+
+                    // 只有内核真正起来之后，才把系统代理打开——避免代理指向死端口。
+                    if started && sys_proxy_intent {
+                        if let Err(e) =
+                            state.controller.apply_system_proxy(&app_handle, true).await
+                        {
+                            error!("Failed to restore system proxy: {}", e);
+                            // 恢复失败不得让 UI 继续把 system-proxy 当作 ON；
+                            // 配置落回实际状态并推送事件刷新前端。
+                            state
+                                .controller
+                                .disable_system_proxy_intent(&app_handle, &e.to_string())
+                                .await;
+                        }
+                    } else if sys_proxy_intent && !started {
+                        // 内核没起来但配置里仍想开系统代理：保持关闭，否则会指向死端口。
+                        // 配置意图同步落回 false，UI 显示真实状态（OFF）。
+                        warn!("System proxy stays OFF: core failed to start (config intent=true)");
+                        state
+                            .controller
+                            .disable_system_proxy_intent(&app_handle, "core failed to start")
+                            .await;
+                    }
+                });
+            }
+
+            // 启动时一次性订阅静默刷新——延迟 60s（给核心启动与网络就绪
+            // 留时间）后执行一次即结束：无常驻定时器、无循环、不占驻留内存。
+            // 仅在用户显式开启"自动更新订阅"时执行（可预期性与隐私：避免
+            // 用户只是打开应用、60s 后却静默访问订阅服务器）。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let enabled = app_handle
+                        .state::<crate::AppState>()
+                        .config_manager
+                        .lock()
+                        .unwrap()
+                        .get_config()
+                        .general
+                        .auto_update_subscription;
+                    if !enabled {
+                        info!("Startup subscription auto-refresh disabled by setting");
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    crate::commands::profiles::auto_refresh_stale_subscriptions(&app_handle).await;
+                    info!("Startup subscription auto-refresh finished");
+                });
+            }
+
+            // GeoData / 规则集自动更新：仅在用户开启 `geo-auto-update` 时，启动 90s 后
+            // 检查一次，距上次成功更新 >24h 才执行（无常驻定时器）。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let enabled = app_handle
+                        .state::<crate::AppState>()
+                        .config_manager
+                        .lock()
+                        .unwrap()
+                        .get_config()
+                        .general
+                        .geo_auto_update;
+                    if !enabled {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+                    crate::geodata::updater::auto_update_if_due(&app_handle).await;
+                });
+            }
+
+            // 启动后静默检查一次应用更新（仅提示，不自动下载 / 安装）。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let enabled = app_handle
+                        .state::<crate::AppState>()
+                        .config_manager
+                        .lock()
+                        .unwrap()
+                        .get_config()
+                        .general
+                        .auto_check_update;
+                    if !enabled {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    match crate::commands::update::check_and_cache(&app_handle).await {
+                        Ok(crate::update::UpdateStatus::Available { manifest, .. }) => {
+                            info!("Update available: v{}", manifest.version);
+                            let _ = tauri::Emitter::emit(
+                                &app_handle,
+                                "update-available",
+                                serde_json::json!({ "version": manifest.version }),
+                            );
+                        }
+                        Ok(_) => info!("Application is up to date"),
+                        Err(e) => info!("Startup update check skipped: {}", e),
+                    }
+                });
+            }
+
+            info!("ClashEdge started successfully");
+            Ok(())
+        })
+        // 注意：必须使用 `crate::commands::...` 完整路径。
+        // 裸路径 `core::`/`config::`/`proxy::` 会命中 crate 根部的同名模块
+        // （`mod core` 等），导致 E0433：找不到 `__cmd__*` / `__tauri_command_name_*`。
+        .invoke_handler(tauri::generate_handler![
+            // Core commands
+            crate::commands::core::get_status,
+            crate::commands::core::start_core,
+            crate::commands::core::stop_core,
+            crate::commands::core::restart_core,
+            crate::commands::core::reload_config,
+            // Config commands
+            crate::commands::config::get_config,
+            crate::commands::config::get_config_degraded,
+            crate::commands::config::confirm_overwrite_corrupt_config,
+            crate::commands::config::update_config,
+            crate::commands::config::update_config_fields,
+            crate::commands::config::reset_config,
+            crate::commands::config::export_config,
+            crate::commands::config::import_config,
+            crate::commands::config::pick_import_file,
+            // Connections commands
+            crate::commands::connections::get_connections,
+            crate::commands::connections::close_all_connections,
+            // Proxy commands
+            crate::commands::proxy::set_system_proxy,
+            crate::commands::proxy::set_tun_mode,
+            crate::commands::proxy::set_proxy_mode,
+            crate::commands::proxy::test_proxy_latency,
+            crate::commands::proxy::get_proxy_groups,
+            crate::commands::proxy::select_proxy_group,
+            // Logs commands
+            crate::commands::logs::start_log_stream,
+            crate::commands::logs::stop_log_stream,
+            // GeoData commands
+            crate::commands::geodata::update_geodata,
+            crate::commands::geodata::get_geodata_status,
+            crate::commands::geodata::get_geodata_urls,
+            crate::commands::geodata::set_geodata_urls,
+            // Profile commands
+            crate::commands::profiles::list_profiles,
+            crate::commands::profiles::create_profile,
+            crate::commands::profiles::delete_profile,
+            crate::commands::profiles::rename_profile,
+            crate::commands::profiles::activate_profile,
+            crate::commands::profiles::get_profile_content,
+            crate::commands::profiles::update_profile_content,
+            crate::commands::profiles::import_profile,
+            crate::commands::profiles::import_profile_from_url,
+            crate::commands::profiles::update_profile_subscription,
+            crate::commands::profiles::set_profile_user_agent,
+            crate::commands::profiles::export_profile,
+            // Tray commands
+            crate::commands::tray::get_tray_menu_state,
+            crate::commands::tray::update_tray_menu,
+            // Utility commands
+            crate::commands::util::open_data_dir,
+            crate::commands::util::open_logs_dir,
+            crate::commands::util::get_app_version,
+            crate::commands::util::is_autostart,
+            crate::commands::util::get_autostart,
+            crate::commands::util::set_autostart,
+            crate::commands::util::get_supported_locales,
+            crate::commands::util::set_locale,
+            crate::commands::util::get_i18n_messages,
+            crate::commands::util::export_diagnostics,
+            // Portable Updater commands
+            crate::commands::update::check_update,
+            crate::commands::update::download_update,
+            crate::commands::update::get_staged_update,
+            crate::commands::update::discard_staged_update,
+            crate::commands::update::restart_and_apply_update,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // 挂接 RunEvent 生命周期：退出时先安全释放系统代理，再停止 mihomo，
+    // 否则 mihomo 变成孤儿进程继续代理、系统代理残留指向死端口，全网断开。
+    app.run(|app_handle, event| match event {
+        // 主窗口隐藏一段时间后会被销毁以回收 WebView 内存；最后一个窗口销毁会触发
+        // ExitRequested(code=None)——这是托盘常驻应用，必须阻止退出。显式 `app.exit(n)`
+        // 带有退出码，不受影响。
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            if code.is_none() {
+                api.prevent_exit();
+            }
+        }
+        tauri::RunEvent::Exit => cleanup_on_exit(app_handle),
+        _ => {}
+    });
+}
+
+/// 退出清理顺序：确认 ownership → 精确恢复 Windows 系统代理 → 复读验证 →
+/// 清除 proxy journal → 停止 Mihomo。系统代理恢复并验证成功后 journal 立即
+/// 清除；Mihomo 的后续停止与 journal 完全解耦——停止失败只记录错误，绝不
+/// 重新创建或保留 proxy journal。恢复/确认失败立即返回（journal 保留、不
+/// 停止 Mihomo），保持现有 fail-safe。
+fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
+    let state = app_handle.state::<AppState>();
+    let mixed_port = state.config_manager.lock().unwrap().mixed_port();
+    let data_dir = match crate::util::paths::get_app_data_dir(app_handle) {
+        Ok(dir) => dir,
+        Err(e) => {
+            error!(
+                "Exit cleanup aborted before stopping Mihomo: cannot resolve proxy journal directory: {}",
+                e
+            );
+            return;
+        }
+    };
+    match crate::proxy::journal::release_owned_proxy(&data_dir, mixed_port) {
+        Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost) => {
+            // 正常退出前已被用户/其他软件接管：本次不写注册表，同时把下次启动的
+            // 自动接管意图关闭，避免 journal 清除后又把外部代理当作新 baseline。
+            let mut cfg_mgr = state.config_manager.lock().unwrap();
+            let mut cfg = cfg_mgr.get_config();
+            if cfg.general.system_proxy {
+                cfg.general.system_proxy = false;
+                if let Err(e) = cfg_mgr.set_config_unless_degraded(cfg) {
+                    error!(
+                        "Exit cleanup aborted before stopping Mihomo: failed to persist ownership loss: {}",
+                        e
+                    );
+                    return;
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            error!(
+                "Exit cleanup aborted before stopping Mihomo; proxy restore failed or ownership is ambiguous, journal kept: {}",
+                e
+            );
+            return;
+        }
+    }
+
+    // 尽力卸载 TUN，避免强杀 mihomo 后 wintun 虚拟网卡/接管路由残留。
+    // 仅在配置开启了 TUN 且核心仍在运行时，向 mihomo 控制器发
+    // PATCH /configs {tun:{enable:false}} 让其优雅拆除虚拟网卡/路由；
+    // 2s 硬超时，任何失败都不阻断退出（随后仍会按 PID taskkill 兜底）。
+    // CoreManager::apply_tun 是纯 REST PATCH（不持久化、不重启），适合退出路径。
+    let tun_enabled = state.config_manager.lock().unwrap().get_config().tun.enable;
+    if tun_enabled {
+        if let Some(core) = state.core_manager.get() {
+            if core.is_running() {
+                let _ = tauri::async_runtime::block_on(async {
+                    tokio::time::timeout(std::time::Duration::from_secs(2), core.apply_tun(false))
+                        .await
+                });
+                info!("Best-effort TUN disable sent before exit kill");
+            }
+        }
+    }
+
+    // 复读验证与 journal 清除已由 release_owned_proxy 完成：系统代理
+    //    恢复并验证成功后 journal 已被清除。Mihomo 的停止与 journal 完全解耦——
+    //    Mihomo 停止失败只记录错误，绝不重新创建或保留 proxy journal。
+    //    只按 PID 精确清杀自己创建的进程。优先走 core_manager 锁拿
+    //    实时 PID；锁被 async 任务占用时退回 supervisor 维护的 PID 缓存。
+    //    两者都没有（本会话从未成功启动过核心）就什么都不杀——绝不按
+    //    进程名 taskkill，避免误杀用户另行运行的 mihomo。
+    //    按 PID 杀之前必须做所有权校验（映像路径匹配），防止 PID 被
+    //    系统复用后误杀无关进程。
+    let pid = {
+        match state.core_manager.get() {
+            Some(core) => core.child_pid(),
+            None => None,
+        }
+    }
+    .or_else(|| {
+        let cached = state
+            .core_pid_cache
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if cached == 0 {
+            None
+        } else {
+            Some(cached)
+        }
+    });
+    if let Some(pid) = pid {
+        let expected_path = state
+            .core_manager
+            .get()
+            .map(|c| c.mihomo_binary_path())
+            .or_else(|| crate::util::paths::get_mihomo_path(app_handle).ok());
+        match expected_path {
+            None => error!(
+                "Refusing to kill PID {} on exit: expected mihomo path unknown (ownership cannot be confirmed)",
+                pid
+            ),
+            // 持句柄 + 映像路径校验后终止（无 taskkill、无 PID 复用窗口）。
+            Some(expected) => match crate::util::process::terminate_owned(pid, &expected, 3000) {
+                Ok(true) => {
+                    info!("Killed mihomo (PID {}) on exit (ownership verified)", pid);
+                    crate::core::spawn::clear_session(&data_dir);
+                }
+                Ok(false) => warn!(
+                    "mihomo PID {} was not terminated on exit (already gone, access denied or still running)",
+                    pid
+                ),
+                // journal 已在代理恢复成功后清除；停止失败只记录，不得重新创建 journal。
+                Err(e) => error!(
+                    "Refusing / failed to stop Mihomo PID {} during exit: {} (system proxy was restored, journal already cleared)",
+                    pid, e
+                ),
+            },
+        }
+    } else {
+        info!(
+            "No mihomo child recorded this session; skipping kill \
+             (will not touch unrelated mihomo processes)"
+        );
+    }
+}
+
+/// 主窗口隐藏多久后销毁其 WebView（回收 WebView2 常驻内存；托盘唤起时重建）。
+const WEBVIEW_DESTROY_DELAY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// 创建主窗口。
+///
+/// WebView 导航锁定：仅放行应用自身 origin，其余一律阻止。回调返回 true 放行、
+/// false 拒绝；拒绝时 WebView 停留在当前页面，防止被导航到外部站点
+/// （钓鱼 / 恶意注入 / 加载外部脚本）。放行清单：
+///   - tauri://localhost            （Tauri 自定义协议）
+///   - http/https://tauri.localhost（应用自身资源/IPC origin）
+///   - debug 构建额外放行 dev 服务器 http://localhost:1420（tauri.conf.json devUrl）
+///
+/// Tauri 2 仅在 WebviewWindowBuilder 上提供 on_navigation，因此主窗口通过 Builder
+/// 创建。窗口被"隐藏超时销毁"后可由 [`show_main_window`] 重新调用本函数重建。
+pub(crate) fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("ClashEdge")
+        // 默认尺寸 832×554（紧凑基准 756×504 上浮 10%）；
+        // 高于前端窄窗阈值 749，侧栏文字正常展示。
+        .inner_size(832.0, 554.0)
+        .min_inner_size(560.0, 400.0)
+        .background_color(tauri::window::Color(0x10, 0x12, 0x14, 0xff))
+        .decorations(false)
+        .resizable(true)
+        .maximizable(true)
+        .minimizable(true)
+        .closable(false)
+        .center()
+        .visible(false)
+        .on_navigation(|url| {
+            let allowed = match (url.scheme(), url.host_str()) {
+                ("tauri", Some("localhost")) => true,
+                ("http" | "https", Some("tauri.localhost")) => true,
+                #[cfg(debug_assertions)]
+                ("http", Some("localhost")) => url.port() == Some(1420),
+                _ => false,
+            };
+            if !allowed {
+                warn!(
+                    "Navigation blocked (outside allowed origins): {}",
+                    url.as_str()
+                );
+            }
+            allowed
+        })
+        .build()?;
+
+    // 任务栏/窗口图标：与桌面（exe 内嵌 cat.ico 资源）图标保持一致。
+    #[cfg(target_os = "windows")]
+    {
+        let bytes = include_bytes!("../icons/cat-256x256.png");
+        match image::load_from_memory(bytes) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let icon = tauri::image::Image::new_owned(rgba.into_raw(), w, h);
+                let _ = window.set_icon(icon);
+            }
+            Err(e) => warn!("Failed to decode window icon: {}", e),
+        }
+        let _ = window.set_decorations(false);
+    }
+
+    // 关闭 = 最小化到托盘，并安排一段时间后销毁 WebView 回收内存。
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = handle.get_webview_window("main").map(|w| w.hide());
+            schedule_webview_destroy(&handle);
+        }
+    });
+    Ok(window)
+}
+
+/// 显示并聚焦主窗口；窗口已被销毁则先重建。同时取消待执行的延迟销毁。
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
+    app.state::<AppState>()
+        .hide_gen
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let window = match app.get_webview_window("main") {
+        Some(w) => Some(w),
+        None => match create_main_window(app) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                error!("Failed to recreate main window: {}", e);
+                None
+            }
+        },
+    };
+    if let Some(w) = window {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// 安排"窗口持续隐藏 [`WEBVIEW_DESTROY_DELAY`] 后销毁 WebView"。等待期间窗口被再次
+/// 显示（`show_main_window` 递增代数）或仍可见（用户手动打开 / 最小化）都不会销毁。
+pub(crate) fn schedule_webview_destroy(app: &tauri::AppHandle) {
+    let generation = app
+        .state::<AppState>()
+        .hide_gen
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(WEBVIEW_DESTROY_DELAY).await;
+        let state = app.state::<AppState>();
+        if state.hide_gen.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            return;
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            if matches!(w.is_visible(), Ok(false)) {
+                info!("Main window hidden for a while; destroying WebView to free memory");
+                let _ = w.destroy();
+            }
+        }
+    });
+}
+
+fn main() {
+    // 启动器在应用更新前调用 `ClashEdge.exe --verify-staged <dir>` 复验暂存更新
+    // 的签名链；该模式只做校验并以退出码返回，不启动 Tauri。
+    if let Some(code) = crate::update::cli_verify_staged() {
+        std::process::exit(code);
+    }
+    if let Some(code) = crate::update::cli_verify_signature() {
+        std::process::exit(code);
+    }
+    run();
+}
+
+#[cfg(test)]
+mod architecture_guards {
+    //! 架构约束守卫（docs/ARCHITECTURE.md）：command / tray 层不得直接
+    //! `config_manager.lock().set_config(..)` / `update_config_with(..)`——
+    //! 所有改状态的入口必须经 `AppController`（事务锁 + 降级守卫 + 回滚）。
+    use std::path::Path;
+
+    fn production_part(text: &str) -> &str {
+        text.split("#[cfg(test)]").next().unwrap_or(text)
+    }
+
+    fn scan(dir: &Path, offenders: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, offenders);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let prod = production_part(&text);
+                for (i, line) in prod.lines().enumerate() {
+                    let t = line.trim_start();
+                    if t.starts_with("//") {
+                        continue;
+                    }
+                    if line.contains(".set_config(") || line.contains(".update_config_with(") {
+                        offenders.push(format!("{}:{}: {}", path.display(), i + 1, t));
+                    }
+                }
+            }
+        }
+    }
+
+    /// 允许直接调用 `set_config` 的文件：事务控制器本身、其事务主体（runtime，
+    /// 只在控制器持锁时被调用）与 ConfigManager 实现。其余任何文件（commands / tray /
+    /// supervisor / main ……）都必须经 `AppController` 或 `set_config_unless_degraded`。
+    const ALLOWED: &[&str] = &["app_controller.rs", "runtime.rs", "persistence.rs"];
+
+    #[test]
+    fn nothing_outside_the_controller_writes_config_directly() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        scan(&root, &mut offenders);
+        offenders.retain(|o| !ALLOWED.iter().any(|a| o.contains(a)));
+        assert!(
+            offenders.is_empty(),
+            "only AppController (and the runtime bodies it calls) may persist config:\n{}",
+            offenders.join("\n")
+        );
+    }
+}

@@ -1,0 +1,70 @@
+[package]
+name = "clash-edge"
+version = "1.0.9"
+description = "ClashEdge - Lightweight Clash Client for Windows"
+authors = ["akaspyrean"]
+license = "MIT"
+publish = false
+edition = "2021"
+
+[[bin]]
+name = "ClashEdge"
+path = "src/main.rs"
+
+[build-dependencies]
+# config-json5：tauri.conf.json 按 JSON5 解析，允许在配置里写注释（见 tauri.conf.json 顶部安全说明）。
+tauri-build = { version = "2", features = ["config-json5"] }
+
+[dependencies]
+# config-json5 与 tauri-build 对应启用，保证 cargo build 阶段与运行时都能解析带注释的配置。
+tauri = { version = "2", features = ["common-controls-v6", "tray-icon", "config-json5"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-log = { version = "2", features = ["tracing"] }
+tauri-plugin-single-instance = "2"
+
+# devtools：Tauri 2 在 debug 构建自动启用 Web Inspector，release 构建
+# 不需要该 feature——所有 open_devtools() 调用均用 #[cfg(debug_assertions)]
+# 门控，release 不编译任何 devtools 调用面。移除 "devtools" feature 以消除
+# release 二进制中不必要的调试/攻击面。
+
+# P1-11：shell / fs / notification / clipboard / opener 均未被前后端调用；文件导入
+# 只用 dialog + Rust command，打开目录也走 Rust command，故移除未使用插件。
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time", "net", "fs", "process", "sync", "io-util"] }
+# "log" feature: without it (and with no tracing subscriber installed) every tracing::info!/warn!
+# event is silently dropped and the log plugin never sees it (release logs were 0 bytes).
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+log = "0.4"
+anyhow = "1.0"
+thiserror = "1.0"
+# 0.12（保持）：Cargo.lock 里另有 tauri 2.11+ 引入的 reqwest 0.13（不带 TLS feature），
+# 属上游依赖结构；升级到 0.13 会强制 aws-lc-rs 构建链（需 CMake/NASM），
+# 且其 `rustls` feature 走 rustls-platform-verifier（OS 证书库），会失去
+# `rustls-tls-webpki-roots`（内置固定根）的抗篡改属性，故维持 0.12（审计 C5）。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream", "rustls-tls-webpki-roots", "socks"] }
+winreg = "0.11"
+# 已作为传递依赖存在于 Cargo.lock（tauri/tokio 体系），无需新增下载。
+# Win32_Networking_WinInet：写入系统代理注册表后通知 WinINet 立即刷新。
+# Win32_Security / Win32_System_Threading / Win32_Foundation：
+#   is_elevated() 检测进程是否具备管理员权限（开启 TUN 前的权限预检提示）。
+# Win32_NetworkManagement_IpHelper / Win32_Networking_WinSock：GetExtendedTcpTable
+#   查询监听端口的占用进程（端口冲突报错 + 回收本应用孤儿 mihomo）。
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet", "Win32_Security", "Win32_System_Threading", "Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+directories = "5"
+once_cell = "1.19"
+parking_lot = "0.12"
+ipnet = "2"
+base64 = "0.21"
+rand = "0.8"
+# Portable Updater 更新包完整性校验（SHA256，Cargo.lock 锁 0.10.9）
+sha2 = "0.10"
+# P0-6（Release Gate）：Portable Updater manifest 签名验证（minisign 兼容，
+# verify-only，无私钥代码路径）。发布端用 minisign 对 portable-manifest.json
+# 签名；客户端用内置公钥验签后才信任 manifest 内容。
+minisign-verify = "0.3"
+# 托盘图标运行时着色（系统代理开=绿 / 关=灰）；
+# 已作为传递依赖存在于 Cargo.lock（image 0.25.10），无需新增下载。
+image = { version = "0.25", default-features = false, features = ["png"] }

@@ -1,0 +1,27 @@
+# Subscription using proxy-providers instead of inline proxies.
+# The normalizer expands inline providers directly; http providers are fetched
+# at runtime (URLs below are sanitized example addresses).
+# Sanitized: all server addresses, passwords, and URLs are fake.
+proxy-providers:
+  InlineProvider:
+    type: inline
+    proxies:
+      - name: SS-Inline-01
+        type: ss
+        server: 1.2.3.4
+        port: 8388
+        cipher: aes-128-gcm
+        password: test-password
+      - name: Trojan-Inline-01
+        type: trojan
+        server: example.com
+        port: 443
+        password: test-password
+  HttpProvider:
+    type: http
+    url: https://example.com/sub/nodes.yaml
+    interval: 3600
+    path: ./http-provider-cache.yaml
+    health-check:
+      enable: true
+      url: https://example.com/health

@@ -1,0 +1,166 @@
+// src/stores/config.ts
+// 配置中心：加载 / 保存 ClashConfig，提供 kebab-case 键的 getter。
+// 注意：后端 Config 使用 `#[serde(rename_all = "kebab-case")]` + general 展开，
+// 因此 JSON 键是 kebab-case（如 "mixed-port"、"allow-lan"）。
+
+import { defineStore } from "pinia";
+import { configApi, type ClashConfig } from "@/api/config";
+import { proxyApi } from "@/api/proxy";
+import { changeLocale } from "@/i18n";
+
+export const useConfigStore = defineStore("config", {
+  state: () => ({
+    config: null as ClashConfig | null,
+    /** load 成功时的基线快照：save() 只提交与它的顶层键差异，避免整包回传
+     *  覆盖用户停留设置页期间托盘等其他入口改过的字段。 */
+    baseline: null as ClashConfig | null,
+    /** P0 降级模式：config.yaml 损坏且迁移失败时后端以默认配置运行。UI 必须
+     *  明确告知用户并阻止无确认的普通保存（后端同时二次拦截）。 */
+    degraded: false,
+    degradedBackupFile: null as string | null,
+    degradedMessage: "",
+  }),
+  getters: {
+    mixedPort: (s) => s.config?.["mixed-port"] ?? 7890,
+    allowLan: (s) => s.config?.["allow-lan"] ?? false,
+    logLevel: (s) => s.config?.["log-level"] ?? "info",
+    proxyMode: (s) => s.config?.mode ?? "rule",
+    systemProxy: (s) => s.config?.["system-proxy"] ?? false,
+    locale: (s) => s.config?.locale ?? "zh-CN",
+    tunEnabled: (s) => s.config?.tun?.enable ?? false,
+  },
+  actions: {
+    async load() {
+      this.config = await configApi.get();
+      // 深拷贝基线。不能用 structuredClone：config 是 Pinia reactive proxy，
+      // 结构化克隆算法明确拒绝 Proxy（DataCloneError），load() 会抛错被调用方
+      // 吞掉 → 托盘/UI 联动第二次失效（刷新不到新值）。config 是纯 JSON 数据，
+      // JSON 往返深拷贝足够且语义明确。
+      this.baseline = JSON.parse(JSON.stringify(this.config));
+      return this.config;
+    },
+    /** 拉取降级模式信息（独立于 config 本体，避免把 degraded 字段混入
+     *  config.yaml 序列化）。 */
+    async loadDegradedInfo() {
+      try {
+        const info = await configApi.getConfigDegraded();
+        this.degraded = info.degraded;
+        this.degradedBackupFile = info.backup_file;
+        this.degradedMessage = info.message;
+      } catch {
+        this.degraded = false;
+        this.degradedBackupFile = null;
+        this.degradedMessage = "";
+      }
+      return this.degraded;
+    },
+    /** 计算当前配置相对基线的顶层键差异。
+     *  顶层键含 tun/dns 等嵌套对象：structuredClone 出来的 baseline 与 config 是
+     *  两个独立对象引用，`!==` 恒为 true，会让"只改一个普通字段保存"也把 tun/dns
+     *  一并提交，重新引入旧嵌套对象覆盖托盘刚改值的回归。改为内容级比较
+     *  （JSON 序列化对 Config 这种小数据足够且语义明确）。顶层键确实变了才整体
+     *  提交该键（后端按键浅合并替换），与原契约一致。 */
+    diffFromBaseline(): Partial<ClashConfig> {
+      const patch: Partial<ClashConfig> = {};
+      if (!this.config || !this.baseline) return patch;
+      for (const key of Object.keys(this.config) as (keyof ClashConfig)[]) {
+        const cur = this.config[key];
+        const base = this.baseline[key];
+        const same =
+          JSON.stringify(cur) === JSON.stringify(base);
+        if (!same) {
+          (patch as Record<string, unknown>)[key] = cur;
+        }
+      }
+      return patch;
+    },
+    async save(acknowledgeCorruptConfig = false) {
+      // 失败时由调用方捕获处理；此处不修改内存状态。
+      if (!this.config) return;
+      const patch = this.diffFromBaseline();
+      if (Object.keys(patch).length === 0) return;
+      await configApi.updateFields(patch, acknowledgeCorruptConfig);
+      // 成功后重新 load 刷新内存与基线（后端可能还有校验修正）。
+      await this.load();
+    },
+    /** 就地修改部分字段后仅提交这些顶层键（update_config_fields 浅合并）。
+     *  先调后端，成功后再改内存与基线，失败时抛错且内存不变（避免假保存）。 */
+    async patch(partial: Partial<ClashConfig>, acknowledgeCorruptConfig = false) {
+      if (!this.config) return;
+      await configApi.updateFields(partial, acknowledgeCorruptConfig);
+      const next = { ...this.config, ...partial };
+      this.config = next;
+      if (this.baseline) {
+        const base: Record<string, unknown> = this.baseline;
+        for (const key of Object.keys(partial)) {
+          // JSON 深拷贝（见 load() 注释：config/reactive proxy 不能用 structuredClone）
+          base[key] = JSON.parse(JSON.stringify(next[key as keyof ClashConfig]));
+        }
+      }
+    },
+    /** 把已由后端确认生效的字段同步进内存与基线（不触发保存）。
+     *  必须同时改基线：否则下次 save() 的差异计算会把它当成"用户改动"再提交一次。 */
+    commitApplied(key: keyof ClashConfig, value: unknown) {
+      if (this.config) (this.config as unknown as Record<string, unknown>)[key] = value;
+      if (this.baseline) {
+        (this.baseline as unknown as Record<string, unknown>)[key] = JSON.parse(JSON.stringify(value));
+      }
+    },
+    /** 代理模式：走编排层（持久化 + PATCH 运行中核心 + 托盘刷新）。 */
+    async setProxyMode(mode: string) {
+      await proxyApi.setProxyMode(mode);
+      this.commitApplied("mode", mode);
+    },
+    /** 系统代理：走编排层（持久化意图 + 写注册表真实生效）。 */
+    async setSystemProxy(enable: boolean) {
+      await proxyApi.setSystemProxy(enable);
+      this.commitApplied("system-proxy", enable);
+    },
+    /** TUN 开关：走编排层；失败时后端已回退，这里从后端恢复真实状态再抛出。 */
+    async setTunMode(enable: boolean) {
+      try {
+        await proxyApi.setTunMode(enable);
+      } catch (e) {
+        await this.load().catch(() => {});
+        throw e;
+      }
+      if (this.config) {
+        this.config.tun.enable = enable;
+        if (this.baseline) this.baseline.tun.enable = enable;
+      }
+    },
+    /** 界面语言：后端落盘成功后再热替换消息表；失败回读后端真实值。 */
+    async setLocale(locale: string) {
+      try {
+        await this.patch({ locale });
+        await changeLocale(locale);
+      } catch (e) {
+        await this.load().catch(() => {});
+        throw e;
+      }
+    },
+    /** 从文件导入配置（文件选择与读取在 Rust 侧）；用户取消返回 false。 */
+    async importFromFile(): Promise<boolean> {
+      const content = await configApi.pickImportFile();
+      if (content === null) return false;
+      await configApi.import(content);
+      await this.load();
+      return true;
+    },
+    /** 导出完整 mihomo 配置，返回生成文件路径。 */
+    exportToFile(): Promise<string> {
+      return configApi.export();
+    },
+    /** 降级模式：用户确认覆盖损坏的 config.yaml（后端持锁写盘并退出降级）。 */
+    async confirmOverwriteCorrupt() {
+      await configApi.confirmOverwriteCorrupt();
+      await this.loadDegradedInfo();
+      await this.load();
+    },
+    async reset() {
+      // 失败时抛错，由调用方处理并恢复内存状态。
+      await configApi.reset();
+      await this.load();
+    },
+  },
+});

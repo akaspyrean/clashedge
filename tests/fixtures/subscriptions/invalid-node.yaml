@@ -1,0 +1,17 @@
+# Contains a node missing required fields.
+# "Missing-Server" omits the server field, which validate_node_protocol rejects
+# with: Node #2 ('Missing-Server', ss) is missing required field 'server'.
+# This file is intentionally invalid for validation testing.
+# Sanitized: all server addresses and passwords are fake.
+proxies:
+  - name: Valid-Node
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: test-password
+  - name: Missing-Server
+    type: ss
+    port: 8388
+    cipher: aes-128-gcm
+    password: test-password

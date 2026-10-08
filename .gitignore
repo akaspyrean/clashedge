@@ -1,0 +1,64 @@
+# ---- 日志 ----
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Node 前端 ----
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ---- Rust/Tauri 构建缓存 ----
+# 实际路径在 apps/windows/src-tauri/ 下，由其嵌套 .gitignore 覆盖
+
+# ---- 环境变量与构建诊断 ----
+.env
+.env.*
+*.tsbuildinfo
+coverage/
+
+# ---- Windows 系统文件 ----
+Thumbs.db
+desktop.ini
+
+# ---- 打包产物 ----
+# 仅忽略仓库根的 release/（构建产物）；不要写成释放所有深度的 `release/`，
+# 否则会误伤 scripts/release/ 等真实源码目录。
+/release/
+portable-out/
+
+# ---- Android ----
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/android/local.properties
+apps/android/.idea/
+*.apk
+*.aab
+
+# ---- 构建诊断输出 ----
+cargo-check-out.txt
+cargo-check-tests.txt
+cargo-test-out.txt
+
+# ---- Python ----
+__pycache__/
+*.pyc
+
+# ---- 编辑器 ----
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ---- Build-time fetched third-party assets (scripts/assets/prepare.ps1) ----
+/build/

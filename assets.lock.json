@@ -1,0 +1,82 @@
+{
+  "$comment": "Third-party assets fetched at build time by scripts/assets/prepare.ps1. Hashes are pinned: changing an asset is a deliberate decision that must go through this file. Never point sha256 at an URL whose content you have not verified byte-for-byte. Rules are pinned to a specific commit of akaspyrean/external (raw URLs with a commit sha are immutable); bumping the commit is a deliberate refresh.",
+  "version": 1,
+  "assets": [
+    {
+      "name": "mihomo",
+      "version": "1.19.32",
+      "variant": "windows-amd64-compatible",
+      "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-windows-amd64-compatible-v1.19.32.zip",
+      "sha256": "974a4d7ad69aed27aa2e8f91d61113573c14dadb14562c63e58effabf59816f0",
+      "extract": "mihomo-windows-amd64-compatible.exe",
+      "out": "mihomo/clash-edge-core.exe",
+      "extracted_sha256": "04f8d7fc2b314771e1ecbf15951d59f0e1cb7914503c88cfb6972ff6a824e314"
+    },
+    {
+      "name": "wintun",
+      "version": "0.14.1",
+      "url": "https://www.wintun.net/builds/wintun-0.14.1.zip",
+      "sha256": "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51",
+      "extract": "wintun/bin/amd64/wintun.dll",
+      "out": "wintun/wintun.dll",
+      "extracted_sha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce",
+      "authenticode_subject": "WireGuard"
+    },
+    {
+      "name": "rule-direct",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/direct.yaml",
+      "sha256": "9bac72b2e9d672f05009b373104e23a62d3a46a3fdb2c04228c9a42800155fcd",
+      "out": "rules/direct.yaml"
+    },
+    {
+      "name": "rule-proxy",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/proxy.yaml",
+      "sha256": "e4837d6b173318b57860b2913aa434f0cb16146ceb1c70777b46ae9f0920375c",
+      "out": "rules/proxy.yaml"
+    },
+    {
+      "name": "rule-media",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/media.yaml",
+      "sha256": "afd82e17a38221ada7ee1ad936d85d0584c2202e01d181ffbb74fccba6bdb86a",
+      "out": "rules/media.yaml"
+    },
+    {
+      "name": "rule-ai",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/ai.yaml",
+      "sha256": "329f3994f7331ed9ab452c1d874408e2854f81c659e6200887bd2ca42c400e15",
+      "out": "rules/ai.yaml"
+    },
+    {
+      "name": "rule-ad",
+      "version": "external@cbee39d359c3e466f03cf485ecd112fd63a5872c",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules/ad.yaml",
+      "sha256": "1e5b5b59f1441bd991f4c71a1c19b0a3f8d873acda4fa55144ff0475cead0172",
+      "out": "rules/ad.yaml"
+    },
+    {
+      "name": "geodata-geoip",
+      "version": "external@13f3d8bf6652234797e5aabca656c5961da5430a",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/13f3d8bf6652234797e5aabca656c5961da5430a/geodata/GeoIP.dat",
+      "sha256": "0d5d2ba0c5a5c58027fd1347a6afd57c9470799b6bb3cbc274fd4657ed8de382",
+      "out": "geodata/GeoIP.dat"
+    },
+    {
+      "name": "geodata-geosite",
+      "version": "external@13f3d8bf6652234797e5aabca656c5961da5430a",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/13f3d8bf6652234797e5aabca656c5961da5430a/geodata/GeoSite.dat",
+      "sha256": "818c7f5b434ce8d24aac8138fc4c304a3525f057a6893547ce2bccfb7cf2ae3e",
+      "out": "geodata/GeoSite.dat"
+    },
+    {
+      "name": "geodata-country",
+      "version": "external@13f3d8bf6652234797e5aabca656c5961da5430a",
+      "url": "https://raw.githubusercontent.com/akaspyrean/external/13f3d8bf6652234797e5aabca656c5961da5430a/geodata/Country.mmdb",
+      "sha256": "fe721d5e47d320b2a23db4eafddb796a22026ef01899bbe7007fc0274016e5f4",
+      "out": "geodata/Country.mmdb"
+    }
+  ]
+}

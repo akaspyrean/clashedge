@@ -1,0 +1,6 @@
+mixed-port: 7890
+allow-lan: false
+external-controller: 127.0.0.1:50715
+# No fixed secret here: the app generates a random per-install
+# controller secret on first run (see ConfigManager::init rotation).
+log-level: error
