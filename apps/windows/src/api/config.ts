@@ -90,6 +90,8 @@ export const configApi = {
    *  acknowledgeCorruptConfig 语义同 update()。 */
   updateFields: (patch: Record<string, unknown>, acknowledgeCorruptConfig?: boolean) =>
     invoke<void>("update_config_fields", { patch, acknowledgeCorruptConfig }),
+  /** 降级横幅里的"确认覆盖损坏的配置文件"：写入当前（默认）配置并退出降级模式。 */
+  confirmOverwriteCorrupt: () => invoke<void>("confirm_overwrite_corrupt_config"),
   reset: () => invoke<void>("reset_config"),
   export: () => invoke<string>("export_config"),
   import: (yaml: string) => invoke<void>("import_config", { yaml }),

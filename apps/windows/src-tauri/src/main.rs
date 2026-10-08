@@ -140,7 +140,7 @@ pub fn run() {
                     Ok(crate::proxy::journal::ReleaseOutcome::OwnershipLost) => {
                         let mut cfg = config_mgr.get_config();
                         cfg.general.system_proxy = false;
-                        config_mgr.set_config(cfg)?;
+                        config_mgr.set_config_unless_degraded(cfg)?;
                         warn!(
                             "Proxy ownership changed after abnormal exit; preserving Windows state and disabling ClashEdge proxy intent"
                         );
@@ -229,21 +229,19 @@ pub fn run() {
                             error!("Failed to restore system proxy: {}", e);
                             // 恢复失败不得让 UI 继续把 system-proxy 当作 ON；
                             // 配置落回实际状态并推送事件刷新前端。
-                            crate::core::runtime::mark_system_proxy_failed(
-                                &app_handle,
-                                &e.to_string(),
-                            )
-                            .await;
+                            state
+                                .controller
+                                .disable_system_proxy_intent(&app_handle, &e.to_string())
+                                .await;
                         }
                     } else if sys_proxy_intent && !started {
                         // 内核没起来但配置里仍想开系统代理：保持关闭，否则会指向死端口。
                         // 配置意图同步落回 false，UI 显示真实状态（OFF）。
                         warn!("System proxy stays OFF: core failed to start (config intent=true)");
-                        crate::core::runtime::mark_system_proxy_failed(
-                            &app_handle,
-                            "core failed to start",
-                        )
-                        .await;
+                        state
+                            .controller
+                            .disable_system_proxy_intent(&app_handle, "core failed to start")
+                            .await;
                     }
                 });
             }
@@ -341,6 +339,7 @@ pub fn run() {
             // Config commands
             crate::commands::config::get_config,
             crate::commands::config::get_config_degraded,
+            crate::commands::config::confirm_overwrite_corrupt_config,
             crate::commands::config::update_config,
             crate::commands::config::update_config_fields,
             crate::commands::config::reset_config,
@@ -444,7 +443,7 @@ fn cleanup_on_exit(app_handle: &tauri::AppHandle) {
             let mut cfg = cfg_mgr.get_config();
             if cfg.general.system_proxy {
                 cfg.general.system_proxy = false;
-                if let Err(e) = cfg_mgr.set_config(cfg) {
+                if let Err(e) = cfg_mgr.set_config_unless_degraded(cfg) {
                     error!(
                         "Exit cleanup aborted before stopping Mihomo: failed to persist ownership loss: {}",
                         e
@@ -707,15 +706,20 @@ mod architecture_guards {
         }
     }
 
+    /// 允许直接调用 `set_config` 的文件：事务控制器本身、其事务主体（runtime，
+    /// 只在控制器持锁时被调用）与 ConfigManager 实现。其余任何文件（commands / tray /
+    /// supervisor / main ……）都必须经 `AppController` 或 `set_config_unless_degraded`。
+    const ALLOWED: &[&str] = &["app_controller.rs", "runtime.rs", "persistence.rs"];
+
     #[test]
-    fn commands_and_tray_never_write_config_directly() {
+    fn nothing_outside_the_controller_writes_config_directly() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
-        scan(&root.join("commands"), &mut offenders);
-        scan(&root.join("tray"), &mut offenders);
+        scan(&root, &mut offenders);
+        offenders.retain(|o| !ALLOWED.iter().any(|a| o.contains(a)));
         assert!(
             offenders.is_empty(),
-            "command/tray layers must go through AppController:\n{}",
+            "only AppController (and the runtime bodies it calls) may persist config:\n{}",
             offenders.join("\n")
         );
     }

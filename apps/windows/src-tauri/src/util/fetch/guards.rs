@@ -86,6 +86,16 @@ pub async fn validate_url_with(
         )));
     }
     if all_in_fake_ip_range(&addrs, fake_ip) {
+        // fake-ip：本地解析结果是假的，不能据此判断目标是否在内网。改用 DoH 取真实
+        // 地址并做同样的"全部为全球可路由"校验；取不到答案 fail-closed。
+        let real = super::doh::resolve_real_addrs(host).await.map_err(|e| {
+            Error::InvalidArgument(format!(
+                "URL host '{}' cannot be verified while TUN fake-ip DNS is active ({}); rejected (fail-closed). \
+                 Turn TUN off for this operation, or check that DoH (223.5.5.5 / 1.1.1.1) is reachable",
+                host, e
+            ))
+        })?;
+        verify_real_addrs(host, &real, port)?;
         return Ok(Vec::new());
     }
     // DNS rebinding / 混合解析防护：只要存在任一非全球可路由地址即整体拒绝
@@ -95,6 +105,18 @@ pub async fn validate_url_with(
     addrs.sort_by_key(|addr| addr.is_ipv6());
     addrs.dedup();
     Ok(addrs)
+}
+
+/// DoH 取回的真实地址必须非空且**全部**为全球可路由公网地址（纯函数，便于测试）。
+fn verify_real_addrs(host: &str, real: &[IpAddr], port: u16) -> Result<()> {
+    if real.is_empty() {
+        return Err(Error::InvalidArgument(format!(
+            "URL host '{}' has no real DNS records (DoH); rejected",
+            host
+        )));
+    }
+    let socks: Vec<SocketAddr> = real.iter().map(|ip| SocketAddr::new(*ip, port)).collect();
+    ensure_all_globally_routable(host, &socks)
 }
 
 /// 解析结果是否**全部**落在 fake-ip 段内（纯函数，便于单测）。
@@ -494,6 +516,17 @@ mod tests {
         assert!(!all_in_fake_ip_range(&[private], Some(&net)));
         assert!(ensure_all_globally_routable("h", &[fake, private]).is_err());
         assert!(!all_in_fake_ip_range(&[], Some(&net)));
+    }
+
+    /// fake-ip 下 DoH 真实地址校验：内网 / 混合 / 空答案一律拒绝，纯公网放行。
+    #[test]
+    fn real_addr_verification_rejects_private_mixed_and_empty() {
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        assert!(verify_real_addrs("h", &[ip("93.184.216.34")], 443).is_ok());
+        assert!(verify_real_addrs("h", &[ip("192.168.1.10")], 443).is_err());
+        assert!(verify_real_addrs("h", &[ip("93.184.216.34"), ip("10.0.0.5")], 443).is_err());
+        assert!(verify_real_addrs("h", &[ip("::1")], 443).is_err());
+        assert!(verify_real_addrs("h", &[], 443).is_err());
     }
 
     /// DNS 失败 fail-closed：不存在的域名必须拒绝（不能保守放行）。

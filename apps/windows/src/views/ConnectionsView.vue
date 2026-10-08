@@ -1,45 +1,18 @@
-﻿<!-- src/views/ConnectionsView.vue - 连接列表：每 2s 轮询 get_connections -->
+<!-- src/views/ConnectionsView.vue - 连接列表：每 2s 轮询 get_connections -->
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
-import {
-  connectionsApi,
-  type ConnectionInfo,
-} from "@/api/connections";
+import { computed } from "vue";
+import { useAction } from "@/composables/useAction";
+import { usePolling } from "@/composables/usePolling";
+import { pollIntervalFor, useConnectionsStore } from "@/stores/connections";
+import { formatBytes } from "@/utils/format";
 
 const MAX_DISPLAY = 500;
 
-function pollIntervalFor(count: number): number {
-  if (count < 200) return 2000;
-  if (count < 1000) return 3000;
-  if (count < 5000) return 5000;
-  return 8000;
-}
+const store = useConnectionsStore();
+const closing = useAction();
 
-const connections = ref<ConnectionInfo[]>([]);
-const connectionCount = ref(0);
-const truncated = ref(false);
-const downloadTotal = ref(0);
-const uploadTotal = ref(0);
-let timer: number | undefined;
-
-// 在途请求守卫：上一轮请求尚未返回时跳过本轮，避免 2s 定时器与慢请求堆叠
-// 造成重复拉取 / 乱序覆盖。
-let inFlight = false;
-// 关闭全部 in-flight 守卫：连点时不重复发起 closeAll。
-const closingAll = ref(false);
-
-/** B / KB / MB / GB / TB，保留 1-2 位小数。 */
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(
-    units.length - 1,
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-  );
-  const value = bytes / Math.pow(1024, i);
-  const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[i]}`;
-}
+const connections = computed(() => store.connections);
+const connectionCount = computed(() => store.count);
 
 /** start 为 Unix 毫秒时间戳 → 显示连接已持续的时长（mm:ss / hh:mm:ss）。 */
 function formatStart(start: number): string {
@@ -53,83 +26,15 @@ function formatStart(start: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-async function refresh() {
-  if (inFlight) return;
-  inFlight = true;
-  try {
-    const data = await connectionsApi.list();
-    const all = data.connections ?? [];
-    // P2：后端已裁剪到前 500 条；connectionCount 用真实总数 total 驱动
-    // 轮询间隔与截断提示，truncated 标记是否渲染截断提示。
-    connectionCount.value = data.total ?? all.length;
-    truncated.value = data.truncated ?? false;
-    connections.value = all;
-    downloadTotal.value = data.download_total ?? 0;
-    uploadTotal.value = data.upload_total ?? 0;
-  } catch {
-  } finally {
-    inFlight = false;
-    // 根据新连接数动态调整下一轮轮询间隔
-    restartPolling();
-  }
-}
+const { tick } = usePolling(
+  () => store.refresh(),
+  () => pollIntervalFor(store.count),
+);
 
 async function onCloseAll() {
-  if (closingAll.value) return;
-  closingAll.value = true;
-  try {
-    await connectionsApi.closeAll();
-    void refresh();
-  } catch {
-    // 静默处理。
-  } finally {
-    closingAll.value = false;
-  }
+  const r = await closing.run(() => store.closeAll(), { silent: true });
+  if (r.ok) void tick();
 }
-
-function startPolling() {
-  if (timer !== undefined) return;
-  const interval = pollIntervalFor(connectionCount.value);
-  timer = window.setInterval(() => {
-    void refresh();
-  }, interval);
-}
-
-function restartPolling() {
-  if (timer !== undefined) {
-    window.clearInterval(timer);
-    timer = undefined;
-  }
-  startPolling();
-}
-
-function stopPolling() {
-  if (timer !== undefined) {
-    window.clearInterval(timer);
-    timer = undefined;
-  }
-}
-
-// 页面隐藏（最小化/切走）时暂停 2s 轮询，恢复可见时立即拉一次并重启轮询。
-function onVisibilityChange() {
-  if (document.hidden) {
-    stopPolling();
-  } else {
-    void refresh();
-    startPolling();
-  }
-}
-
-onMounted(() => {
-  void refresh();
-  startPolling();
-  document.addEventListener("visibilitychange", onVisibilityChange);
-});
-
-onUnmounted(() => {
-  stopPolling();
-  document.removeEventListener("visibilitychange", onVisibilityChange);
-});
 </script>
 
 <template>
@@ -140,12 +45,12 @@ onUnmounted(() => {
         <span class="conn-count" v-if="connectionCount > 0">{{ connectionCount }}</span>
         <span class="totals">
           {{ $t("connections.total_download") }}
-          <b>{{ formatBytes(downloadTotal) }}</b>
+          <b>{{ formatBytes(store.downloadTotal) }}</b>
           <span class="totals-sep">|</span>
           {{ $t("connections.total_upload") }}
-          <b>{{ formatBytes(uploadTotal) }}</b>
+          <b>{{ formatBytes(store.uploadTotal) }}</b>
         </span>
-        <el-button type="danger" plain size="small" :loading="closingAll" @click="onCloseAll">
+        <el-button type="danger" plain size="small" :loading="closing.busy.value" @click="onCloseAll">
           {{ $t("connections.close_all") }}
         </el-button>
       </div>
@@ -157,6 +62,7 @@ onUnmounted(() => {
       size="small"
       max-height="65vh"
       class="connections-table"
+      :aria-label="$t('connections.title')"
     >
       <el-table-column
         prop="host"
@@ -184,7 +90,7 @@ onUnmounted(() => {
 
     <el-empty v-else :description="$t('connections.empty')" />
 
-    <div v-if="connectionCount > MAX_DISPLAY" class="truncated-notice">
+    <div v-if="connectionCount > MAX_DISPLAY" class="truncated-notice" role="status">
       {{ $t("connections.truncated_notice", { max: MAX_DISPLAY, count: connectionCount }) }}
     </div>
   </div>

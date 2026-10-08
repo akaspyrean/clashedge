@@ -129,7 +129,7 @@ pub(crate) async fn mark_system_proxy_failed(app: &AppHandle, reason: &str) {
         let mut cfg = cfg_mgr.get_config();
         if cfg.general.system_proxy {
             cfg.general.system_proxy = false;
-            if let Err(e) = cfg_mgr.set_config(cfg) {
+            if let Err(e) = cfg_mgr.set_config_unless_degraded(cfg) {
                 error!(
                     "Failed to persist system_proxy=false after failure ({}): {}",
                     reason, e
@@ -354,7 +354,7 @@ pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> 
         let cfg = cfg_mgr.get_config();
         if crate::config::model::needs_secret_rotation(&cfg.proxy.secret) {
             info!("Rotating controller secret before enabling system proxy");
-            cfg_mgr.set_config(cfg)?;
+            cfg_mgr.set_config_unless_degraded(cfg)?;
         }
     }
 
@@ -364,7 +364,7 @@ pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> 
         let mut cfg = cfg_mgr.get_config();
         let old = cfg.general.system_proxy;
         cfg.general.system_proxy = enable;
-        cfg_mgr.set_config(cfg)?;
+        cfg_mgr.set_config_unless_degraded(cfg)?;
         old
     };
 
@@ -381,7 +381,7 @@ pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> 
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();
         cfg.general.system_proxy = old;
-        let rb = cfg_mgr.set_config(cfg);
+        let rb = cfg_mgr.set_config_unless_degraded(cfg).map(|_| ());
         error!("apply_system_proxy({}) failed, rolled back: {}", enable, e);
         return Err(match rb {
             Ok(()) => e,
@@ -429,7 +429,7 @@ pub(crate) async fn activate_profile_locked(app: &AppHandle, name: &str) -> Resu
         let mut cfg = cfg_mgr.get_config();
         let old = cfg.general.profile.clone();
         cfg.general.profile = safe.clone();
-        cfg_mgr.set_config(cfg)?;
+        cfg_mgr.set_config_unless_degraded(cfg)?;
         old
     };
 
@@ -448,7 +448,7 @@ pub(crate) async fn activate_profile_locked(app: &AppHandle, name: &str) -> Resu
         let mut cfg_mgr = state.config_manager.lock().unwrap();
         let mut cfg = cfg_mgr.get_config();
         cfg.general.profile = old.clone();
-        let rb = cfg_mgr.set_config(cfg);
+        let rb = cfg_mgr.set_config_unless_degraded(cfg).map(|_| ());
         error!("activate_profile({}) failed, rolled back: {}", safe, e);
         return Err(match rb {
             Ok(()) => e,

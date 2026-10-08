@@ -63,7 +63,7 @@ pub async fn get_config_degraded(state: State<'_, crate::AppState>) -> Result<se
         "degraded": degraded,
         "backup_file": backup,
         "message": if degraded {
-            "检测到 config.yaml 损坏且自动迁移失败，应用正在使用默认配置运行（降级模式）。\n原文件未被覆盖，已备份为 config.yaml.corrupt-*.bak；只有在你确认备份位置并勾选「我确认覆盖损坏的配置文件」后，保存才会写入新配置。"
+            "检测到 config.yaml 损坏且自动迁移失败，应用正在使用默认配置运行（降级模式）。\n原文件未被覆盖，已备份为 config.yaml.corrupt-*.bak；只有在你于窗口顶部横幅中确认覆盖后，保存才会写入新配置。"
                 .to_string()
         } else {
             String::new()
@@ -83,11 +83,23 @@ fn require_save_allowed_when_degraded(
         return Err(Error::Other(
             "检测到 config.yaml 损坏，应用正以默认配置降级运行。为保护你的数据，\
              原文件（已备份为 config.yaml.corrupt-*.bak）不会被静默覆盖。\
-             请确认备份位置后在设置页勾选「我确认覆盖损坏的配置文件」再保存。"
+             请在窗口顶部的横幅中点击「我已了解，覆盖并继续」后再保存。"
                 .to_string(),
         ));
     }
     Ok(())
+}
+
+/// 降级横幅上的"确认覆盖损坏的配置文件"：持久化当前（默认）配置并退出降级模式。
+#[command]
+pub async fn confirm_overwrite_corrupt_config(
+    app: AppHandle,
+    state: State<'_, crate::AppState>,
+) -> Result<()> {
+    state
+        .controller
+        .confirm_overwrite_corrupt_config(&app)
+        .await
 }
 
 #[command]

@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { createPinia, setActivePinia } from "pinia";
 import ElementPlus from "element-plus";
+import { testI18n } from "@/test/harness";
 import ProxiesView from "@/views/ProxiesView.vue";
 import { useProxyStore } from "@/stores/proxy";
 import type { ProxyGroup } from "@/api/proxy";
@@ -31,7 +32,7 @@ function mockBackend(mode = "rule") {
 
 const mountOptions = {
   global: {
-    plugins: [ElementPlus],
+    plugins: [ElementPlus, testI18n()],
     mocks: { $t: (k: string) => k },
   },
 };

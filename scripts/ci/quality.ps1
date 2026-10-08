@@ -78,6 +78,17 @@ if (-not $SkipCargoAudit) {
   }
 }
 
+if (-not $SkipCargoAudit) {
+  Invoke-Step 'cargo deny (licenses / bans / sources)' {
+    Set-Location $srcTauri
+    if (-not (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {
+      cargo install cargo-deny --locked
+    }
+    if ($LASTEXITCODE -eq 0) { cargo deny check licenses bans sources }
+    Set-Location $repoRoot
+  }
+}
+
 Invoke-Step 'npm audit (high / critical)' {
   Set-Location $scaff
   npm audit --audit-level=high

@@ -4,12 +4,11 @@
      - 设置卡：仅保留系统代理开关（订阅管理已移回独立「配置」页） -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
-import { proxyApi } from "@/api/proxy";
+import StatusPill from "@/components/StatusPill.vue";
+import { useAction } from "@/composables/useAction";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
-import { friendlyError } from "@/errors";
 
 const core = useCoreStore();
 const config = useConfigStore();
@@ -93,56 +92,20 @@ const currentLatency = computed(() => {
   return d == null ? null : `${d} ms`;
 });
 
-/** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色），
- *  成功后同步本地 store，避免下次整包保存时把该字段覆盖回 false。 */
-async function onSystemProxyChange(val: boolean) {
-  try {
-    await proxyApi.setSystemProxy(val);
-    if (config.config) config.config["system-proxy"] = val;
-  } catch (e) {
-    ElMessage.error(friendlyError(e));
-  }
-}
+// 核心控制动作：重启 / 重载共用一个在途守卫（二者互斥）；启动 / 停止由 store 的
+// starting / stopping 兜底。失败统一走 useAction 的提示。
+const coreAction = useAction(coreActionBusy);
+const systemProxy = useAction();
 
-async function onRestart() {
-  if (coreActionBusy.value) return;
-  coreActionBusy.value = true;
-  try {
-    await core.restart();
-  } catch (e) {
-    ElMessage.error(friendlyError(e));
-  } finally {
-    coreActionBusy.value = false;
-  }
-}
-
-async function onReload() {
-  if (coreActionBusy.value) return;
-  coreActionBusy.value = true;
-  try {
-    await core.reload();
-  } catch (e) {
-    ElMessage.error(friendlyError(e));
-  } finally {
-    coreActionBusy.value = false;
-  }
-}
-
-async function onStart() {
-  try {
-    await core.start();
-  } catch (e) {
-    ElMessage.error(friendlyError(e));
-  }
-}
-
-async function onStop() {
-  try {
-    await core.stop();
-  } catch (e) {
-    ElMessage.error(friendlyError(e));
-  }
-}
+/** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色）。 */
+const onSystemProxyChange = (val: boolean | string | number) =>
+  systemProxy.run(() => config.setSystemProxy(Boolean(val)));
+const onRestart = () => coreAction.run(() => core.restart());
+const onReload = () => coreAction.run(() => core.reload());
+// start / stop 的在途状态由 store 管（loading 绑定 core.starting / core.stopping），这里只统一失败提示。
+const startStop = useAction(ref(false));
+const onStart = () => startStop.run(() => core.start());
+const onStop = () => startStop.run(() => core.stop());
 </script>
 
 <template>
@@ -154,10 +117,7 @@ async function onStop() {
       <template #header>
         <div class="status-head">
           <span>{{ $t("dashboard.core_status") }}</span>
-          <span class="status-pill" :class="{ running: running }">
-            <span class="status-dot" aria-hidden="true"></span>
-            {{ $t(statusKey) }}
-          </span>
+          <StatusPill :active="running" :label="$t(statusKey)" />
         </div>
       </template>
 
@@ -228,7 +188,12 @@ async function onStop() {
           <div class="set-label">{{ $t("dashboard.system_proxy") }}</div>
           <div class="set-hint">{{ $t("dashboard.system_proxy_hint") }}</div>
         </div>
-        <el-switch :model-value="config.systemProxy" @change="onSystemProxyChange" />
+        <el-switch
+          :model-value="config.systemProxy"
+          :aria-label="$t('dashboard.system_proxy')"
+          :loading="systemProxy.busy.value"
+          @change="onSystemProxyChange"
+        />
       </div>
     </el-card>
   </div>

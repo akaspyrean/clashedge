@@ -86,6 +86,48 @@ fn tail_lines(path: &std::path::Path, max_lines: usize) -> String {
     out
 }
 
+/// mihomo 日志里每条连接记录都带目标域名 / IP（`[TCP] 127.0.0.1:5000 --> example.com:443 match …`），
+/// 属于浏览历史。诊断包只保留非连接类的行（启动 / 监听 / 错误 / 规则加载等）。
+fn scrub_connection_lines(text: &str) -> String {
+    let mut dropped = 0usize;
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.contains(" --> ") || line.contains("-->") && line.contains("match ") {
+            dropped += 1;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if dropped > 0 {
+        out.push_str(&format!(
+            "({} connection lines omitted for privacy)\n",
+            dropped
+        ));
+    }
+    out
+}
+
+/// 只保留最新的 `keep` 份诊断文件，避免数据目录里无限堆积。
+fn prune_old_diagnostics(dir: &std::path::Path, keep: usize) {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("diagnostics-") && n.ends_with(".txt"))
+        })
+        .collect();
+    files.sort(); // 文件名带 unix 秒，字典序即时间序
+    let excess = files.len().saturating_sub(keep);
+    for f in files.into_iter().take(excess) {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 /// 导出诊断包（文本）：版本 / 运行状态 / **脱敏**后的配置 / 最近日志。
 /// 不包含控制器密钥、节点（订阅内容）与订阅地址。返回生成文件的路径。
 #[command]
@@ -130,7 +172,7 @@ pub async fn export_diagnostics(app: tauri::AppHandle) -> Result<String> {
     let logs = data_dir.join("logs");
     for name in ["mihomo-stderr.log", "mihomo-stdout.log"] {
         let _ = writeln!(out, "\n===== {} (tail) =====", name);
-        out.push_str(&tail_lines(&logs.join(name), 200));
+        out.push_str(&scrub_connection_lines(&tail_lines(&logs.join(name), 200)));
     }
     // 应用日志：取 logs 目录里最新修改的 *.log（排除 mihomo 日志）
     let newest_app_log = std::fs::read_dir(&logs)
@@ -158,5 +200,36 @@ pub async fn export_diagnostics(app: tauri::AppHandle) -> Result<String> {
         .unwrap_or(0);
     let path = data_dir.join(format!("diagnostics-{}.txt", stamp));
     crate::util::atomic::atomic_write(&path, out.as_bytes())?;
+    prune_old_diagnostics(&data_dir, 3);
     Ok(path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrub_drops_connection_lines_but_keeps_errors() {
+        let log = "time=1 level=info msg=\"[TCP] 127.0.0.1:5000 --> secret-site.example:443 match Match using DIRECT\"\ntime=2 level=error msg=\"Start TCP listening error\"\n";
+        let out = scrub_connection_lines(log);
+        assert!(!out.contains("secret-site.example"), "{}", out);
+        assert!(out.contains("Start TCP listening error"));
+        assert!(out.contains("1 connection lines omitted"));
+    }
+
+    #[test]
+    fn prune_keeps_only_the_newest_diagnostics() {
+        let d = std::env::temp_dir().join(format!("clashedge-diag-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for n in [100, 200, 300, 400, 500] {
+            std::fs::write(d.join(format!("diagnostics-{}.txt", n)), "x").unwrap();
+        }
+        std::fs::write(d.join("config.yaml"), "keep").unwrap();
+        prune_old_diagnostics(&d, 3);
+        assert!(!d.join("diagnostics-100.txt").exists());
+        assert!(!d.join("diagnostics-200.txt").exists());
+        assert!(d.join("diagnostics-500.txt").exists());
+        assert!(d.join("config.yaml").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

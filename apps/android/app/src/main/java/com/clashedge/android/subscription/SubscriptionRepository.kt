@@ -24,6 +24,27 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    private companion object {
+        /** Same 10 MB cap as the Windows client. */
+        const val MAX_BODY_BYTES = 10 * 1024 * 1024
+    }
+
+    private fun readBounded(input: java.io.InputStream, max: Int): String {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        input.use { s ->
+            while (true) {
+                val n = s.read(buf)
+                if (n < 0) break
+                if (out.size() + n > max) {
+                    throw IllegalStateException("subscription exceeds $max bytes")
+                }
+                out.write(buf, 0, n)
+            }
+        }
+        return out.toString(Charsets.UTF_8.name())
+    }
+
     /** Fetch + normalize a subscription URL into [Node]s. */
     suspend fun fetch(url: String): List<Node> = withContext(Dispatchers.IO) {
         Logger.info("fetching subscription")
@@ -32,7 +53,8 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
             if (!resp.isSuccessful) {
                 throw IllegalStateException("HTTP ${resp.code} for subscription")
             }
-            val body = resp.body?.string().orEmpty()
+            // Bounded read: a hostile server must not be able to stream unbounded data into memory.
+            val body = resp.body?.let { readBounded(it.byteStream(), MAX_BODY_BYTES) }.orEmpty()
             normalize(body)
         }
     }

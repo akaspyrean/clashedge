@@ -35,6 +35,7 @@
 //! redact_url_for_log, get_direct_first, get_direct_first_streaming}` 不变。
 
 mod client;
+mod doh;
 mod guards;
 
 pub use client::{

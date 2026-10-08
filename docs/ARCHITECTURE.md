@@ -142,8 +142,8 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
 
 ## 测试与质量
 
-- `scripts/ci/quality.ps1` 是唯一质量门：cargo fmt/clippy/test、cargo audit、
-  npm audit、Vitest、前端 build；CI（push/PR）与 Release（tag）调用同一份。
+- `scripts/ci/quality.ps1` 是唯一质量门：cargo fmt/clippy/test、cargo audit、cargo deny
+  （licenses/bans/sources，见 `src-tauri/deny.toml`）、npm audit、Vitest、前端 build；CI（push/PR）与 Release（tag）调用同一份。
 - Launcher 故障注入测试（`ClashEdge.exe --test-recovery`）纳入 Release：
   5 个 kill 点（pending/verified/swapping/committed/nojournal）必须全部恢复成功。
 - 需要人工观察的场景不进仓库门禁，靠长期实际使用发现。
@@ -157,5 +157,17 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
   这一便携核心卖点，暂缓；需要时应提供"导出时脱敏"。
 - Windows ARM64：`assets.lock.json` 仅 amd64 内核与 wintun。
 - Android 冻结，见 `apps/android/README.md`（订阅导入仍是只留 name/type/server 的骨架）。
-- 新增修改状态的功能时，一律加 AppController 方法，不得在 command / tray 层直接
-  `config_manager.lock().set_config(..)`。
+- 新增修改状态的功能时，一律加 AppController 方法。**整个 `src/` 里只有 `app_controller.rs`、
+  `runtime.rs`（仅在控制器持锁时被调用）、`persistence.rs` 可以直接 `set_config(..)`**，
+  由 `main.rs::architecture_guards` 测试强制；崩溃自愈 / 启动恢复这类内部路径用
+  `AppController::disable_system_proxy_intent` 或 `set_config_unless_degraded`。
+- 降级模式（config.yaml 损坏）：任何写盘入口都被拒绝，内部路径只改内存；窗口顶部横幅的
+  「覆盖并继续」（`confirm_overwrite_corrupt_config`）是唯一的解除方式。
+- 控制器端口被占用时的改选地址只存在于 `CoreManager::controller_override`（会话级），绝不写回
+  共享配置（共享配置会被任意设置保存落盘）。
+- 锁序固定为 `AppController.tx → CoreManager.lifecycle`；持 `lifecycle` 时不得再取 `tx`
+  （看门狗在系统代理恢复前释放 lifecycle 就是为此）。
+- TUN + fake-ip 下本地 DNS 结果不可信：SSRF 守卫改用 DoH（`util/fetch/doh.rs`）取真实地址，
+  取不到即拒绝（fail-closed）。
+- 发布权限拆分：`build`（无私钥、无 rust-cache）→ `publish`（`release` Environment；签名
+  证书与 minisign 私钥只在此处，Authenticode 签名与 manifest 生成也在此处）。

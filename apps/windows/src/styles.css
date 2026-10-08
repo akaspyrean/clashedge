@@ -470,3 +470,41 @@ html[data-theme="dark"] {
 .status-pill.running .status-dot {
   background: var(--done);
 }
+
+/* ---- 无障碍基线 ----
+ * 键盘焦点：统一的清晰焦点环（只在键盘导航时出现，鼠标点击不显示）。
+ * Element Plus 的部分控件默认焦点样式很淡，这里用设计 token 兜底。 */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible,
+.el-button:focus-visible,
+.el-switch:focus-visible .el-switch__core,
+.el-select__wrapper:focus-visible,
+.el-tabs__item:focus-visible,
+.el-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 用户在系统里选择"减少动态效果"时，关闭过渡与动画（含 Element Plus 的）。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 仅供读屏器的文本。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
