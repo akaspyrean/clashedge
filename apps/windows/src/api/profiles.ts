@@ -11,6 +11,12 @@ export interface ProfileInfo {
   active: boolean;
   /** 订阅地址（# subscribe-url: 注释头）；无则为 null，界面据此显示「更新」按钮 */
   url?: string | null;
+  /** 订阅流量 / 到期信息（Subscription-Userinfo 响应头）：
+   *  "upload=..; download=..; total=..; expire=.."，无则为 null。 */
+  userinfo?: string | null;
+  /** 单个订阅的自定义 User-Agent（# subscribe-user-agent: 注释头，审计 B7）；
+   *  无则为 null（用内置 mihomo 兼容 UA）。 */
+  user_agent?: string | null;
 }
 
 export const profilesApi = {
@@ -26,9 +32,11 @@ export const profilesApi = {
     invoke<void>("update_profile_content", { name, content }),
   import: (name: string, content: string) =>
     invoke<void>("import_profile", { name, content }),
-  importFromUrl: (name: string, url: string) =>
-    invoke<void>("import_profile_from_url", { name, url }),
+  importFromUrl: (name: string, url: string, userAgent?: string) =>
+    invoke<void>("import_profile_from_url", { name, url, userAgent }),
   updateProfile: (name: string) =>
     invoke<void>("update_profile_subscription", { name }),
+  setUserAgent: (name: string, userAgent?: string | null) =>
+    invoke<void>("set_profile_user_agent", { name, userAgent }),
   export: (name: string) => invoke<string>("export_profile", { name }),
 };

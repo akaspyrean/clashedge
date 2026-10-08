@@ -12,6 +12,8 @@ export const utilApi = {
   setAutostart: (enable: boolean) => invoke<void>("set_autostart", { enable }),
   locales: () => invoke<string[]>("get_supported_locales"),
   setLocale: (locale: string) => invoke<void>("set_locale", { locale }),
+  /** 导出脱敏诊断包（文本），返回文件路径。 */
+  exportDiagnostics: () => invoke<string>("export_diagnostics"),
   i18nMessages: (locale: string) =>
     invoke<Record<string, string>>("get_i18n_messages", { locale }),
 };

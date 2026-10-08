@@ -6,7 +6,18 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, FullScreen, CopyDocument, Close } from "@element-plus/icons-vue";
+import {
+  Minus,
+  FullScreen,
+  CopyDocument,
+  Close,
+  Odometer,
+  SetUp,
+  Document,
+  Link,
+  Tickets,
+  Setting,
+} from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import en from "element-plus/es/locale/lang/en";
@@ -83,12 +94,12 @@ const coreError = computed(() => {
 });
 
 const menuItems = [
-  { path: "/dashboard", key: "nav.dashboard", icon: "Odometer" },
-  { path: "/proxies", key: "nav.proxies", icon: "SetUp" },
-  { path: "/profiles", key: "nav.profiles", icon: "Document" },
-  { path: "/connections", key: "nav.connections", icon: "Link" },
-  { path: "/logs", key: "nav.logs", icon: "Tickets" },
-  { path: "/settings", key: "nav.settings", icon: "Setting" },
+  { path: "/dashboard", key: "nav.dashboard", icon: Odometer },
+  { path: "/proxies", key: "nav.proxies", icon: SetUp },
+  { path: "/profiles", key: "nav.profiles", icon: Document },
+  { path: "/connections", key: "nav.connections", icon: Link },
+  { path: "/logs", key: "nav.logs", icon: Tickets },
+  { path: "/settings", key: "nav.settings", icon: Setting },
 ];
 
 // ---- 自绘标题栏 ----

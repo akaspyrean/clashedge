@@ -10,6 +10,9 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 
+/// SSE 单行缓冲上限（1 MiB）
+const MAX_LINE_BUFFER: usize = 1024 * 1024;
+
 /// 事件名（后端 → 前端）
 pub const EVENT_LOG_LINE: &str = "log-line";
 pub const EVENT_LOG_CONNECTED: &str = "log-connected";
@@ -38,7 +41,11 @@ pub fn spawn_log_stream(
             format!("http://{}", controller)
         };
         let url = format!("{}/logs", base);
-        let client = reqwest::Client::new();
+        // 控制器在回环地址上，忽略环境/系统代理（审计 B6）。
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let mut down = false;
         // 与 CoreManager 同源构造 Authorization 头；非法密钥字符显式上报
         // （log-error 事件 + warn），不再静默省略导致 401 被误读为控制器不可达。
@@ -62,6 +69,10 @@ pub fn spawn_log_stream(
                         match stream.chunk().await {
                             Ok(Some(bytes)) => {
                                 buffer.extend_from_slice(&bytes);
+                                // 防御异常长行：缓冲无换行时不无限增长
+                                if buffer.len() > MAX_LINE_BUFFER && !buffer.contains(&b'\n') {
+                                    buffer.clear();
+                                }
                                 // 逐行处理（SSE 事件以 \n 分隔，空行/注释行跳过）
                                 while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
                                     let line: Vec<u8> = buffer.drain(..=pos).collect();

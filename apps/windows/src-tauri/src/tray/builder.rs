@@ -29,7 +29,7 @@ pub struct ProxySubgroupInfo {
 /// Build the complete system tray menu
 ///
 /// The tray menu includes:
-/// - Fixed items: control panel, system proxy, TUN mode, config mixin
+/// - Fixed items: control panel, system proxy, TUN mode, autostart
 /// - Proxy mode selection (global/rule/direct/script)
 /// - Dynamic proxy groups submenu
 /// - Connections submenu
@@ -65,7 +65,7 @@ pub fn build_tray_menu(
             MenuItemBuilder::with_id("control_panel", i18n.t("tray.control_panel")).build(app)?,
         ),
         Box::new(PredefinedMenuItem::separator(app)?),
-        // System proxy / TUN / config mixin check items
+        // System proxy / TUN / autostart check items
         // 系统代理勾选状态来自独立的 system_proxy 状态（非 allow-lan）。
         Box::new(
             CheckMenuItemBuilder::with_id("system_proxy", i18n.t("tray.system_proxy"))
@@ -75,11 +75,6 @@ pub fn build_tray_menu(
         Box::new(
             CheckMenuItemBuilder::with_id("tun_mode", i18n.t("tray.tun_mode"))
                 .checked(config.tun.enable)
-                .build(app)?,
-        ),
-        Box::new(
-            CheckMenuItemBuilder::with_id("config_mixin", i18n.t("tray.config_mixin"))
-                .checked(config.mixin_enabled)
                 .build(app)?,
         ),
         Box::new(

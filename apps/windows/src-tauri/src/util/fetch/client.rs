@@ -11,7 +11,8 @@ use reqwest::{Proxy, Url};
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
-use super::guards::{redact_url_for_log, validate_url};
+use super::guards::{redact_url_for_log, validate_url_with};
+use crate::config::model::Config;
 use crate::util::error::{Error, Result};
 
 /// 单次拉取超时（与既有订阅拉取行为一致）
@@ -35,10 +36,15 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// 直接判总超时（避免发起注定失败的连接，也覆盖 DNS 校验阶段耗时）。
 const MIN_HOP_REMAINING: Duration = Duration::from_millis(100);
 
-/// 拉取请求 User-Agent（部分订阅/下载服务器要求非空 UA）
-/// 版本号取自 Cargo 包版本，避免发版后 UA 漂移
+/// 拉取请求 User-Agent。
+/// 订阅服务端常按 UA 决定返回格式：不含 `clash` / `mihomo` 字样时往往回退成
+/// Base64 分享链接列表（审计 B7）。这里声明 Mihomo 兼容客户端，优先拿到 Clash YAML；
+/// 即便回退成链接列表，`util::uri_list` 也能解析。版本号取自 Cargo 包版本。
 fn user_agent() -> String {
-    format!("ClashEdge/{}", env!("CARGO_PKG_VERSION"))
+    format!(
+        "ClashEdge/{} (clash.meta; mihomo)",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// 手动重定向策略：**不自动跟随**，返回重定向信息让调用方做完整异步校验
@@ -62,7 +68,7 @@ fn no_redirect_policy() -> Policy {
 /// 解析失败即拒绝）；校验返回的已验地址用 `resolve()` 钉定到客户端，
 /// 避免连接时重新解析。重定向到新主机名时逐跳做完整异步校验再钉定。
 pub async fn get_direct_first(app: &AppHandle, url: &str) -> Result<reqwest::Response> {
-    get_direct_first_with_timeout(app, url, Some(TIMEOUT)).await
+    get_direct_first_impl(app, url, Some(TIMEOUT), None).await
 }
 
 /// 大文件下载变体：`total_timeout=None` 时不设总超时（reqwest 的 `timeout()`
@@ -71,7 +77,18 @@ pub async fn get_direct_first(app: &AppHandle, url: &str) -> Result<reqwest::Res
 /// 调用方必须自行以「大小上限 + 整体 deadline」兜底，防止慢速/恶意源把
 /// 下载任务无限挂起。
 pub async fn get_direct_first_streaming(app: &AppHandle, url: &str) -> Result<reqwest::Response> {
-    get_direct_first_with_timeout(app, url, None).await
+    get_direct_first_impl(app, url, None, None).await
+}
+
+/// 订阅拉取变体：允许单个订阅覆盖 User-Agent（审计 B7）。
+/// 部分服务端按 UA 决定返回格式，用户可为单个订阅显式指定；
+/// `custom_ua=None` 时与 `get_direct_first` 完全一致（内置 mihomo 兼容 UA）。
+pub async fn get_direct_first_with_ua(
+    app: &AppHandle,
+    url: &str,
+    custom_ua: Option<&str>,
+) -> Result<reqwest::Response> {
+    get_direct_first_impl(app, url, Some(TIMEOUT), custom_ua).await
 }
 
 /// 整条请求链（含全部重定向跳）保持同一路由语义。
@@ -96,13 +113,69 @@ fn apply_route(
     })
 }
 
-async fn get_direct_first_with_timeout(
+/// 当前配置下 DNS 是否会被 mihomo 劫持成 fake-ip（TUN 开启 + fake-ip 增强模式），
+/// 是则返回 fake-ip 段（审计 A3）。仅看配置：TUN 未实际运行时解析结果不会落入
+/// 该段，守卫自然回到严格模式。
+pub fn fake_ip_range_from_config(cfg: &Config) -> Option<ipnet::IpNet> {
+    if cfg.tun.enable && cfg.dns.enable && cfg.dns.enhanced_mode == "fake-ip" {
+        cfg.dns.fake_ip_range.trim().parse().ok()
+    } else {
+        None
+    }
+}
+
+fn fake_ip_range(app: &AppHandle) -> Option<ipnet::IpNet> {
+    let cfg = app
+        .state::<crate::AppState>()
+        .config_manager
+        .lock()
+        .unwrap()
+        .get_config();
+    fake_ip_range_from_config(&cfg)
+}
+
+/// 应用内 URL 预校验（感知 fake-ip）。调用方在发起拉取前做早期失败提示时使用。
+pub async fn validate_url_app(app: &AppHandle, url: &str) -> Result<()> {
+    validate_url_with(url, fake_ip_range(app).as_ref())
+        .await
+        .map(|_| ())
+}
+
+async fn get_direct_first_impl(
     app: &AppHandle,
     url: &str,
     total_timeout: Option<Duration>,
+    custom_ua: Option<&str>,
 ) -> Result<reqwest::Response> {
-    // SSRF 防护：目标 URL 必须通过校验（含 DNS 白名单检查，返回已验地址）
-    let resolved = validate_url(url).await?;
+    let fake = fake_ip_range(app);
+    // SSRF 防护：目标 URL 必须通过校验（含 DNS 白名单检查，返回已验地址）。
+    // 返回空列表 = TUN + fake-ip 下的"未解析域名"，只能走本地代理（见 A3）。
+    let resolved = validate_url_with(url, fake.as_ref()).await?;
+    let proxy_url = local_proxy_url(app);
+
+    if resolved.is_empty() {
+        info!(
+            "Target {} resolves to fake-ip; fetching via local proxy (remote DNS)",
+            redact_url_for_log(url)
+        );
+        let proxied = apply_route(
+            build_client_with_resolved(url, &resolved, total_timeout)?,
+            FetchRoute::LocalProxy,
+            &to_remote_dns(&proxy_url),
+        )?
+        .redirect(no_redirect_policy())
+        .build()?;
+        return send_and_follow(
+            &proxied,
+            url,
+            FetchRoute::LocalProxy,
+            &proxy_url,
+            total_timeout,
+            fake.as_ref(),
+            custom_ua,
+        )
+        .await;
+    }
 
     // 1. 直连尝试（no_proxy：忽略系统代理/环境代理，强制直连）
     let direct = apply_route(
@@ -113,7 +186,6 @@ async fn get_direct_first_with_timeout(
     .redirect(no_redirect_policy())
     .build()?;
     // 2. 代理兜底：应用自身 mihomo 混合端口
-    let proxy_url = local_proxy_url(app);
     let proxied = apply_route(
         build_client_with_resolved(url, &resolved, total_timeout)?,
         FetchRoute::LocalProxy,
@@ -122,7 +194,22 @@ async fn get_direct_first_with_timeout(
     .redirect(no_redirect_policy())
     .build()?;
     // 总超时一路传递：direct 与 proxied 两条链各自持有同一总预算
-    send_direct_then_proxy(&direct, &proxied, url, &proxy_url, total_timeout).await
+    send_direct_then_proxy(
+        &direct,
+        &proxied,
+        url,
+        &proxy_url,
+        total_timeout,
+        fake.as_ref(),
+        custom_ua,
+    )
+    .await
+}
+
+/// `socks5://` -> `socks5h://`（由代理端解析域名）。仅用于 fake-ip 场景：此时
+/// 本机解析结果是假地址，必须把域名交给 mihomo 解析。
+fn to_remote_dns(proxy_url: &str) -> String {
+    proxy_url.replacen("socks5://", "socks5h://", 1)
 }
 
 async fn send_direct_then_proxy(
@@ -131,8 +218,20 @@ async fn send_direct_then_proxy(
     url: &str,
     proxy_url: &str,
     total_timeout: Option<Duration>,
+    fake: Option<&ipnet::IpNet>,
+    custom_ua: Option<&str>,
 ) -> Result<reqwest::Response> {
-    match send_and_follow(direct, url, FetchRoute::Direct, "", total_timeout).await {
+    match send_and_follow(
+        direct,
+        url,
+        FetchRoute::Direct,
+        "",
+        total_timeout,
+        fake,
+        custom_ua,
+    )
+    .await
+    {
         Ok(resp) if resp.status().is_success() => return Ok(resp),
         Ok(resp) => {
             warn!(
@@ -165,6 +264,8 @@ async fn send_direct_then_proxy(
         FetchRoute::LocalProxy,
         proxy_url,
         total_timeout,
+        fake,
+        custom_ua,
     )
     .await
 }
@@ -220,6 +321,8 @@ async fn send_and_follow(
     route: FetchRoute,
     proxy_url: &str,
     total_timeout: Option<Duration>,
+    fake: Option<&ipnet::IpNet>,
+    custom_ua: Option<&str>,
 ) -> Result<reqwest::Response> {
     let deadline = total_timeout.map(|t| Instant::now() + t);
     let mut current_url = start_url.to_string();
@@ -243,25 +346,30 @@ async fn send_and_follow(
         let resolved = if _hop == 0 {
             Vec::new()
         } else {
-            validate_url(&current_url).await?
+            validate_url_with(&current_url, fake).await?
         };
         let req_url = current_url.clone();
-        // 对于重定向跳，需要用新 URL 的已验地址重新构建请求；
-        // 但 client 是共享的（已钉定首跳主机）。重定向到新主机名时，
-        // 我们用独立钉定 client 发送。为关闭 TOCTOU，重定向到新主机时
-        // 改用独立钉定 client。
+        // 首跳 client 已由调用方钉定；重定向跳一律以该跳的校验结果重建 client，
+        // 并沿用首跳的路由语义（直连 / 本地代理）。校验返回空列表（fake-ip 域名）
+        // 时只能走本地代理并改用 socks5h 由 mihomo 解析域名。
         let req_client = if _hop == 0 {
-            // 首跳：client 已由调用方钉定
-            client.clone()
-        } else if resolved.is_empty() {
             client.clone()
         } else {
-            // 重定向跳：原 client 的总超时只覆盖首跳，这里以剩余时间重建，
-            // 保证整条链共享同一总 deadline（None 总超时的 streaming 模式除外）
+            let hop_proxy = if resolved.is_empty() {
+                if route == FetchRoute::Direct {
+                    return Err(Error::Other(format!(
+                        "redirect target {} needs the local proxy (fake-ip DNS)",
+                        redact_url_for_log(&req_url)
+                    )));
+                }
+                to_remote_dns(proxy_url)
+            } else {
+                proxy_url.to_string()
+            };
             apply_route(
                 build_client_with_resolved(&req_url, &resolved, remaining)?,
                 route,
-                proxy_url,
+                &hop_proxy,
             )?
             .redirect(no_redirect_policy())
             .build()?
@@ -269,7 +377,10 @@ async fn send_and_follow(
 
         let send_fut = req_client
             .get(&req_url)
-            .header(USER_AGENT, user_agent())
+            .header(
+                USER_AGENT,
+                custom_ua.map_or_else(user_agent, str::to_string),
+            )
             .send();
         // 双保险：每跳发送都受剩余时间硬约束（覆盖 DNS/连接阶段与 client
         // 总超时划分不精确的窗口）
@@ -335,9 +446,7 @@ fn local_proxy_url(app: &AppHandle) -> String {
         .config_manager
         .lock()
         .unwrap()
-        .get_config()
-        .general
-        .mixed_port;
+        .mixed_port();
     format!("socks5://127.0.0.1:{}", port)
 }
 
@@ -438,6 +547,8 @@ mod tests {
             url,
             &proxy_url,
             Some(Duration::from_secs(5)),
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -578,6 +689,8 @@ mod tests {
             FetchRoute::Direct,
             "",
             Some(Duration::from_secs(1)),
+            None,
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -603,7 +716,7 @@ mod tests {
         // 1.5s 内保持挂起（不会"提前失败"也不会"成功返回"）。
         let pending = tokio::time::timeout(
             Duration::from_millis(1500),
-            send_and_follow(&client, url, FetchRoute::Direct, "", None),
+            send_and_follow(&client, url, FetchRoute::Direct, "", None, None, None),
         )
         .await;
         assert!(
@@ -620,6 +733,8 @@ mod tests {
             FetchRoute::Direct,
             "",
             Some(Duration::from_millis(50)),
+            None,
+            None,
         )
         .await;
         let err = result.expect_err("remaining below the minimum threshold must abort");
@@ -650,7 +765,7 @@ mod tests {
             "https://raw.githubusercontent.com/akaspyrean/external/main/rules/direct.yaml",
             "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
         ] {
-            let resolved = validate_url(url).await.unwrap();
+            let resolved = super::validate_url_with(url, None).await.unwrap();
             let client = apply_route(
                 build_client_with_resolved(url, &resolved, Some(Duration::from_secs(45))).unwrap(),
                 FetchRoute::LocalProxy,
@@ -666,6 +781,8 @@ mod tests {
                 FetchRoute::LocalProxy,
                 &proxy_url,
                 Some(Duration::from_secs(45)),
+                None,
+                None,
             )
             .await
             .unwrap_or_else(|e| panic!("real proxy fetch failed for {}: {}", url, e));

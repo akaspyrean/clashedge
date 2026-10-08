@@ -19,31 +19,41 @@ object RuntimeConfigGenerator {
     const val GROUP_MANUAL = "人工优选"
     const val GROUP_AUTO = "自动优选"
 
+    private val VALID_MODES = setOf("rule", "global", "direct")
+
     fun build(mode: String, nodes: List<Node>, rulesDir: String): String {
+        // mihomo only accepts rule / global / direct; anything else would corrupt the YAML.
+        val safeMode = if (mode in VALID_MODES) mode else "rule"
         val proxyLines = nodes.map { n ->
             buildString {
                 append("  - { name: ")
                 append(escapeYaml(n.name))
                 append(", type: ")
-                append(n.type)
+                append(escapeYaml(n.type))
                 append(", server: ")
                 append(escapeYaml(n.server))
                 append(" }")
             }
         }.joinToString("\n")
 
-        val manualMembers = nodes.map { it.name }
-        val autoMembers = manualMembers + "DIRECT"
+        val manualMembers = nodes.map { escapeYaml(it.name) }
+        // url-test must contain REAL nodes only: DIRECT is not a proxy, url-test would pick it as
+        // the "fastest" node forever (same rule as the Windows build_runtime_config). With no
+        // nodes mihomo rejects an empty group, so the auto group is dropped and the manual
+        // group falls back to DIRECT.
+        val hasNodes = manualMembers.isNotEmpty()
+        val manualList = if (hasNodes) manualMembers.joinToString(", ") else "DIRECT"
+        val leafRefs = if (hasNodes) "$GROUP_MANUAL, $GROUP_AUTO" else GROUP_MANUAL
 
         return buildString {
             appendLine("mixed-port: 7890")
             appendLine("allow-lan: false")
-            appendLine("mode: $mode")
+            appendLine("mode: $safeMode")
             appendLine("log-level: info")
             appendLine()
             appendLine("dns:")
             appendLine("  enable: true")
-            appendLine("  listen: 0.0.0.0:1053")
+            appendLine("  listen: 127.0.0.1:1053")
             appendLine("  enhanced-mode: fake-ip")
             appendLine()
             appendLine("proxies:")
@@ -52,25 +62,27 @@ object RuntimeConfigGenerator {
             appendLine("proxy-groups:")
             appendLine("  - name: GLOBAL")
             appendLine("    type: select")
-            appendLine("    proxies: [DIRECT, REJECT, $GROUP_MANUAL, $GROUP_AUTO]")
+            appendLine("    proxies: [DIRECT, REJECT, $leafRefs]")
             appendLine("  - name: $GROUP_LADDER")
             appendLine("    type: select")
-            appendLine("    proxies: [$GROUP_MANUAL, $GROUP_AUTO]")
+            appendLine("    proxies: [$leafRefs]")
             appendLine("  - name: $GROUP_AI")
             appendLine("    type: select")
-            appendLine("    proxies: [$GROUP_MANUAL, $GROUP_AUTO]")
+            appendLine("    proxies: [$leafRefs]")
             appendLine("  - name: $GROUP_MEDIA")
             appendLine("    type: select")
-            appendLine("    proxies: [$GROUP_MANUAL, $GROUP_AUTO]")
+            appendLine("    proxies: [$leafRefs]")
             appendLine("  - name: $GROUP_MANUAL")
             appendLine("    type: select")
-            appendLine("    proxies: [${manualMembers.joinToString(", ")}]")
-            appendLine("  - name: $GROUP_AUTO")
-            appendLine("    type: url-test")
-            appendLine("    url: https://cp.cloudflare.com/generate_204")
-            appendLine("    interval: 300")
-            appendLine("    tolerance: 100")
-            appendLine("    proxies: [${autoMembers.joinToString(", ")}]")
+            appendLine("    proxies: [$manualList]")
+            if (hasNodes) {
+                appendLine("  - name: $GROUP_AUTO")
+                appendLine("    type: url-test")
+                appendLine("    url: https://cp.cloudflare.com/generate_204")
+                appendLine("    interval: 300")
+                appendLine("    tolerance: 100")
+                appendLine("    proxies: [${manualMembers.joinToString(", ")}]")
+            }
             appendLine()
             appendRuleProviders(rulesDir)
             appendLine("rules:")

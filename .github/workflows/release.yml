@@ -4,14 +4,18 @@ name: Release
 # Tag immutability is enforced by the repository's GitHub Rulesets (immutable
 # tags for v*), not by custom scripts — a pushed tag can never be moved or
 # re-pointed, which removes the need for in-workflow tag guards.
+#
+# Privilege split (audit B10): everything that runs third-party code (npm ci,
+# cargo build scripts, asset download) lives in `build` with a READ-ONLY token
+# and NO signing/publishing secrets. Only `publish` holds contents:write,
+# id-token/attestations and the private signing key, and it runs nothing but
+# our own scripts plus the Tauri signer (installed with --ignore-scripts).
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -27,7 +31,8 @@ env:
 
 jobs:
   # CI and Release share the same quality gate (scripts/ci/quality.ps1):
-  # fmt/clippy/test/audit/build. There is exactly one gate, not two.
+  # fmt/clippy/test/audit/build + launcher compile & recovery tests.
+  # There is exactly one gate, not two.
   quality:
     runs-on: windows-latest
     steps:
@@ -40,9 +45,11 @@ jobs:
           cache: npm
           cache-dependency-path: apps/windows/package-lock.json
 
+      # Toolchain version comes from apps/windows/src-tauri/rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
-          components: rustfmt
+          toolchain: 1.97.1
+          components: rustfmt, clippy
 
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -55,9 +62,13 @@ jobs:
   build:
     needs: quality
     runs-on: windows-latest
+    # No write access, no signing key: this job runs third-party build code.
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
 
     steps:
-      # Pin every action to the official commit SHA to prevent tag hijacking.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -67,6 +78,8 @@ jobs:
           cache-dependency-path: apps/windows/package-lock.json
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.97.1
 
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -89,26 +102,117 @@ jobs:
           Add-Content $env:GITHUB_OUTPUT "version=$version"
         id: meta
 
-      # Manifest signing is mandatory: a release that clients cannot verify
-      # must never ship. Missing keys fail the run immediately.
-      - name: Require signing keys (mandatory)
+      # The client needs only the PUBLIC verification key at build time.
+      # A release without it cannot update itself, so fail early.
+      - name: Require update public key
         shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
         run: |
-          if ($env:TAURI_SIGNING_PRIVATE_KEY -eq '' -or $null -eq $env:TAURI_SIGNING_PRIVATE_KEY) {
-            throw "TAURI_SIGNING_PRIVATE_KEY is not set — releases must be signed"
-          }
-          if ($env:CLASHEDGE_UPDATE_PUBKEY -eq '' -or $null -eq $env:CLASHEDGE_UPDATE_PUBKEY) {
+          if ([string]::IsNullOrEmpty($env:CLASHEDGE_UPDATE_PUBKEY)) {
             throw "CLASHEDGE_UPDATE_PUBKEY is not set — client cannot verify manifests without the embedded public key"
           }
-          Write-Host "Signing secrets present."
 
-      # Create the draft release after the quality gate so a failing gate never
-      # leaves an empty draft behind. Only a leftover draft from a previous
-      # failed run may be deleted and recreated; a published release can never
-      # be reached here for the same tag (immutable tags + no manual trigger).
+      - name: Install frontend dependencies
+        working-directory: apps/windows
+        run: npm ci
+
+      # Inject the embedded update-verification public key into the client
+      # build (update/mod.rs reads it at compile time).
+      - name: Tauri release build (--no-bundle)
+        working-directory: apps/windows
+        env:
+          CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
+        run: node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
+
+      # Download and hash-verify pinned third-party assets (assets.lock.json):
+      # mihomo core, wintun driver, rule sets and geodata -> build/assets/staging/.
+      - name: Prepare third-party assets
+        shell: pwsh
+        run: .\scripts\assets\prepare.ps1
+
+      # Optional Authenticode signing: runs only our own script; skipped (with a
+      # warning) when no certificate secret is configured.
+      - name: Assemble portable package + SHA256
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: .\scripts\windows\build-portable.ps1
+
+      # Fault-injection test for the launcher (recovery kill points, native
+      # junction, JSON/quoting, DefaultData sync). Any failure aborts the release.
+      - name: Launcher recovery fault-injection test
+        shell: pwsh
+        run: |
+          $launcher = ".\release\portable-out\ClashEdge.exe"
+          if (-not (Test-Path $launcher)) { throw "Launcher not found: $launcher" }
+          # ClashEdge.exe is a winexe (GUI subsystem): PowerShell's & operator
+          # does not capture its exit code. Start-Process -Wait -PassThru does.
+          $proc = Start-Process -FilePath $launcher -ArgumentList "--test-recovery" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) { throw "Launcher recovery tests failed (exit $($proc.ExitCode))" }
+          Write-Host "Launcher recovery tests passed."
+
+      - name: Generate Portable Updater manifest (unsigned)
+        shell: pwsh
+        run: |
+          python3 scripts/release/make-update-manifest.py `
+            --version "${{ steps.meta.outputs.version }}" `
+            --tag "${{ github.ref_name }}" `
+            --repo "akaspyrean/clashedge" `
+            --dist ".\release" `
+            --out ".\release\portable-manifest.json" `
+            --notes "ClashEdge ${{ steps.meta.outputs.version }}"
+
+      # The exact client binary that embeds the public key is shipped to the
+      # publish job so the signature can be verified with the real verifier.
+      - name: Stage publish inputs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .\publish-in | Out-Null
+          Copy-Item ".\release\$env:ZIP_NAME" .\publish-in\
+          Copy-Item ".\release\$env:ZIP_NAME.sha256" .\publish-in\
+          Copy-Item .\release\portable-manifest.json .\publish-in\
+          Copy-Item .\release\portable-out\App\ClashEdge\ClashEdge.exe .\publish-in\ClashEdge-inner.exe
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-inputs
+          path: publish-in/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/windows/package-lock.json
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-inputs
+          path: release
+
+      # --ignore-scripts: this job holds the signing key, so no dependency
+      # lifecycle script may run here. The Tauri CLI signer needs none.
+      - name: Install signer (no lifecycle scripts)
+        working-directory: apps/windows
+        run: npm ci --ignore-scripts
+
+      # Create the draft release only now that everything upstream succeeded,
+      # so a failing gate never leaves an empty draft behind. Only a leftover
+      # draft from a previous failed run may be deleted and recreated; a
+      # published release can never be reached here for the same tag.
       - name: Create draft release
         shell: pwsh
         env:
@@ -130,53 +234,6 @@ jobs:
             --draft `
             --generate-notes
 
-      - name: Install frontend dependencies
-        working-directory: apps/windows
-        run: npm ci
-
-      # Inject the embedded update-verification public key into the client
-      # build (update/mod.rs reads it at compile time).
-      - name: Tauri release build (--no-bundle)
-        working-directory: apps/windows
-        env:
-          CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
-        run: node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
-
-      # Download and hash-verify pinned third-party assets (assets.lock.json):
-      # mihomo core, wintun driver, rule sets and geodata -> build/assets/staging/.
-      - name: Prepare third-party assets
-        shell: pwsh
-        run: .\scripts\assets\prepare.ps1
-
-      - name: Assemble portable package + SHA256
-        run: .\scripts\windows\build-portable.ps1
-
-      # Fault-injection test for the launcher: verifies the 5 kill points
-      # (pending/verified/swapping/committed/nojournal) recover correctly.
-      # Any failure aborts the release — never ship a version whose recovery
-      # logic is broken.
-      - name: Launcher recovery fault-injection test
-        shell: pwsh
-        run: |
-          $launcher = ".\release\portable-out\ClashEdge.exe"
-          if (-not (Test-Path $launcher)) { throw "Launcher not found: $launcher" }
-          # ClashEdge.exe is a winexe (GUI subsystem): PowerShell's & operator
-          # does not capture its exit code. Start-Process -Wait -PassThru does.
-          $proc = Start-Process -FilePath $launcher -ArgumentList "--test-recovery" -Wait -PassThru -NoNewWindow
-          if ($proc.ExitCode -ne 0) { throw "Launcher recovery tests failed (exit $($proc.ExitCode))" }
-          Write-Host "Launcher recovery tests passed."
-
-      - name: Generate Portable Updater manifest
-        shell: pwsh
-        run: |
-          python3 scripts/release/make-update-manifest.py `
-            --version "${{ steps.meta.outputs.version }}" `
-            --tag "${{ github.ref_name }}" `
-            --repo "akaspyrean/clashedge" `
-            --dist ".\release" `
-            --out ".\release\portable-manifest.json" `
-            --notes "ClashEdge ${{ steps.meta.outputs.version }}"
-
       # Sign portable-manifest.json with minisign via the Tauri CLI: it natively
       # supports the TAURI_SIGNING_* key format and password env vars (reliable
       # unattended). The output is a base64-wrapped signature; unwrap it to the
@@ -188,6 +245,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          if ([string]::IsNullOrEmpty($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY is not set — releases must be signed"
+          }
           node node_modules/@tauri-apps/cli/tauri.js signer sign `
             "..\..\release\portable-manifest.json"
           if ($LASTEXITCODE -ne 0) { throw "tauri signer sign failed" }
@@ -198,6 +258,26 @@ jobs:
           if ($decoded -notmatch 'untrusted comment') { throw "unexpected signature format" }
           Set-Content -Path "..\..\release\portable-manifest.json.minisig" -Value $decoded -NoNewline
           Write-Host "Manifest signed and unwrapped to portable-manifest.json.minisig"
+
+      # REAL verification: the client binary that embeds the public key must accept
+      # the signature we just produced. If the private key and CLASHEDGE_UPDATE_PUBKEY
+      # do not pair, every shipped client would reject every update forever.
+      - name: Verify signature with the shipped client verifier
+        shell: pwsh
+        run: |
+          $exe = ".\release\ClashEdge-inner.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList @(
+            "--verify-signature", ".\release\portable-manifest.json", ".\release\portable-manifest.json.minisig"
+          ) -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            $why = ""
+            if (Test-Path ".\release\portable-manifest.json.verify-error.txt") {
+              $why = Get-Content ".\release\portable-manifest.json.verify-error.txt" -Raw
+            }
+            throw "Signature does NOT verify with the embedded public key (exit $($proc.ExitCode)): $why"
+          }
+          Write-Host "Client-side signature verification passed."
+          Remove-Item $exe -Force
 
       # Dry-run check: every file referenced by manifest, signature, SHA256,
       # attestation and upload must exist with a consistent hash — any mismatch
@@ -227,10 +307,6 @@ jobs:
           }
           if ($m.sha256 -ne $actualZipSha) {
             throw "manifest sha256 mismatch with actual zip: $($m.sha256) vs $actualZipSha"
-          }
-
-          foreach ($f in @($zip, $manifest, $sig)) {
-            if (-not (Test-Path $f)) { throw "Attest subject missing: $f" }
           }
           Write-Host "Release artifact dry-run validation passed:"
           Write-Host "  zip      : $zip ($([math]::Round((Get-Item $zip).Length/1MB,1)) MB)"

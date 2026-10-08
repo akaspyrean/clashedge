@@ -56,10 +56,15 @@ build/assets/           # prepare.ps1 的缓存与 staging（gitignored）
 ### 配置双层模型
 
 - `Data/config.yaml` 是**应用配置**（AppConfig）：locale、geodata 模式、激活的 profile 等。
+  设置页暴露的每个开关都必须有后端消费方（不允许"只翻转一个布尔值"的死开关）。
 - mihomo 加载的是 `Data/runtime-config.yaml`：由 `core::config::build_runtime_config`
   把 AppConfig 与激活 Profile 合成。**订阅只提供节点**——应用始终使用内置 6 组骨架
   （GLOBAL + 扶梯出行/人工智能/影音视听/人工优选/自动优选）与内置规则链，把订阅节点名
   强制注入叶子组；订阅自带的 proxy-groups/rules 一律不整组采用。
+
+内置规则集一律是本地 `type: file`（`Data/rules/*.yaml`）：刷新由 `geodata::rules` 的**签名清单
+更新器**完成（minisign 验签 + 单调版本 + 路径/URL 白名单 + SHA256 + 内容校验 + 事务替换），
+不再让 mihomo 从 `main` 分支浮动拉取。GeoIP/GeoSite 写入 **Data 根目录**（mihomo 只读那里）。
 
 内置规则链（顺序固定）：
 `GEOSITE,private → RULE-SET,direct → RULE-SET,ad → GEOSITE,category-ads-all →
@@ -75,7 +80,9 @@ src-tauri/src/
   core/
     app_controller.rs  # AppController：唯一修改边界，事务串行锁 + 全链路内聚
     manager.rs         # CoreManager：struct、状态、REST 透传（门面）
-    lifecycle.rs       # 进程生命周期：start/stop/restart/reload、runtime-config 落盘
+    lifecycle.rs       # 进程生命周期：start/stop/restart/reload（runtime-config 哈希未变则跳过热重载）
+    spawn.rs           # 首次启动与崩溃重启共用：写 runtime-config、日志追加+轮转、core-session.json、
+                       #   孤儿 mihomo 回收、端口预检（mixed/DNS 占用报占用者；控制器端口被占自动改选）
     supervisor.rs      # watcher、自动重启、崩溃熔断、PID 缓存、绑定冲突检测
     config.rs          # runtime-config 合成（AppConfig + Profile）
     controller.rs      # mihomo 外部控制器 REST 客户端（无进程状态）
@@ -83,11 +90,13 @@ src-tauri/src/
     health.rs          # 健康检查
   config/           # AppConfig 的 model / persistence / migration
   proxy/            # system_proxy（Windows 注册表）、journal（状态事务日志）
-  geodata/          # GeoIP/GeoSite 下载源与更新
+  geodata/          # download.rs（受限下载/事务替换）、rules.rs（签名规则清单更新器）、
+                    # updater.rs（GeoIP/GeoSite 写入 Data 根目录并重载）、sources.rs
   tray/             # 托盘图标与菜单（随系统代理状态变色）
-  update/           # 更新检查与便携包清单验签
-  util/             # fetch/（受限 HTTP 客户端：guards=SSRF 防护、client=下载机制）、
-                    # paths（便携检测）、atomic、autostart、elevation、normalizer
+  update/           # 更新检查、清单验签、暂存（含已验签清单）、--verify-staged/--verify-signature CLI
+  util/             # fetch/（受限 HTTP 客户端：guards=SSRF 防护（感知 TUN+fake-ip）、client=下载机制）、
+                    # paths（便携检测）、atomic、autostart、elevation、normalizer、
+                    # process（持句柄终止/端口占用者）、temp（RAII 临时文件）、uri_list（分享链接/Base64 订阅）
   i18n/             # 后端文案加载
 ```
 
@@ -100,6 +109,10 @@ App/DefaultData/         # 出厂默认数据（GeoIP/GeoSite/Country.mmdb/confi
 Data/                    # 用户数据（config.yaml、runtime-config.yaml、profiles、logs、rules）
 Other/Help/              # 附属文档
 ```
+
+进程与端口：mihomo 的 PID+映像路径落盘到 `Data/core-session.json`；应用被强杀/崩溃后，下次启动先回收
+本应用遗留的孤儿内核（映像路径校验 + 持句柄终止），再做端口预检。终止进程统一走
+`util::process::terminate_owned`（不使用 `taskkill`）。
 
 便携判定：`App/portable.dat` **或** `App/clash-edge-core.exe` 存在（改名/换盘符可自愈）。
 便携模式下 mihomo 固定解析 `<exe_dir>/App/clash-edge-core.exe`，无 %APPDATA% 静默回退。
@@ -115,7 +128,11 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
 
 - 触发只有 `push: tags: v*`；tag 不可变由 GitHub Rulesets 保证（仓库设置，非脚本）。
 - manifest 强制签名（`TAURI_SIGNING_PRIVATE_KEY`），公钥编译期注入客户端（`update/mod.rs`）。
-- Updater 按稳定 ZIP 名下载，验 SHA256 + minisign 签名。
+- Updater 按稳定 ZIP 名下载，验 SHA256 + minisign 签名；已验签清单与签名随 ZIP 一起暂存，启动器在
+  应用更新前调用当前已安装的内层程序 `--verify-staged` 复验（不信任 `pending.json` 自带哈希），
+  应用仍在运行时启动器跳过更新并保留暂存区；应用内"重启并安装"用 `--wait-pid` 等旧进程退出。
+- 发布流水线按权限拆分：`build`（只读令牌、无签名私钥，运行第三方构建代码）→ `publish`（写权限+私钥，
+  `npm ci --ignore-scripts`），发布前用刚构建的客户端自带验签器（`--verify-signature`）验证签名。
 - 第三方资产（mihomo、wintun.dll、内置规则集、geodata）不进 Git：版本/URL/SHA256
   锁在 `assets.lock.json`，由 `scripts/assets/prepare.ps1` 物化到 `build/assets/staging/`。
   规则集与 geodata 由 `akaspyrean/external` 仓库发布（geodata 由其定时同步 Action
@@ -133,7 +150,12 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
 
 ## 已知债务（有意推迟，非遗忘）
 
-- 上一轮的两项主要债务（AppController 收拢、manager/fetch/profiles 拆分）已完成。
-  `AppState` 现在只剩辅助成员（tray、log_stream、core_pid_cache、verified_update），
-  全部修改路径必须经 `AppController`。新增修改状态的功能时，一律加 controller 方法，
-  不得在 command / tray 层直接操作 ConfigManager + CoreManager。
+- `serde_yaml` 已归档（解析不可信订阅）：迁移需要统一的 YAML 封装层，单独排期。
+- 控制器仍走回环 TCP（已做：每次启动端口冲突自动改选、随机 secret、`no_proxy`）；Windows 命名管道
+  需要自定义 hyper connector，后续评估。
+- 订阅 URL（含 token）仍明文保存在 `profiles/*.yaml` 头注释：DPAPI 加密会破坏"整体迁移到另一台机器"
+  这一便携核心卖点，暂缓；需要时应提供"导出时脱敏"。
+- Windows ARM64：`assets.lock.json` 仅 amd64 内核与 wintun。
+- Android 冻结，见 `apps/android/README.md`（订阅导入仍是只留 name/type/server 的骨架）。
+- 新增修改状态的功能时，一律加 AppController 方法，不得在 command / tray 层直接
+  `config_manager.lock().set_config(..)`。

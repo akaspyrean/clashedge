@@ -9,5 +9,8 @@ pub mod fetch;
 pub mod logging;
 pub mod normalizer;
 pub mod paths;
+pub mod process;
+pub mod temp;
+pub mod uri_list;
 
 pub use error::Error;

@@ -59,19 +59,94 @@ pub async fn normalize_subscription(app: &AppHandle, body: &str) -> Result<Norma
         .map_err(|_| Error::Subscription("Subscription normalization timed out".to_string()))?
 }
 
+/// 应用内置分组名 / mihomo 保留策略名：节点不得与之同名，否则 mihomo 启动时
+/// 报重名或内置组引用错乱。
+pub const RESERVED_NODE_NAMES: &[&str] = &[
+    "DIRECT",
+    "REJECT",
+    "REJECT-DROP",
+    "PASS",
+    "COMPATIBLE",
+    "GLOBAL",
+    "扶梯出行",
+    "人工智能",
+    "影音视听",
+    "人工优选",
+    "自动优选",
+];
+
+/// 节点名是否为保留名（大小写不敏感）。
+pub fn is_reserved_node_name(name: &str) -> bool {
+    let n = name.trim();
+    RESERVED_NODE_NAMES
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(n))
+}
+
+/// 去重 + 保留名改名 + 数量上限（归一化的统一收尾）。
+fn finalize(mut proxies: Vec<Value>, warnings: Vec<String>) -> Result<NormalizedSubscription> {
+    if proxies.len() > MAX_NODE_COUNT {
+        return Err(Error::Subscription(format!(
+            "Normalized node count {} exceeds limit of {}",
+            proxies.len(),
+            MAX_NODE_COUNT
+        )));
+    }
+    proxies = dedupe_by_name(proxies);
+    let mut warnings = warnings;
+    for node in proxies.iter_mut() {
+        let Some(m) = node.as_mapping_mut() else {
+            continue;
+        };
+        if let Some(Value::String(name)) = m.get("name").cloned() {
+            if is_reserved_node_name(&name) {
+                let renamed = format!("{} (node)", name);
+                warnings.push(format!(
+                    "node '{}' conflicts with a built-in name; renamed to '{}'",
+                    name, renamed
+                ));
+                m.insert(Value::String("name".into()), Value::String(renamed));
+            }
+        }
+    }
+    Ok(NormalizedSubscription { proxies, warnings })
+}
+
+/// 非 YAML 订阅（URI 列表 / Base64）转节点；不是此类格式返回 None。
+fn try_uri_list(body: &str) -> Option<Result<NormalizedSubscription>> {
+    if !crate::util::uri_list::looks_like_uri_list(body) {
+        return None;
+    }
+    let parsed = crate::util::uri_list::parse(body);
+    if parsed.proxies.is_empty() {
+        return Some(Err(Error::Subscription(format!(
+            "订阅是分享链接列表，但没有可用节点：{}",
+            parsed.warnings.join("；")
+        ))));
+    }
+    Some(finalize(parsed.proxies, parsed.warnings))
+}
+
 async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscription> {
     let value: Value = match serde_yaml::from_str(body) {
         Ok(v) => v,
         Err(e) => {
+            if let Some(r) = try_uri_list(body) {
+                return r;
+            }
             return Err(Error::Subscription(format!(
                 "Invalid subscription YAML: {}",
                 e
-            )))
+            )));
         }
     };
     let Some(map) = value.as_mapping() else {
+        if let Some(r) = try_uri_list(body) {
+            return r;
+        }
         return Err(Error::Subscription(
-            "Subscription root must be a YAML mapping".to_string(),
+            "Subscription root must be a YAML mapping, or a Base64 / share-link (ss:// vmess:// vless:// trojan:// hysteria2:// tuic://) list"
+                .to_string(),
         ));
     };
 
@@ -133,14 +208,6 @@ async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscr
         }
     }
 
-    if proxies.len() > MAX_NODE_COUNT {
-        return Err(Error::Subscription(format!(
-            "Normalized node count {} exceeds limit of {}",
-            proxies.len(),
-            MAX_NODE_COUNT
-        )));
-    }
-
     // 4) 明确反馈：订阅只声明了 proxy-providers，却一个节点都没展开出来
     //    （全部拉取/解析失败或类型不支持）→ 返回明确错误，避免"导入成功但零节点"的
     //    假成功。若存在顶层 proxies 或至少一个 provider 成功，则降级为警告继续。
@@ -151,10 +218,8 @@ async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscr
         )));
     }
 
-    // 3) 按名称去重（顶层与 provider 节点可能重名）
-    proxies = dedupe_by_name(proxies);
-
-    Ok(NormalizedSubscription { proxies, warnings })
+    // 3) 按名称去重（顶层与 provider 节点可能重名）+ 保留名改名 + 数量上限
+    finalize(proxies, warnings)
 }
 
 /// 校验单订阅声明的 proxy-provider 数量上限（纯函数，供运行时与测试共用）。
@@ -185,7 +250,7 @@ async fn expand_http_provider(
         .ok_or_else(|| Error::Subscription(format!("http provider '{}' has no url", name)))?;
 
     // SSRF 防护与订阅拉取一致
-    crate::util::fetch::validate_url(url).await?;
+    crate::util::fetch::validate_url_app(app, url).await?;
 
     let mut resp = crate::util::fetch::get_direct_first(app, url).await?;
     if !resp.status().is_success() {
@@ -476,11 +541,45 @@ proxy-providers:
         );
     }
 
-    /// 订阅兼容性 fixtures：非 mapping 根被明确拒绝（Base64/URI-list 暂不支持）。
+    /// 订阅兼容性 fixtures：数组根不是 mapping，也不是分享链接列表 → 仍被拒绝。
     #[test]
     fn non_mapping_root_is_rejected() {
-        // serde 解析数组根 → as_mapping() 为 None
         let value: Value = serde_yaml::from_str("- item1\n- item2\n").unwrap();
         assert!(value.as_mapping().is_none(), "array root is not a mapping");
+        assert!(try_uri_list("- item1\n- item2\n").is_none());
+    }
+
+    /// B7：保留名节点被改名，重名保留首个，分享链接列表可直接归一化。
+    #[test]
+    fn finalize_renames_reserved_and_dedupes() {
+        let node = |n: &str| -> Value {
+            serde_yaml::from_str(&format!(
+                "name: \"{}\"\ntype: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
+                n
+            ))
+            .unwrap()
+        };
+        let out = finalize(
+            vec![node("DIRECT"), node("人工优选"), node("ok"), node("ok")],
+            vec![],
+        )
+        .unwrap();
+        let names: Vec<&str> = out
+            .proxies
+            .iter()
+            .filter_map(|n| n.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(names, vec!["DIRECT (node)", "人工优选 (node)", "ok"]);
+        assert_eq!(out.warnings.len(), 2);
+    }
+
+    #[test]
+    fn uri_list_body_normalizes_without_network() {
+        let r = try_uri_list("trojan://pw@a.example:443#A\ntrojan://pw@b.example:443#B\n")
+            .expect("recognized")
+            .expect("ok");
+        assert_eq!(r.proxies.len(), 2);
+        let bad = try_uri_list("ftp://x\nss://\n").map(|r| r.is_err());
+        assert_eq!(bad, Some(true));
     }
 }

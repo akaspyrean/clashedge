@@ -35,13 +35,15 @@ pub use subscription::{auto_refresh_stale_subscriptions, refresh_subscription};
 
 use files::{
     activate_with_rollback, active_profile, commit_profile_file, pending_delete_path_for,
-    profile_path, temp_path_for,
+    profile_path, reserve_new, temp_path_for,
 };
 use subscription::{
-    download_subscription_streaming, extract_subscribe_url, normalize_subscription_body,
-    redact_subscribe_url, redact_url, strip_subscribe_header,
+    apply_header_user_agent, build_header, download_subscription_streaming, extract_subscribe_url,
+    extract_subscribe_user_agent, extract_subscription_userinfo, normalize_subscription_body,
+    read_profile_head, redact_subscribe_url, redact_url, sanitize_user_agent,
+    strip_subscribe_header,
 };
-use validate::validate_subscription_content;
+use validate::{validate_profile_strict, validate_subscription_content};
 
 /// 重命名 Profile 复合事务主体（调用方 AppController 已持有事务锁）。
 ///
@@ -139,6 +141,8 @@ pub async fn list_profiles(app: AppHandle) -> Result<Vec<serde_json::Value>> {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
+                // 只读文件开头（头注释所在），不整文件读入
+                let head = read_profile_head(&path);
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -154,10 +158,13 @@ pub async fn list_profiles(app: AppHandle) -> Result<Vec<serde_json::Value>> {
                     "active": name == active,
                     // 订阅地址脱敏——前端只获得 host 或脱敏 URL，
                     // token/key 不返回前端。后端更新功能读回文件内完整 URL 重新拉取。
-                    "url": std::fs::read_to_string(&path)
-                        .ok()
-                        .and_then(|c| extract_subscribe_url(&c))
+                    "url": extract_subscribe_url(&head)
                         .and_then(|u| redact_subscribe_url(&u)),
+                    // 订阅流量 / 到期信息（来自 Subscription-Userinfo 响应头）
+                    "userinfo": extract_subscription_userinfo(&head),
+                    // 单个订阅的自定义 User-Agent（# subscribe-user-agent: 注释头，
+                    // 审计 B7）；无则为 null（用内置 mihomo 兼容 UA）
+                    "user_agent": extract_subscribe_user_agent(&head),
                 }));
             }
         }
@@ -177,7 +184,7 @@ pub async fn create_profile(app: AppHandle, name: String, content: Option<String
 
     // 非空内容需通过统一校验（与网络导入同一标准：大小/节点数/字段长度/协议）
     if let Some(ref c) = content {
-        validate_subscription_content(c)?;
+        validate_profile_strict(c)?;
     }
 
     // 空内容走内置模板。产品架构里 Profile 只提供节点（runtime 仅透传 proxies），
@@ -185,7 +192,11 @@ pub async fn create_profile(app: AppHandle, name: String, content: Option<String
     // 不生效"的误导性模板。
     let yaml = content.unwrap_or_else(|| "proxies: []\n".to_string());
 
-    atomic_write(&file_path, yaml.as_bytes())?;
+    reserve_new(&file_path)?;
+    if let Err(e) = atomic_write(&file_path, yaml.as_bytes()) {
+        let _ = std::fs::remove_file(&file_path);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -197,20 +208,33 @@ pub async fn delete_profile(app: AppHandle, name: String) -> Result<()> {
     if !file_path.exists() {
         return Err(Error::NotFound("Profile not found".to_string()));
     }
+    // 整个删除事务（含"是否激活中"的判断）在 AppController 事务锁内完成，
+    // 避免判断后、操作前被别的事务切换激活态。
+    let state = app.state::<crate::AppState>();
+    state
+        .controller
+        .delete_profile(&app, &name, &file_path)
+        .await
+}
 
-    let was_active = active_profile(&app) == name;
-    let pending = pending_delete_path_for(&file_path);
-
-    // 事务化删除：先把正式文件暂存为 `.pending-delete`，切换激活成功后才真正删除。
-    // 若切换激活失败，恢复暂存文件，保证原 profile 不丢失（避免"文件已删但激活态
-    // 仍指向它"的不一致）。
-    std::fs::rename(&file_path, &pending)?;
+/// 删除 Profile 复合事务主体（调用方 AppController 已持有事务锁）。
+///
+/// 事务化删除：先把正式文件暂存为 `.pending-delete`，切换激活成功后才真正删除。
+/// 若切换激活失败，恢复暂存文件，保证原 profile 不丢失（避免"文件已删但激活态
+/// 仍指向它"的不一致）。
+pub(crate) async fn delete_profile_locked(
+    app: &AppHandle,
+    name: &str,
+    file_path: &Path,
+) -> Result<()> {
+    let was_active = active_profile(app) == name;
+    let pending = pending_delete_path_for(file_path);
+    std::fs::rename(file_path, &pending)?;
 
     // 删除的是激活中的 Profile：先重置回内置预设 DIRECT 并重载核心；失败恢复文件。
     if was_active {
-        let state = app.state::<crate::AppState>();
-        if let Err(e) = state.controller.activate_profile(&app, "DIRECT").await {
-            let _ = std::fs::rename(&pending, &file_path);
+        if let Err(e) = crate::core::runtime::activate_profile_locked(app, "DIRECT").await {
+            let _ = std::fs::rename(&pending, file_path);
             return Err(Error::Other(format!(
                 "激活状态重置失败，已恢复原 Profile：{}",
                 e
@@ -223,7 +247,6 @@ pub async fn delete_profile(app: AppHandle, name: String) -> Result<()> {
     if let Err(e) = std::fs::remove_file(&pending) {
         warn!("Profile deleted but pending file cleanup failed: {}", e);
     }
-
     Ok(())
 }
 
@@ -275,8 +298,8 @@ pub async fn update_profile_content(app: AppHandle, name: String, content: Strin
         return Err(Error::NotFound("Profile not found".to_string()));
     }
 
-    // 统一校验（与网络导入同一标准）
-    validate_subscription_content(&content)?;
+    // 手动编辑：严格校验（节点名唯一 / 非保留名）
+    validate_profile_strict(&content)?;
 
     let state = app.state::<crate::AppState>();
     state
@@ -300,9 +323,13 @@ pub async fn import_profile(app: AppHandle, name: String, content: String) -> Re
     // 归一化为 proxies-only 节点集（兼容 proxy-providers 型订阅）
     let (normalized, _warnings) = normalize_subscription_body(&app, &content).await?;
     let normalized = format!("# profile: {}\n{}", name, normalized);
-    validate_subscription_content(&normalized)?;
+    validate_profile_strict(&normalized)?;
 
-    atomic_write(&file_path, normalized.as_bytes())?;
+    reserve_new(&file_path)?;
+    if let Err(e) = atomic_write(&file_path, normalized.as_bytes()) {
+        let _ = std::fs::remove_file(&file_path);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -320,7 +347,12 @@ pub async fn export_profile(app: AppHandle, name: String) -> Result<String> {
 }
 
 #[command]
-pub async fn import_profile_from_url(app: AppHandle, name: String, url: String) -> Result<()> {
+pub async fn import_profile_from_url(
+    app: AppHandle,
+    name: String,
+    url: String,
+    user_agent: Option<String>,
+) -> Result<()> {
     let parsed = reqwest::Url::parse(&url)
         .map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
     match parsed.scheme() {
@@ -331,9 +363,12 @@ pub async fn import_profile_from_url(app: AppHandle, name: String, url: String) 
             ))
         }
     }
+    // 单个订阅可覆盖 User-Agent（审计 B7）：净化后随头注释持久保留，
+    // 空/全不可用回落到内置 mihomo 兼容 UA
+    let custom_ua = user_agent.as_deref().and_then(sanitize_user_agent);
 
     // C2 SSRF 防护：parse+scheme 校验后再做禁段校验（localhost/.local/回环/私网等）
-    crate::util::fetch::validate_url(&url).await?;
+    crate::util::fetch::validate_url_app(&app, &url).await?;
 
     // 从 URL 推导文件名：去 query/fragment，取最后一段非空路径（去尾部斜杠）。
     // 推导结果与用户提供的名字一样要过 sanitize。
@@ -364,8 +399,12 @@ pub async fn import_profile_from_url(app: AppHandle, name: String, url: String) 
     // 流式下载到临时文件（Content-Length 预检 + chunk 累计上限），
     // 注释头先行写入；失败自动清理临时文件，不残留半成品。
     let temp_path = temp_path_for(&file_path);
-    let header = format!("# subscribe-url: {}\n", parsed.as_str());
-    download_subscription_streaming(&app, &url, &header, &temp_path).await?;
+    // RAII：任何提前返回（含 `?`）都会清理临时文件
+    let _temp_guard = crate::util::temp::TempFile::new(temp_path.clone());
+    let header = build_header(parsed.as_str(), None, custom_ua.as_deref());
+    let userinfo =
+        download_subscription_streaming(&app, &url, &header, &temp_path, custom_ua.as_deref())
+            .await?;
 
     // 校验 YAML 合法 + 资源限制（节点数量/名称长度/字段值长度）；失败清理临时文件
     let text = match std::fs::read_to_string(&temp_path) {
@@ -387,16 +426,25 @@ pub async fn import_profile_from_url(app: AppHandle, name: String, url: String) 
     if !warnings.is_empty() {
         warn!("Import '{}': {}", redact_url(&url), warnings.join("；"));
     }
-    let final_text = format!("# subscribe-url: {}\n{}", parsed.as_str(), normalized);
-    if let Err(e) = validate_subscription_content(&final_text) {
+    let final_text = format!(
+        "{}{}",
+        build_header(parsed.as_str(), userinfo.as_deref(), custom_ua.as_deref()),
+        normalized
+    );
+    if let Err(e) = validate_profile_strict(&final_text) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(e);
     }
     // 归一化结果覆写临时文件后，再原子提交为正式文件
     std::fs::write(&temp_path, final_text.as_bytes())?;
 
-    // 新文件：临时文件原子 rename 为正式文件（目标不存在，无需备份）
-    commit_profile_file(&temp_path, &file_path)?;
+    // 新文件：先原子占位文件名（并发创建同名 profile 时后到者报"已存在"），
+    // 再把临时文件原子 rename 覆盖到正式位置。
+    reserve_new(&file_path)?;
+    if let Err(e) = commit_profile_file(&temp_path, &file_path) {
+        let _ = std::fs::remove_file(&file_path);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -406,4 +454,49 @@ pub async fn import_profile_from_url(app: AppHandle, name: String, url: String) 
 #[command]
 pub async fn update_profile_subscription(app: AppHandle, name: String) -> Result<()> {
     refresh_subscription(&app, &name).await
+}
+
+/// 设置订阅自定义 User-Agent（审计 B7）。仅变更 profile 头注释元数据，
+/// 不影响 mihomo 运行时配置（生成器只读 proxies），无需热重载。
+/// `user_agent` 为空字符串或不可用字符 → 移除自定义行，回到内置默认 UA。
+/// 复合事务在 AppController 持锁内执行，避免与并发的订阅刷新/重命名互相覆盖。
+#[command]
+pub async fn set_profile_user_agent(
+    app: AppHandle,
+    name: String,
+    user_agent: Option<String>,
+) -> Result<()> {
+    let profiles_dir = get_profiles_dir(&app)?;
+    let file_path = profile_path(&profiles_dir, &name)?;
+    if !file_path.exists() {
+        return Err(Error::NotFound("Profile not found".to_string()));
+    }
+    // 净化：空 / 全不可用 → None（移除自定义行）
+    let custom_ua = user_agent.as_deref().and_then(sanitize_user_agent);
+    let state = app.state::<crate::AppState>();
+    state
+        .controller
+        .set_profile_user_agent(&app, &name, &file_path, custom_ua)
+        .await
+}
+
+/// 设置自定义 User-Agent 的复合事务主体（调用方 AppController 已持事务锁）：
+/// 读取内容 → 替换/插入/移除头注释行 → 临时文件事务式替换正式文件。
+/// 不触发激活：头注释是 app 元数据，不属于 mihomo 运行时配置。
+pub(crate) async fn set_profile_user_agent_locked(
+    file_path: &Path,
+    user_agent: Option<String>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(file_path)?;
+    let updated = apply_header_user_agent(&content, user_agent.as_deref());
+    if updated == content {
+        // 无变化：不触发文件写（保留 mtime，且不产生 .bak 残留）
+        return Ok(());
+    }
+    let temp_path = temp_path_for(file_path);
+    // RAII：任何提前返回都会清理临时文件
+    let _guard = crate::util::temp::TempFile::new(temp_path.clone());
+    std::fs::write(&temp_path, updated.as_bytes())?;
+    commit_profile_file(&temp_path, file_path)?;
+    Ok(())
 }

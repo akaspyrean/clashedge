@@ -1,5 +1,4 @@
-// src-tauri/src/geodata/mod.rs
-//! GeoData module - GeoIP/GeoSite management
-
+pub mod download;
+pub mod rules;
 pub mod sources;
 pub mod updater;

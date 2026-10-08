@@ -128,6 +128,21 @@ foreach ($asset in $lock.assets) {
         continue
     }
 
+    # Optional publisher check: assets that ship an Authenticode signature (wintun.dll is
+    # signed by WireGuard LLC) must carry a VALID signature from the expected publisher,
+    # on top of the pinned SHA256.
+    if ($asset.authenticode_subject) {
+        $sig = Get-AuthenticodeSignature -FilePath $memberPath
+        $subject = ""
+        if ($sig.SignerCertificate) { $subject = $sig.SignerCertificate.Subject }
+        if ($sig.Status -ne "Valid" -or $subject -notlike ("*" + $asset.authenticode_subject + "*")) {
+            $failed++
+            Write-Host "  FAIL  Authenticode check for $name : status=$($sig.Status) subject='$subject' (expected publisher '$($asset.authenticode_subject)')" -ForegroundColor Red
+            continue
+        }
+        Write-Host "  PASS  Authenticode: $subject"
+    }
+
     New-Item -ItemType Directory -Force (Split-Path -Parent $outPath) | Out-Null
     Copy-Item $memberPath $outPath -Force
     Write-Host "  PASS  staged: $outPath"

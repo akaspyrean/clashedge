@@ -32,6 +32,9 @@ impl ControllerClient {
             api_client: reqwest::Client::builder()
                 // 低危：REST 客户端统一超时，避免对控制器请求无限阻塞
                 .timeout(Duration::from_secs(10))
+                // 控制器在回环地址上：必须忽略 HTTP(S)_PROXY / 系统代理 / PAC，
+                // 否则回环请求会被转发到代理而失败（审计 B6）。
+                .no_proxy()
                 .build()?,
         })
     }
@@ -244,7 +247,11 @@ impl ControllerClient {
         let test_url = url.unwrap_or_else(|| "http://www.gstatic.com/generate_204".to_string());
         // C2 SSRF 防护：该 URL 会作为参数传给 mihomo 由内核去拉取（非本地 client），
         // 同样必须通过禁段校验，防止被当作跳板探测内网。
-        crate::util::fetch::validate_url(&test_url).await?;
+        let fake = {
+            let cfg = self.config.read();
+            crate::util::fetch::fake_ip_range_from_config(&cfg)
+        };
+        crate::util::fetch::validate_url_with(&test_url, fake.as_ref()).await?;
         let api_url = self.api_url(
             &["proxies", &group, "delay"],
             Some(&[("url", test_url.as_str()), ("timeout", "5000")]),

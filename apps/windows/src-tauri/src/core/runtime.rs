@@ -1,4 +1,4 @@
-﻿//! 统一编排层：apply_proxy_mode / apply_tun / apply_system_proxy
+//! 统一编排层：apply_proxy_mode / apply_tun / apply_system_proxy
 //!
 //! 前端命令（commands/proxy.rs）与托盘事件（tray/events.rs）都调用这里，
 //! 消除两套重复的"改配置 + 动核心"逻辑，确保
@@ -76,15 +76,7 @@ pub(crate) async fn port_alive(port: u16) -> bool {
 /// 启动失败或启动后端口仍不可连，返回明确错误（调用方拒绝开启系统代理）。
 pub(crate) async fn ensure_core_serving(app: &AppHandle) -> Result<()> {
     let state = app.state::<crate::AppState>();
-    let port = {
-        state
-            .config_manager
-            .lock()
-            .unwrap()
-            .get_config()
-            .general
-            .mixed_port
-    };
+    let port = { state.config_manager.lock().unwrap().mixed_port() };
 
     // 已运行且端口可连 → 直接通过；否则自动启动/重启一次。
     // start()/restart() 内部含就绪探测与 bind 冲突检测，失败会返回 Err。
@@ -351,13 +343,7 @@ pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> 
     let state = app.state::<crate::AppState>();
 
     let data_dir = crate::util::paths::get_app_data_dir(app)?;
-    let mixed_port = state
-        .config_manager
-        .lock()
-        .unwrap()
-        .get_config()
-        .general
-        .mixed_port;
+    let mixed_port = state.config_manager.lock().unwrap().mixed_port();
 
     // 系统代理开启前密钥兜底：若当前配置仍是占位/空/旧遗留密钥，立即轮换。
     // 系统代理开启后，本机所有流量（含局域网可到达路径）都可能触达本地控制器，

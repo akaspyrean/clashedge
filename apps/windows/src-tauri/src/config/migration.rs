@@ -83,10 +83,6 @@ fn as_string(v: Option<&serde_yaml::Value>) -> Option<String> {
     v.and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-fn as_u64(v: Option<&serde_yaml::Value>) -> Option<u64> {
-    v.and_then(|v| v.as_u64())
-}
-
 fn as_u16(v: Option<&serde_yaml::Value>) -> Option<u16> {
     v.and_then(|v| v.as_u64())
         .and_then(|n| u16::try_from(n).ok())
@@ -227,63 +223,14 @@ fn merge_legacy_value(value: &serde_yaml::Value) -> Config {
         }
     }
 
-    // --- advanced ---
+    // --- advanced（仅保留仍被消费的两项）---
     if let Some(advanced) = sub_mapping(map, "advanced") {
-        if let Some(v) = as_bool(field(advanced, "disable-commit-animation")) {
-            config.advanced.disable_commit_animation = v;
-        }
-        if let Some(v) = as_string(field(advanced, "log-format")).filter(|s| !s.is_empty()) {
-            config.advanced.log_format = v;
-        }
-        if let Some(v) = as_bool(field(advanced, "explicit-proxy")) {
-            config.advanced.explicit_proxy = v;
-        }
-        if let Some(v) = as_u64(field(advanced, "connect-timeout")) {
-            config.advanced.connect_timeout = v;
-        }
-        if let Some(v) = as_u64(field(advanced, "read-timeout")) {
-            config.advanced.read_timeout = v;
-        }
-        if let Some(v) = as_u64(field(advanced, "write-timeout")) {
-            config.advanced.write_timeout = v;
-        }
         if let Some(v) = as_string(field(advanced, "geoip-url")) {
             config.advanced.geoip_url = v;
         }
         if let Some(v) = as_string(field(advanced, "geosite-url")) {
             config.advanced.geosite_url = v;
         }
-        if let Some(v) = as_string(field(advanced, "geox-url")) {
-            config.advanced.geox_url = v;
-        }
-    }
-
-    // --- profiles ---
-    if let Some(profiles) = sub_mapping(map, "profiles") {
-        let p = &mut config.profiles;
-        if let Some(v) = as_string_list(field(profiles, "proxies")) {
-            p.proxies = v;
-        }
-        if let Some(v) = as_string(field(profiles, "default-profile")).filter(|s| !s.is_empty()) {
-            p.default_profile = v;
-        }
-        if let Some(v) = as_string(field(profiles, "auto-group")).filter(|s| !s.is_empty()) {
-            p.auto_group = v;
-        }
-        if let Some(v) = as_string(field(profiles, "manual-group")).filter(|s| !s.is_empty()) {
-            p.manual_group = v;
-        }
-        if let Some(v) = as_string(field(profiles, "media-group")).filter(|s| !s.is_empty()) {
-            p.media_group = v;
-        }
-        if let Some(v) = as_string(field(profiles, "ai-group")).filter(|s| !s.is_empty()) {
-            p.ai_group = v;
-        }
-    }
-
-    // --- mixin ---
-    if let Some(v) = as_bool(field(map, "mixin-enabled")) {
-        config.mixin_enabled = v;
     }
 
     config

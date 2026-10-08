@@ -9,4 +9,5 @@ pub mod lifecycle;
 pub mod logs;
 pub mod manager;
 pub mod runtime;
+pub mod spawn;
 pub mod supervisor;

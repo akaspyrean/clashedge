@@ -21,10 +21,47 @@ onMounted(() => {
   void profilesStore.list();
 });
 
+/** 字节数 -> 人类可读（订阅流量展示）。 */
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
+/** 解析 Subscription-Userinfo（`upload=..; download=..; total=..; expire=..`）为展示文本。
+ *  无法解析 / 无数据返回空串（不渲染）。 */
+function trafficText(info?: string | null): string {
+  if (!info) return "";
+  const m: Record<string, number> = {};
+  for (const part of info.split(";")) {
+    const [k, v] = part.split("=");
+    if (!k || v === undefined) continue;
+    const n = Number(v.trim());
+    if (Number.isFinite(n)) m[k.trim().toLowerCase()] = n;
+  }
+  if (!("total" in m) && !("upload" in m) && !("download" in m)) return "";
+  const used = (m.upload ?? 0) + (m.download ?? 0);
+  const total = m.total ? fmtBytes(m.total) : t("profiles.traffic_unlimited");
+  const out = [`${t("profiles.traffic")}: ${fmtBytes(used)} / ${total}`];
+  if (m.expire) {
+    out.push(`${t("profiles.traffic_expire")}: ${new Date(m.expire * 1000).toLocaleDateString()}`);
+  } else if ("expire" in m) {
+    out.push(t("profiles.traffic_never"));
+  }
+  return out.join(" · ");
+}
+
 // ---- 订阅（URL 导入）----
 const subscribeVisible = ref(false);
 const subscribeUrl = ref("");
 const subscribeName = ref("");
+const subscribeUa = ref("");
 
 async function onSubscribe() {
   if (submitting.value) return;
@@ -32,12 +69,14 @@ async function onSubscribe() {
   if (!url) return;
   submitting.value = true;
   try {
-    await profilesApi.importFromUrl(subscribeName.value.trim(), url);
+    const ua = subscribeUa.value.trim();
+    await profilesApi.importFromUrl(subscribeName.value.trim(), url, ua || undefined);
     await profilesStore.list();
     ElMessage.success(t("common.success"));
     subscribeVisible.value = false;
     subscribeUrl.value = "";
     subscribeName.value = "";
+    subscribeUa.value = "";
   } catch (e) {
     ElMessage.error(friendlyError(e));
   } finally {
@@ -110,6 +149,34 @@ async function onExport() {
   submitting.value = true;
   try {
     exportContent.value = await profilesApi.export(name);
+  } catch (e) {
+    ElMessage.error(friendlyError(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+// ---- 订阅自定义 User-Agent（审计 B7：按订阅覆盖拉取 UA）----
+const uaVisible = ref(false);
+const uaTarget = ref<string | null>(null);
+const uaValue = ref("");
+
+function onUaOpen(name: string, current?: string | null) {
+  uaTarget.value = name;
+  uaValue.value = current ?? "";
+  uaVisible.value = true;
+}
+
+async function onUaSave() {
+  if (submitting.value) return;
+  if (uaTarget.value === null) return;
+  submitting.value = true;
+  try {
+    const ua = uaValue.value.trim();
+    await profilesApi.setUserAgent(uaTarget.value, ua || null);
+    await profilesStore.list();
+    ElMessage.success(t("common.success"));
+    uaVisible.value = false;
   } catch (e) {
     ElMessage.error(friendlyError(e));
   } finally {
@@ -273,6 +340,9 @@ async function onDelete(name: string) {
             <el-tag v-if="profile.url" type="info" size="small" effect="plain" class="profile-source">
               {{ $t("profiles.subscribe") }}
             </el-tag>
+            <span v-if="trafficText(profile.userinfo)" class="profile-traffic">
+              {{ trafficText(profile.userinfo) }}
+            </span>
           </div>
           <div class="card-actions">
            <el-button
@@ -303,6 +373,12 @@ async function onDelete(name: string) {
                 <el-dropdown-item @click="onEditOpen(profile.name)">
                   {{ $t("profiles.raw_edit") }}
                 </el-dropdown-item>
+                <el-dropdown-item
+                  v-if="profile.url"
+                  @click="onUaOpen(profile.name, profile.user_agent)"
+                >
+                  {{ $t("profiles.subscribe_ua") }}
+                </el-dropdown-item>
                 <el-dropdown-item divided class="danger-item" @click="onDelete(profile.name)">
                   {{ $t("profiles.delete") }}
                 </el-dropdown-item>
@@ -327,6 +403,12 @@ async function onDelete(name: string) {
           <el-input
             v-model="subscribeName"
             :placeholder="$t('profiles.name_optional_hint')"
+          />
+        </el-form-item>
+        <el-form-item :label="$t('profiles.subscribe_ua')">
+          <el-input
+            v-model="subscribeUa"
+            :placeholder="$t('profiles.subscribe_ua_hint')"
           />
         </el-form-item>
       </el-form>
@@ -401,6 +483,24 @@ async function onDelete(name: string) {
         <el-button @click="exportVisible = false">{{ $t("profiles.cancel") }}</el-button>
         <el-button type="primary" :loading="submitting" :disabled="!exportTarget" @click="onExport">
           {{ $t("profiles.export") }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 自定义 User-Agent（审计 B7） -->
+    <el-dialog v-model="uaVisible" :title="$t('profiles.subscribe_ua')" width="min(640px, calc(100vw - 32px))">
+      <el-form label-position="top">
+        <el-form-item :label="$t('profiles.subscribe_ua')">
+          <el-input
+            v-model="uaValue"
+            :placeholder="$t('profiles.subscribe_ua_hint')"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="uaVisible = false">{{ $t("profiles.cancel") }}</el-button>
+        <el-button type="primary" :loading="submitting" @click="onUaSave">
+          {{ $t("profiles.save") }}
         </el-button>
       </template>
     </el-dialog>
@@ -532,5 +632,13 @@ async function onDelete(name: string) {
 .edit-textarea,
 .export-textarea {
   font-family: "Consolas", "Menlo", monospace;
+}
+
+.profile-traffic {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

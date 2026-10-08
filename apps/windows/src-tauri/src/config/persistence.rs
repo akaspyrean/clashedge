@@ -106,6 +106,11 @@ impl ConfigManager {
         self.config.read().clone()
     }
 
+    /// 当前 mixed-port（只读一个字段，避免 `get_config()` 深拷贝整份配置）
+    pub fn mixed_port(&self) -> u16 {
+        self.config.read().general.mixed_port
+    }
+
     /// 共享配置句柄：交给 CoreManager 等运行时组件，保证单一数据源
     pub fn config_handle(&self) -> Arc<RwLock<Config>> {
         self.config.clone()

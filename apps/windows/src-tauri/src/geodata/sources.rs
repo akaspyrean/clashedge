@@ -26,13 +26,6 @@ pub struct GeoSources {
     /// The first URL is the primary source, subsequent ones are fallbacks.
     #[serde(default)]
     pub geosite: Vec<String>,
-
-    /// GeoX (mixed) data file download URLs
-    ///
-    /// These URLs point to a combined/merged GeoX file that may contain both
-    /// GeoIP and GeoSite data in one file, or a specific format used by Mihomo.
-    #[serde(default)]
-    pub geox: Vec<String>,
 }
 
 impl GeoSources {
@@ -51,10 +44,6 @@ impl GeoSources {
                 "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
                     .to_string(),
                 "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
-                    .to_string(),
-            ],
-            geox: vec![
-                "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geox.dat"
                     .to_string(),
             ],
         }

@@ -46,6 +46,23 @@ pub(super) fn pending_delete_path_for(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// 原子"占位"一个新 profile 文件名：`create_new` 失败（已存在）→ 报"已存在"。
+/// 替代"先 `exists()` 再写入"的 TOCTOU：并发创建同名 profile 时后到者不会静默覆盖。
+/// 占位文件是空文件，随后由 `atomic_write` / `commit_profile_file` 原子覆盖为真实内容。
+pub(super) fn reserve_new(path: &Path) -> Result<()> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(Error::InvalidArgument("Profile already exists".to_string()))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// 当前激活的 profile 名（来自共享配置）
 pub(super) fn active_profile(app: &AppHandle) -> String {
     app.state::<crate::AppState>()
@@ -154,6 +171,16 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn reserve_new_refuses_existing_file() {
+        let dir = TempDir::new("reserve");
+        let target = dir.path("p.yaml");
+        reserve_new(&target).unwrap();
+        assert!(target.exists());
+        let err = reserve_new(&target).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{}", err);
     }
 
     #[test]
