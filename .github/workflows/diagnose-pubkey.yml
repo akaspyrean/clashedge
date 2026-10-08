@@ -3,16 +3,16 @@ name: Diagnose Update Pubkey
 on:
   workflow_dispatch:
 
-# Temporary diagnostic: locates why release publish fails the client-side
-# signature verification. Prints ONLY non-sensitive structure (lengths, line
-# count, decoded byte count) and the DERIVED public key (public keys are
-# non-secret). Never prints secret/private key content. Delete after use.
+# Temporary diagnostic: both secrets turned out to be base64-wrapped minisign
+# FILE TEXT (decoded first bytes "un" = "untrusted comment:"). This run unwraps
+# that layer, parses the real key blobs and prints the DERIVED public key
+# (public keys are non-secret). Never prints private key content. Delete after use.
 
 jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect secrets and derive public key
+      - name: Unwrap base64-text secrets and derive public key
         env:
           PUBKEY_SECRET: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
           PRIVKEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -20,67 +20,51 @@ jobs:
           python3 - <<'PY'
           import base64, os, sys
           def b64dec(s):
-              try: return base64.b64decode(s, validate=True)
+              try: return base64.b64decode("".join(s.split()), validate=True)
               except Exception: return None
+          def blob_pubkey(blob):
+              # minisign key blob: [0:2] sig_alg | [2:4] kdf | [4:6] chk | [6:14] key_id | [14:46] ed25519 pub
+              if blob is None or len(blob) < 46: return None
+              return base64.b64encode(blob[0:2] + blob[6:14] + blob[14:46]).decode()
+          def unwrap_to_pubkey(secret, label):
+              print(f"--- {label} ---")
+              ws = "".join(secret.split())
+              text_bytes = b64dec(ws)
+              if text_bytes is None:
+                  print("outer base64 decode FAILED"); return None
+              try: text = text_bytes.decode("utf-8")
+              except Exception: print("decoded bytes are not utf-8 text"); return None
+              lines = text.splitlines()
+              print(f"unwrapped text: {len(text_bytes)} bytes, {len(lines)} lines")
+              for i, l in enumerate(lines):
+                  head = l[:20]
+                  print(f"  line{i+1}: {len(l)} chars, starts {head!r}")
+              # find the base64 key blob line (skips comment lines)
+              for l in lines:
+                  if l.startswith("untrusted comment") or l.startswith("trusted comment"): continue
+                  blob = b64dec(l)
+                  if blob is None: continue
+                  print(f"  key blob: {len(blob)} bytes, first2={blob[:2].hex()}")
+                  pk = blob_pubkey(blob)
+                  if pk:
+                      print(f"  DERIVED pubkey: {pk}  (len={len(pk)}, startsRW={pk.startswith('RW')})")
+                      return pk
+              print("  no usable key blob line found"); return None
 
           pub = os.environ.get("PUBKEY_SECRET","")
-          print("=== CLASHEDGE_UPDATE_PUBKEY (the embedded verify key) ===")
-          if not pub:
-              print("RESULT: secret is EMPTY")
-          else:
-              ws = "".join(pub.split())
-              print(f"char length            : {len(pub)}")
-              print(f"line count             : {pub.count(chr(10))+1}")
-              print(f"after ws-strip length  : {len(ws)}")
-              print(f"starts with comment    : {pub.startswith('untrusted comment:')}")
-              db = b64dec(ws)
-              print(f"decoded bytes          : {len(db) if db is not None else 'FAILED (not base64)'}")
-              if db is not None:
-                  print(f"decoded first 2 bytes : {db[:2].hex()}")
-                  print(f"minisign pubkey? (42B) : {len(db)==42}")
-              print("=> this secret is NOT a 42-byte minisign pubkey; it is the wrong value.")
-
+          print("=== CLASHEDGE_UPDATE_PUBKEY ===")
+          pk_pub = unwrap_to_pubkey(pub, "pubkey secret") if pub else (print("EMPTY") or None)
           priv = os.environ.get("PRIVKEY","")
-          print("\n=== TAURI_SIGNING_PRIVATE_KEY (signing key, structure only) ===")
-          if not priv:
-              print("RESULT: secret is EMPTY")
-              sys.exit(0)
-          wsp = "".join(priv.split())
-          print(f"char length            : {len(priv)}")
-          print(f"after ws-strip length  : {len(wsp)}")
-          dbp = b64dec(wsp)
-          if dbp is None:
-              print("decoded bytes          : FAILED (not base64) — maybe it's the 4-line minisign text, not base64 blob")
-              # Try treating as minisign text: line 2 is the base64 blob
-              lines = priv.splitlines()
-              print(f"text line count        : {len(lines)}")
-              for i,l in enumerate(lines[:3]):
-                  print(f"line{i+1} len           : {len(l)}  starts: {l[:18]}")
-              # if line2 looks like base64 blob
-              if len(lines) >= 2:
-                  cand = b64dec("".join(lines[1].split()))
-                  if cand is not None:
-                      print(f"line2 decoded bytes    : {len(cand)}")
-                      dbp = cand
-          if dbp is not None:
-              print(f"decoded bytes          : {len(dbp)}")
-              print(f"decoded first 2 bytes  : {dbp[:2].hex()}  (45 64 = 'Ed' minisign)")
-              # minisign secret key layout (binary blob):
-              #  [0:2]  sig_alg
-              #  [2:4]  kdf_alg
-              #  [4:6]  chk_alg
-              #  [6:14] key_id (8)
-              #  [14:46] ed25519 public key (32)
-              #  [46:78] encrypted secret scalar (32) ...
-              if len(dbp) >= 46:
-                  sig_alg = dbp[0:2]
-                  key_id = dbp[6:14]
-                  ed_pub = dbp[14:46]
-                  minisign_pub = sig_alg + key_id + ed_pub   # 42 bytes
-                  pub_b64 = base64.b64encode(minisign_pub).decode()
-                  print(f"\nDERIVED minisign public key (set CLASHEDGE_UPDATE_PUBKEY to this):")
-                  print(pub_b64)
-                  print(f"length={len(pub_b64)}  starts_with_RW={pub_b64.startswith('RW')}")
-              else:
-                  print("blob too short for standard minisign seckey offsets; inspect format manually.")
+          print("\n=== TAURI_SIGNING_PRIVATE_KEY ===")
+          pk_priv = unwrap_to_pubkey(priv, "private key secret") if priv else (print("EMPTY") or None)
+          print("\n=== CONCLUSION ===")
+          if pk_pub and pk_priv:
+              print(f"pair match: {pk_pub == pk_priv}")
+              print(f"set CLASHEDGE_UPDATE_PUBKEY to: {pk_priv}")
+          elif pk_priv:
+              print(f"set CLASHEDGE_UPDATE_PUBKEY to: {pk_priv}")
+          elif pk_pub:
+              print(f"set CLASHEDGE_UPDATE_PUBKEY to: {pk_pub}")
+          else:
+              print("could not derive a pubkey from either secret")
           PY
