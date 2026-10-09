@@ -332,6 +332,16 @@ connections:
 
 logs:
   title: "日志"
+  search_placeholder: "搜索，支持正则"
+  level_all: "全部"
+  pause: "暂停"
+  resume: "继续"
+  jump_latest: "回到最新"
+  clear_title: "清空日志？"
+  clear_body: "日志只保存在内存中，清空后无法恢复。"
+  clear_confirm: "清空日志"
+  level_aria: "日志级别"
+  no_match: "没有匹配的日志"
   level: "级别"
   filter: "过滤"
   clear: "清空"
