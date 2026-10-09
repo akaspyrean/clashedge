@@ -101,7 +101,7 @@ settings:
   open_data_dir: "Open Data Directory"
   core_version: "Core Version"
   check_update: "Check for Updates"
-  degraded_save_blocked: "config.yaml is corrupt. Confirm "overwrite and continue" in the banner at the top of the window, then save again."
+  degraded_save_blocked: 'config.yaml is corrupt. Confirm "overwrite and continue" in the banner at the top of the window, then save again.'
 
 general:
   title: "General Settings"
@@ -313,9 +313,6 @@ common:
   success: "Success"
   warning: "Warning"
   info: "Info"
-errors:
-  network: "Network request failed. Check your network or proxy and try again"
-  port_busy: "Port is already in use. Change the mixed port in Settings and try again"
 errors:
   network: "Network request failed. Check your network or proxy and try again"
   port_busy: "Port is already in use. Change the mixed port in Settings and try again"
