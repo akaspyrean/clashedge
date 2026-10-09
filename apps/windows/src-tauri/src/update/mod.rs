@@ -139,12 +139,16 @@ fn is_newer(remote: &str, current: &str) -> bool {
 }
 
 /// 解析更新验签公钥，兼容三种仓库 Secret 注入形态：
+///
 /// 1. 裸 base64（56 字符 "RW..."）→ `from_base64`；
 /// 2. 完整 minisign.pub 文件文本（untrusted comment 行 + 公钥行）→ `decode`；
 /// 3. base64 包裹的密钥文件文本（整份 minisign.pub 被 base64 后存入 Secret）→
 ///    先解开外层 base64，再按 minisign.pub 文本解析。
+///
 /// 任一形态命中即返回公钥；全部失败返回 `InvalidEncoding`。
-fn parse_update_pubkey(raw: &str) -> std::result::Result<minisign_verify::PublicKey, minisign_verify::Error> {
+fn parse_update_pubkey(
+    raw: &str,
+) -> std::result::Result<minisign_verify::PublicKey, minisign_verify::Error> {
     let trimmed = raw.trim();
     if let Ok(pk) = minisign_verify::PublicKey::from_base64(trimmed) {
         return Ok(pk);
