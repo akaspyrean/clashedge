@@ -3,8 +3,8 @@
 // 持久化存原始三态值；实际渲染解析为 light/dark：
 // - data-theme 属性驱动设计系统变量；
 // - dark class 供 Element Plus 深色 css-vars 使用。
-// 原生窗口底色由 tauri.conf.json 的 backgroundColor 固定（深色），且已移除
-// allow-set-background-color 权限（前端不再调用窗口原生 API，最小化 capability 面）。
+// 原生窗口底色由 main.rs 在窗口创建时按系统主题设置（浅色 #F5F6F8 / 深色
+// #0F1115，即 --ce-bg-page），前端不调用窗口原生 API，capability 面保持最小。
 export type Theme = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 export const THEME_KEY = "cfw-theme";

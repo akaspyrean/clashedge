@@ -555,16 +555,37 @@ const WEBVIEW_DESTROY_DELAY: std::time::Duration = std::time::Duration::from_sec
 ///   - http/https://tauri.localhost（应用自身资源/IPC origin）
 ///   - debug 构建额外放行 dev 服务器 http://localhost:1420（tauri.conf.json devUrl）
 ///
+/// Windows 系统主题探测：读取 AppsUseLightTheme（HKCU\...\Themes\Personalize）。
+/// 键不存在（旧版 Windows）或读取失败按浅色处理。
+/// 仅用于选定窗口初始原生底色：浅色系统下若固定深色底，首帧会有一瞬深色闪屏。
+fn system_prefers_light_theme() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|k| k.get_value::<u32, _>("AppsUseLightTheme"))
+        .map(|v| v != 0)
+        .unwrap_or(true)
+}
+
 /// Tauri 2 仅在 WebviewWindowBuilder 上提供 on_navigation，因此主窗口通过 Builder
 /// 创建。窗口被"隐藏超时销毁"后可由 [`show_main_window`] 重新调用本函数重建。
 pub(crate) fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    // 窗口初始底色跟随系统主题（设计 token --ce-bg-page）：
+    // 浅色 = #F5F6F8，深色 = #0F1115。窗口以 visible(false) 创建、内容就绪后才
+    // 显示，这里在 build 前按系统主题选定原生底色，避免启动闪屏与首屏主题不符。
+    let page_bg = if system_prefers_light_theme() {
+        tauri::window::Color(0xF5, 0xF6, 0xF8, 0xff)
+    } else {
+        tauri::window::Color(0x0F, 0x11, 0x15, 0xff)
+    };
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("ClashEdge")
         // 默认尺寸 832×554（紧凑基准 756×504 上浮 10%）；
         // 高于前端窄窗阈值 749，侧栏文字正常展示。
         .inner_size(832.0, 554.0)
         .min_inner_size(560.0, 400.0)
-        .background_color(tauri::window::Color(0x10, 0x12, 0x14, 0xff))
+        .background_color(page_bg)
         .decorations(false)
         .resizable(true)
         .maximizable(true)
