@@ -21,12 +21,12 @@ defineEmits<{ (e: "save"): void }>();
 
 <style scoped>
 .pref-list {
-  max-width: 680px;
+  width: 100%;
 }
 
 /* 相邻行（含插槽里渲染的 PrefRow 根节点）之间的分隔线 */
 .pref-list :deep(.pref-row + .pref-row) {
-  border-top: 1px solid var(--card-border);
+  border-top: 1px solid var(--ce-border);
 }
 
 .pref-save-row {
@@ -42,6 +42,6 @@ defineEmits<{ (e: "save"): void }>();
   gap: 8px;
   margin-top: 8px;
   padding-top: 16px;
-  border-top: 1px solid var(--card-border);
+  border-top: 1px solid var(--ce-border);
 }
 </style>

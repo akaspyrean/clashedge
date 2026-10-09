@@ -101,13 +101,55 @@ describe("SettingsView: 行式布局冒烟", () => {
     expect(wrapper.text()).toContain("general.system_proxy");
   });
 
+  it("五个分组齐全且顺序为 常规 / 代理 / TUN / 高级 / 关于", async () => {
+    const { default: SettingsView } = await import("@/views/SettingsView.vue");
+    const wrapper = mount(SettingsView, mountOptions);
+    await flushPromises();
+    expect(wrapper.findAll(".group-title").map((h) => h.text())).toEqual([
+      "settings.tabs.general",
+      "settings.tabs.proxy",
+      "settings.tabs.tun",
+      "settings.tabs.advanced",
+      "settings.tabs.about",
+    ]);
+  });
+
+  it("整页只有一个主按钮（保存）", async () => {
+    const { default: SettingsView } = await import("@/views/SettingsView.vue");
+    const wrapper = mount(SettingsView, mountOptions);
+    await flushPromises();
+    const primaries = wrapper.findAll(".el-button--primary");
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0].text()).toBe("common.save");
+  });
+
+  it("搜索设置：命中的行高亮并报告数量，清空后恢复", async () => {
+    const { default: SettingsView } = await import("@/views/SettingsView.vue");
+    const wrapper = mount(SettingsView, { ...mountOptions, attachTo: document.body });
+    await flushPromises();
+    const input = wrapper.find(".search-box input");
+    await input.setValue("general.mixed_port");
+    await flushPromises();
+    const hits = wrapper.findAll(".pref-row.pref-hit");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].text()).toContain("general.mixed_port");
+    expect(wrapper.find(".found").text()).toBe("settings.search_count");
+    await input.setValue("zzzz-nothing");
+    await flushPromises();
+    expect(wrapper.findAll(".pref-hit")).toHaveLength(0);
+    expect(wrapper.find(".found").text()).toBe("settings.search_none");
+    await input.setValue("");
+    await flushPromises();
+    expect(wrapper.find(".found").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("高级页承接低频技术项（日志级别/地理数据/进程查找）", async () => {
     const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const wrapper = mount(SettingsView, mountOptions);
     await flushPromises();
-    const tabs = wrapper.findAll(".el-tabs__item");
-    await tabs[tabs.length - 2]!.trigger("click");
-    await flushPromises();
+    // 单页分组：不再有标签页，高级项与常规项同页可见。
+    expect(wrapper.find(".el-tabs").exists()).toBe(false);
     expect(wrapper.text()).toContain("general.log_level");
     expect(wrapper.text()).toContain("general.geodata_mode");
     expect(wrapper.text()).toContain("general.find_process_mode");

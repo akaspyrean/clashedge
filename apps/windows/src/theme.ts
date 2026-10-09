@@ -30,7 +30,7 @@ function applyTheme(theme: Theme): void {
 
 export function getTheme(): Theme {
   const v = localStorage.getItem(THEME_KEY);
-  return v === "light" || v === "dark" || v === "system" ? v : "dark";
+  return v === "light" || v === "dark" || v === "system" ? v : "system";
 }
 
 export function setTheme(theme: Theme): void {

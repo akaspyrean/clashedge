@@ -1,104 +1,145 @@
-<!-- src/views/ProxiesView.vue - 代理组：切换代理模式、查看各组节点、手动选择与延迟测试 -->
+<!-- src/views/ProxiesView.vue - 代理：策略组列表 + 节点格（主从双栏）
+     - 左栏：策略组（名称 / 类型 / 当前节点）；右栏：选中组的节点格 + 地区筛选 + 按延迟排序
+     - 自动优选（URLTest）组节点格只读：由测速自动选择
+     - 模式过滤保持不变：rule 显示 5 组并隐藏 GLOBAL；global 只显示 GLOBAL；direct 显示空状态说明
+     - 窗口 < 960：左栏改为顶部横向芯片 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
-import { Refresh } from "@element-plus/icons-vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { RefreshCw, Search, Zap, ArrowDownWideNarrow } from "lucide-vue-next";
 import type { ProxyGroup } from "@/api/proxy";
+import CeNodeTile from "@/components/ui/CeNodeTile.vue";
+import CeSegmented from "@/components/ui/CeSegmented.vue";
 import { useAction } from "@/composables/useAction";
-import { useNotify } from "@/composables/useNotify";
-import { resolveGroupId } from "@/constants/groups";
+import { useNodeRetest } from "@/composables/useNodeRetest";
+import { resolveGroupId, sortRuleGroups } from "@/constants/groups";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
+import { regionOf, type RegionId } from "@/utils/region";
 
+const { t } = useI18n();
 const proxyStore = useProxyStore();
 const configStore = useConfigStore();
 const coreStore = useCoreStore();
-const notify = useNotify();
 
 // 节点选中 in-flight 守卫：连点节点时只允许一个 select 在途，避免乱序覆盖。
 const select = useAction();
 const modeAction = useAction();
-// 单组测速（testOne）在途集合：组粒度守卫，避免同组连点重复请求。
-const testingGroups = ref(new Set<string>());
+const { testing: testingNodes, retest: onRetest } = useNodeRetest();
 
 // mihomo 官方模板仅这三值；script 是 Clash Premium 遗留，后端会拒绝。
-const proxyModes = ["rule", "global", "direct"];
-
+const modeOptions = computed(() =>
+  ["rule", "global", "direct"].map((m) => ({ value: m, label: t(`tray.mode_${m}`) })),
+);
 /** 切换全局代理模式：走统一编排层（持久化 + 实时 PATCH 核心 + 托盘刷新）。 */
 const onModeChange = (mode: string) => modeAction.run(() => configStore.setProxyMode(mode));
 
-/** 选中节点：带 in-flight 守卫 + 失败提示。 */
-const onSelectNode = (group: string, proxy: string) =>
-  select.run(() => proxyStore.select(group, proxy));
-
-/** 单组延迟测试：组粒度 in-flight 守卫，连点不重复发起。 */
-async function onTestGroup(group: string) {
-  if (testingGroups.value.has(group)) return;
-  testingGroups.value.add(group);
-  try {
-    await proxyStore.testOne(group);
-  } catch (e) {
-    notify.fail(e);
-  } finally {
-    testingGroups.value.delete(group);
-  }
-}
-
-/** 组延迟文本：未测试 / 失败时显示 "—"。 */
-function delayOf(name: string): string | null {
-  const d = proxyStore.delays[name];
-  return d == null ? null : `${d} ms`;
-}
-
-/** 延迟分级（克制：<100 正常 / 100-300 中性 / >300 弱警告 / 失败错误）：
- *  返回修饰 class 名；未测/无值时无修饰。不做「交通灯墙」。 */
-function delayClass(d: number | null | undefined): string {
-  if (d == null) return "";
-  if (d >= 300) return "delay-warn";
-  return "";
-}
-
-/** 人工优选组（手动挑选节点场景）专属：提供组内节点逐一测速。 */
-const isManual = (g: ProxyGroup) => resolveGroupId(g.name) === "manual";
-
-/** 节点延迟文本：未测不显示；测过失败显示 "—"；成功显示 "N ms"。 */
-function nodeDelayOf(name: string): string {
-  const d = proxyStore.nodeDelays[name];
-  if (d === undefined) return "";
-  return d === null ? "—" : `${d} ms`;
-}
-
-/** 规则模式下代理组的规范排序（自上而下）；mihomo /proxies 返回无序，需显式排序。
- *  排序按语义 ID 比较，不依赖中文字面量；自定义组 resolveGroupId 回退原名，排最后。 */
-const GROUP_ORDER = ["proxy", "ai", "media", "manual", "auto"];
-
 /** 按当前模式筛选可见组并排序：rule 显示 5 组（隐藏 GLOBAL）、global 只显示 GLOBAL、direct 无组。 */
-const visibleGroups = computed(() => {
+const visibleGroups = computed<ProxyGroup[]>(() => {
   const mode = configStore.proxyMode;
-  if (mode === "global")
-    return proxyStore.groups.filter((g) => resolveGroupId(g.name) === "global");
+  if (mode === "global") return proxyStore.groups.filter((g) => resolveGroupId(g.name) === "global");
   if (mode === "direct") return [];
-  const rank = new Map(GROUP_ORDER.map((id, i) => [id, i]));
-  return proxyStore.groups
-    .filter((g) => resolveGroupId(g.name) !== "global")
-    .sort(
-      (a, b) =>
-        (rank.get(resolveGroupId(a.name)) ?? 99) -
-        (rank.get(resolveGroupId(b.name)) ?? 99)
-    );
+  return sortRuleGroups(proxyStore.groups);
 });
 
+const selectedName = ref<string | null>(null);
+const current = computed(
+  () => visibleGroups.value.find((g) => g.name === selectedName.value) ?? visibleGroups.value[0],
+);
+const isAuto = (g: ProxyGroup) => resolveGroupId(g.name) === "auto" || g.type === "URLTest";
+const isLeaf = (g: ProxyGroup) => ["manual", "auto"].includes(resolveGroupId(g.name));
+const readonlyGroup = computed(() => (current.value ? isAuto(current.value) : false));
+
 /** 叶子组（人工优选/自动优选）屏蔽内置 DIRECT，只显示真实节点。 */
-function visibleProxies(g: ProxyGroup): string[] {
-  const id = resolveGroupId(g.name);
-  return id === "manual" || id === "auto"
-    ? g.all.filter((p) => p !== "DIRECT")
-    : g.all;
+function nodesOf(g: ProxyGroup): string[] {
+  return isLeaf(g) ? g.all.filter((p) => p !== "DIRECT") : g.all;
+}
+
+/** 节点延迟：节点名优先；若该名字本身是一个组（如 扶梯出行 → 人工优选），用组延迟。 */
+function delayFor(name: string): number | null | undefined {
+  const d = proxyStore.nodeDelays[name];
+  if (d !== undefined) return d;
+  return name in proxyStore.delays ? proxyStore.delays[name] : undefined;
+}
+
+// ---- 搜索 / 地区 / 排序 ----
+const query = ref("");
+const region = ref<RegionId | "all">("all");
+const sortByLatency = ref(false);
+const searchInput = ref<HTMLInputElement | null>(null);
+
+const groupNodes = computed(() => (current.value ? nodesOf(current.value) : []));
+const regionChips = computed(() => {
+  const counts = new Map<RegionId, number>();
+  for (const n of groupNodes.value) counts.set(regionOf(n), (counts.get(regionOf(n)) ?? 0) + 1);
+  const chips: { id: RegionId | "all"; label: string; n: number }[] = [
+    { id: "all", label: t("proxies.region_all"), n: groupNodes.value.length },
+  ];
+  for (const [id, n] of counts) chips.push({ id, label: t(`proxies.region_${id}`), n });
+  return chips;
+});
+// 切换组 / 节点列表变化后，选中的地区已不存在则回到「全部」。
+watch(regionChips, (chips) => {
+  if (!chips.some((c) => c.id === region.value)) region.value = "all";
+});
+// 只在「换了一个组」时重置筛选（按组名比较）；loadGroups 会整体替换对象，不能按引用比较。
+watch(() => current.value?.name, () => {
+  query.value = "";
+  region.value = "all";
+});
+
+const tiles = computed(() => {
+  const g = current.value;
+  if (!g) return [];
+  const q = query.value.trim().toLowerCase();
+  const list = groupNodes.value
+    .filter((n) => (region.value === "all" ? true : regionOf(n) === region.value))
+    .filter((n) => (q ? n.toLowerCase().includes(q) : true))
+    .map((name) => {
+      const d = delayFor(name);
+      return {
+        name,
+        ms: d ?? null,
+        timeout: d === null,
+        testing: testingNodes.value.has(name),
+        selected: g.now === name,
+      };
+    });
+  if (!sortByLatency.value) return list;
+  // 已测且成功的升序在前；失败 / 未测排后。
+  const key = (x: { ms: number | null; timeout: boolean }) => (x.ms !== null && x.ms > 0 ? x.ms : Infinity);
+  return [...list].sort((a, b) => key(a) - key(b));
+});
+
+/** 选中节点：带 in-flight 守卫 + 失败提示。 */
+const onSelectNode = (name: string) => {
+  const g = current.value;
+  return g && select.run(() => proxyStore.select(g.name, name));
+};
+
+/** 全部测速：对可见组的全部叶子节点去重后批量测速，同时刷新各组自身延迟。 */
+function onTestAll() {
+  const names = visibleGroups.value.flatMap((g) => nodesOf(g).filter((n) => !proxyStore.groups.some((x) => x.name === n) && n !== "REJECT"));
+  void proxyStore.testAll(visibleGroups.value.map((g) => g.name));
+  void proxyStore.testNodes(names);
+}
+const testingAll = computed(() => proxyStore.testing || proxyStore.testingNodes);
+
+// ---- Ctrl+K 聚焦搜索 ----
+function onKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    searchInput.value?.focus();
+    searchInput.value?.select();
+  }
 }
 
 onMounted(() => {
   void proxyStore.loadGroups();
+  window.addEventListener("keydown", onKeydown);
 });
+onUnmounted(() => window.removeEventListener("keydown", onKeydown));
 
 // 核心从停止 → 运行（含冷启动期间进入本页）后重新加载代理组：
 // 否则"启动时进入代理页 → 控制器尚未就绪 → 组列表永久为空"（历史 bug 5）。
@@ -106,50 +147,46 @@ watch(
   () => coreStore.status.running,
   (running) => {
     if (running) void proxyStore.loadGroups();
-  }
+  },
 );
 </script>
 
 <template>
   <div class="page">
-    <h2 class="page-title">{{ $t("proxies.title") }}</h2>
-
     <div class="proxy-toolbar">
-      <div class="mode-field">
-        <span class="mode-label">{{ $t("general.proxy_mode") }}</span>
-        <el-select
-          :model-value="configStore.proxyMode"
-          :aria-label="$t('general.proxy_mode')"
-          :disabled="modeAction.busy.value"
-          style="width: 200px"
-          @change="onModeChange"
-        >
-          <el-option
-            v-for="m in proxyModes"
-            :key="m"
-            :label="$t('tray.mode_' + m)"
-            :value="m"
-          />
-        </el-select>
-      </div>
-      <el-button
-        type="primary"
-        :loading="proxyStore.testing"
-        :disabled="visibleGroups.length === 0"
-        @click="proxyStore.testAll(visibleGroups.map((g) => g.name))"
-      >
-        {{ $t("proxies.test_all") }}
+      <h2 class="page-title">{{ $t("proxies.title") }}</h2>
+      <label class="search-box">
+        <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
+        <input
+          ref="searchInput"
+          v-model="query"
+          type="search"
+          :placeholder="$t('proxies.search_placeholder')"
+          :aria-label="$t('proxies.search_placeholder')"
+        />
+        <kbd class="kbd" aria-hidden="true">Ctrl K</kbd>
+      </label>
+      <el-button type="primary" :loading="testingAll" :disabled="visibleGroups.length === 0" @click="onTestAll">
+        <Zap :size="16" :stroke-width="1.75" aria-hidden="true" />{{ $t("proxies.test_all") }}
       </el-button>
       <el-button
-        text
+        class="icon-btn"
         :title="$t('proxies.reload')"
         :aria-label="$t('proxies.reload')"
         :loading="proxyStore.testing"
         @click="proxyStore.loadGroups()"
       >
-        <el-icon><Refresh /></el-icon>
+        <RefreshCw :size="18" :stroke-width="1.75" aria-hidden="true" />
       </el-button>
     </div>
+
+    <CeSegmented
+      class="mode-seg"
+      :model-value="configStore.proxyMode"
+      :options="modeOptions"
+      :ariaLabel="$t('general.proxy_mode')"
+      @update:model-value="(v) => onModeChange(String(v))"
+    />
 
     <el-empty
       v-if="visibleGroups.length === 0"
@@ -163,193 +200,345 @@ watch(
       "
     />
 
-    <el-collapse v-else>
-      <el-collapse-item v-for="g in visibleGroups" :key="g.name" :name="g.name">
-        <template #title>
-          <div class="group-title">
+    <div v-else class="split">
+      <nav class="group-list" :aria-label="$t('proxies.groups_label')">
+        <button
+          v-for="g in visibleGroups"
+          :key="g.name"
+          type="button"
+          class="group-row"
+          :class="{ 'is-active': g.name === current?.name }"
+          :aria-current="g.name === current?.name ? 'true' : undefined"
+          @click="selectedName = g.name"
+        >
+          <span class="group-main">
             <span class="group-name">{{ g.name }}</span>
-            <span class="group-now">{{ g.now }}</span>
-            <el-tag v-if="delayOf(g.name)" size="small" type="info" effect="plain">
-              {{ $t("proxies.latency") }} {{ delayOf(g.name) }}
-            </el-tag>
-            <span class="group-actions">
-              <el-button
-                size="small"
-                circle
-                text
-                :loading="testingGroups.has(g.name)"
-                :title="$t('proxies.latency')"
-                :aria-label="`${$t('proxies.latency')}: ${g.name}`"
-                @click.stop="onTestGroup(g.name)"
-              >
-                <el-icon><Refresh /></el-icon>
-              </el-button>
-            </span>
-          </div>
-        </template>
+            <span class="group-type">{{ isAuto(g) ? $t("proxies.type_auto") : $t("proxies.type_manual") }}</span>
+          </span>
+          <span class="group-now">{{ g.now }}</span>
+        </button>
+      </nav>
 
-        <div class="proxy-list">
+      <section v-if="current" class="ce-card detail" :aria-label="current.name">
+        <div class="detail-head">
+          <h3 class="detail-title">{{ current.name }}</h3>
+          <span class="detail-meta">
+            {{ $t("proxies.node_count", { n: groupNodes.length }) }} · {{ $t("proxies.current_node", { name: current.now }) }}
+          </span>
+          <span class="detail-spacer"></span>
+          <el-button text :class="{ 'is-on': sortByLatency }" :aria-pressed="sortByLatency" @click="sortByLatency = !sortByLatency">
+            <ArrowDownWideNarrow :size="16" :stroke-width="1.75" aria-hidden="true" />{{ $t("proxies.sort_latency") }}
+          </el-button>
+        </div>
+
+        <div class="chips" role="group" :aria-label="$t('proxies.region_label')">
           <button
-            v-for="proxy in visibleProxies(g)"
-            :key="proxy"
+            v-for="c in regionChips"
+            :key="c.id"
             type="button"
-            class="proxy-item"
-            :class="{ active: proxy === g.now }"
-            :title="proxy"
-            :aria-pressed="proxy === g.now"
-            @click="onSelectNode(g.name, proxy)"
+            class="chip"
+            :class="{ 'is-on': region === c.id }"
+            :aria-pressed="region === c.id"
+            @click="region = c.id"
           >
-            <span class="proxy-node">{{ proxy }}</span>
-            <span v-if="isManual(g)" class="proxy-node-delay" :class="delayClass(proxyStore.nodeDelays[proxy])">
-              {{ nodeDelayOf(proxy) }}
-            </span>
+            {{ c.label }} <span class="chip-n">{{ c.n }}</span>
           </button>
         </div>
-      </el-collapse-item>
-    </el-collapse>
+
+        <p v-if="readonlyGroup" class="note">{{ $t("proxies.auto_readonly") }}</p>
+
+        <div v-if="tiles.length" class="tile-grid">
+          <CeNodeTile
+            v-for="n in tiles"
+            :key="n.name"
+            :name="n.name"
+            :ms="n.ms"
+            :timeout="n.timeout"
+            :testing="n.testing"
+            :selected="n.selected"
+            :readonly="readonlyGroup"
+            @select="onSelectNode(n.name)"
+            @retest="onRetest(n.name)"
+          />
+        </div>
+        <p v-else class="note">{{ $t("proxies.no_match") }}</p>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .proxy-toolbar {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-3) var(--space-3);
-  margin-bottom: var(--space-4);
+  align-items: center;
+  gap: var(--ce-space-3);
+  margin-bottom: var(--ce-space-3);
 }
 
-.mode-field {
+.proxy-toolbar .page-title {
+  margin: 0 auto 0 0;
+}
+
+.search-box {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--ce-space-2);
+  width: 260px;
+  height: var(--ce-control-h);
+  padding: 0 var(--ce-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--ce-radius-md);
+  background: var(--ce-fill-soft);
+  color: var(--ce-text-tertiary);
 }
 
-.mode-label {
-  font-size: 13px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
+.search-box:focus-within {
+  border-color: var(--ce-accent-bg);
+  background: var(--ce-bg-surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ce-accent-bg) 18%, transparent);
 }
 
-.group-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.search-box input {
   flex: 1;
   min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ce-text-primary);
+  font: var(--ce-type-body);
+}
+
+.search-box input::placeholder {
+  color: var(--ce-text-tertiary);
+}
+
+.kbd {
+  padding: 0 6px;
+  border: 1px solid var(--ce-border);
+  border-radius: var(--ce-radius-xs);
+  background: var(--ce-bg-surface);
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
+  font-family: var(--ce-font-mono);
+}
+
+.icon-btn {
+  width: var(--ce-control-h);
+  padding: 0;
+}
+
+.mode-seg {
+  margin-bottom: var(--ce-space-5);
+}
+
+/* ---- 主从双栏 ---- */
+.split {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: var(--ce-space-4);
+  align-items: start;
+}
+
+.group-list {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  padding-left: 8px;
-  padding-right: 8px;
+  border: 1px solid var(--ce-border);
+  border-radius: var(--ce-radius-lg);
+  background: var(--ce-bg-surface);
+}
+
+.group-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 60px;
+  padding: var(--ce-space-2) var(--ce-space-4);
+  border: 0;
+  border-top: 1px solid var(--ce-divider);
+  background: transparent;
+  color: var(--ce-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-row:first-child {
+  border-top: 0;
+}
+
+.group-row:hover {
+  background: var(--ce-fill-hover);
+}
+
+.group-row.is-active {
+  background: var(--ce-accent-soft);
+}
+
+.group-row.is-active .group-name {
+  color: var(--ce-accent-fg);
+}
+
+.group-row:focus-visible {
+  outline: 2px solid var(--ce-accent-bg);
+  outline-offset: -2px;
+}
+
+.group-main {
+  display: flex;
+  align-items: center;
+  gap: var(--ce-space-2);
 }
 
 .group-name {
+  font: var(--ce-type-body);
   font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.group-type {
+  padding: 0 6px;
+  border-radius: var(--ce-radius-xs);
+  background: var(--ce-fill-soft);
+  color: var(--ce-text-secondary);
+  font: var(--ce-type-caption);
 }
 
 .group-now {
-  font-size: 12px;
-  color: var(--accent);
-  font-weight: 500;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-callout);
 }
 
-.group-actions {
-  margin-left: auto;
-  flex: none;
+/* ---- 右栏 ---- */
+.detail {
   display: flex;
-  align-items: center;
-  gap: 2px;
+  flex-direction: column;
+  gap: var(--ce-space-4);
+  min-width: 0;
 }
 
-.group-actions .el-button + .el-button {
-  margin-left: 0;
-}
-
-.proxy-list {
+.detail-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  padding: 4px 0 0;
+  align-items: center;
+  gap: var(--ce-space-3);
 }
 
-/* button 元素天然支持 Tab/Enter/Space；重置 UA 默认样式以保持原视觉。 */
-.proxy-item {
-  appearance: none;
-  font-family: inherit;
-  text-align: left;
-  list-style: none;
+.detail-title {
+  margin: 0;
+  font: var(--ce-type-title-2);
+}
+
+.detail-meta {
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-callout);
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-spacer {
+  flex: 1;
+}
+
+.detail-head .is-on {
+  background: var(--ce-accent-soft);
+}
+
+.chips {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--ce-space-2);
+}
+
+.chip {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
-  border: 1px solid var(--card-border);
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: inherit;
-  max-width: 100%;
+  height: var(--ce-control-h-sm);
+  padding: 0 var(--ce-space-3);
+  border: 1px solid var(--ce-border);
+  border-radius: var(--ce-radius-full);
+  background: var(--ce-bg-surface);
+  color: var(--ce-text-secondary);
+  font: var(--ce-type-callout);
   cursor: pointer;
-  user-select: none;
-  transition:
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    color 0.18s ease,
-    transform 0.12s ease;
 }
 
-/* 节点名超长省略；完整名称通过 title 提示查看（见模板 :title="proxy"）。 */
-.proxy-node {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+.chip:hover {
+  background: var(--ce-fill-hover);
 }
 
-.proxy-node-delay {
-  flex: none;
-  font-size: 12px;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* 延迟分级（克制）：>300ms 弱警告；失败（"—"）与 <300 用中性文字，
- * 不做「交通灯墙」。 */
-.proxy-node-delay.delay-warn {
-  color: var(--approval);
-}
-
-.proxy-item:hover {
-  background: var(--interactive-hover);
-  border-color: var(--border-subtle);
-  color: var(--text-primary);
-}
-
-.proxy-item:active {
-  transform: translateY(1px);
-}
-
-.proxy-item.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
+.chip.is-on {
+  border-color: transparent;
+  background: var(--ce-accent-soft);
+  color: var(--ce-accent-fg);
   font-weight: 500;
 }
 
-.proxy-item.active .proxy-node-delay {
-  color: var(--accent);
+.chip:focus-visible {
+  outline: 2px solid var(--ce-accent-bg);
+  outline-offset: 2px;
 }
 
-.proxy-item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+.chip-n {
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip.is-on .chip-n {
+  color: var(--ce-accent-fg);
+}
+
+.note {
+  margin: 0;
+  color: var(--ce-text-secondary);
+  font: var(--ce-type-callout);
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--ce-space-3);
+}
+
+/* 窗口 < 960：左栏改为顶部横向芯片。 */
+@media (max-width: 959px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .group-list {
+    flex-direction: row;
+    gap: var(--ce-space-2);
+    overflow-x: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .group-row {
+    flex: none;
+    min-height: var(--ce-control-h);
+    padding: 0 var(--ce-space-4);
+    border: 1px solid var(--ce-border);
+    border-radius: var(--ce-radius-full);
+    background: var(--ce-bg-surface);
+  }
+
+  .group-row:first-child {
+    border-top: 1px solid var(--ce-border);
+  }
+
+  .group-row.is-active {
+    border-color: transparent;
+    background: var(--ce-accent-soft);
+  }
+
+  .group-now {
+    display: none;
+  }
 }
 </style>

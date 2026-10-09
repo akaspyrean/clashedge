@@ -14,7 +14,7 @@ import { useProxyStore } from "@/stores/proxy";
 import "./styles.css";
 import { getTheme, setTheme } from "./theme";
 
-// 默认深色主题；设置页可选 system/light/dark 三态（localStorage cfw-theme 持久化）。
+// 无已保存偏好时默认跟随系统；设置页可选 system/light/dark 三态（localStorage cfw-theme 持久化）。
 // data-theme 驱动设计系统；dark class 供 Element Plus 深色 css-vars 使用。
 // setTheme 会解析 system 态并注册跟随监听，幂等。
 setTheme(getTheme());

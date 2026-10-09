@@ -8,6 +8,7 @@ pub mod geodata;
 pub mod logs;
 pub mod profiles;
 pub mod proxy;
+pub mod rules;
 pub mod tray;
 pub mod update;
 pub mod util;

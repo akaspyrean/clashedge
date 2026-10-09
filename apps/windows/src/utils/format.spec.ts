@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, isValidCidr, parseUserinfo } from "./format";
+import { formatBytes, formatRate, isValidCidr, parseUserinfo } from "./format";
 
 describe("formatBytes", () => {
   it("handles zero / invalid / negative", () => {
@@ -47,5 +47,20 @@ describe("isValidCidr", () => {
     expect(isValidCidr("192.168.1.0/33")).toBe(false);
     expect(isValidCidr("256.1.1.1/8")).toBe(false);
     expect(isValidCidr("abc")).toBe(false);
+  });
+});
+
+describe("formatRate", () => {
+  it("appends /s to the byte formatting", () => {
+    expect(formatRate(0)).toBe("0 B/s");
+    expect(formatRate(1024 * 1024 * 4.82)).toBe("4.82 MB/s");
+  });
+});
+
+describe("splitRate", () => {
+  it("splits value and unit for big-number layouts", async () => {
+    const { splitRate } = await import("./format");
+    expect(splitRate(1024 * 1024 * 4.82)).toEqual(["4.82", "MB/s"]);
+    expect(splitRate(0)).toEqual(["0", "B/s"]);
   });
 });
