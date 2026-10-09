@@ -1,74 +1,19 @@
-﻿/* src/styles.css - 全局样式与主题变量（浅色/深色）
- * 设计系统：:root 为浅色；html[data-theme="dark"] 为深色。
- * 规范文档：docs/DESIGN_SYSTEM.md（ClashEdge Hybrid Design System v1.0，
- * 品牌性格 Quiet Power；改视觉先读文档 §9 维护流程——只改此处 token，
- * 视图组件禁止写死色值/字号/圆角。）
+/* src/styles.css - 全局样式（Clear Edge v2）
+ * Token 源：design/tokens.json -> npm run tokens -> styles/tokens.css（自动生成，勿手改）。
+ * 旧变量名经 styles/legacy-aliases.css 映射到 --ce-* ；视图迁移完成后删除别名文件（T10）。
+ * 规范：docs/redesign/AI_DEV_INSTRUCTIONS.md（优先于 docs/DESIGN_SYSTEM.md v1.0）。
  * Element Plus 深色主题（dark/css-vars.css）依赖 html.dark class，
- * 故 theme.ts/main.ts 同时维护 data-theme 属性（本设计系统）与 dark class（EP）。
+ * 故 theme.ts/main.ts 同时维护 data-theme 属性与 dark class（EP）。
  * 窗口原生底色由 tauri.conf.json 的 backgroundColor 固定（深色），不再由前端同步。 */
 
+/* 顺序：EP dark css-vars -> tokens -> legacy aliases -> 字体 -> 其余规则 */
 @import "element-plus/theme-chalk/dark/css-vars.css";
+@import "./styles/tokens.css";
+@import "./styles/legacy-aliases.css";
+@import "./styles/fonts.css";
 
-/* ---- 全局 token（与主题无关）：间距 / 动效 ----
- * 4pt 网格间距 + 动效纪律（150ms/200ms，唯一缓动 ease，见文档 §5/§7）。 */
+/* ---- Element Plus 主题映射（T2 将改为 --ce-* 直连）---- */
 :root {
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --dur-fast: 150ms;
-  --dur-base: 200ms;
-}
-
-/* ---- 浅色主题（设计系统 · Flyme 3 收敛）---- */
-:root {
-  color-scheme: light;
-
-  /* ===== 背景：更中性、去蓝灰倾向（Flyme 3 纯净感）===== */
-  --bg-app: #F4F5F7;
-  --bg-surface: #FFFFFF;
-  --bg-raised: #FAFBFC;
-  --bg-sidebar: #EEF0F3;
-  --bg-soft: #F0F2F5;
-
-  /* ===== 文本 ===== */
-  --text-primary: #1A1D21;
-  --text-secondary: #444B53;
-  --text-tertiary: #6B7480;
-
-  /* ===== 边框：更弱（Flyme 3 靠底色分层而非描边）===== */
-  --border-subtle: #E1E4E8;
-
-  /* ===== 强调色 ===== */
-  --accent: #2A62CC;
-  --accent-soft: #E8F0FF;
-
-  /* ===== 状态色 ===== */
-  --approval: #B45309;
-  --done: #15803D;
-  --error: #B42318;
-  --idle: #475467;
-
-  /* ===== 尺寸/字体：圆角收窄（12→10, 8→6），更工具感 ===== */
-  --r-sm: 6px;
-  --r-md: 10px;
-  --font:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "PingFang SC",
-    "Segoe UI",
-    "Microsoft YaHei",
-    sans-serif;
-
-  /* ---- 派生 token（浅色 · Flyme 3 收敛）---- */
-  --on-error: #FFFFFF;
-  --interactive-hover: var(--bg-soft);
-  --card-border: #E8EBEF;
-  --menu-active-bg: var(--accent-soft);
-
   /* ---- Element Plus 主题映射（浅色）----
    * 色阶按 EP 约定派生：light-3/5/7/8/9 = 主色向白混合 70/50/30/20/10%，
    * dark-2 = 主色向黑混合 80%。 */
@@ -121,55 +66,7 @@
   --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #000);
 }
 
-/* ---- 深色主题（设计系统 · Flyme 3 收敛）----
- * 海拔分层对齐 Apple HIG：base < sidebar < surface < raised，
- * 相邻层亮度差 ≥ 4%，让卡片靠底色浮起而不是靠描边。 */
 html[data-theme="dark"] {
-  color-scheme: dark;
-
-  /* ===== 背景：更纯净的中性灰（去蓝色倾向，Flyme 3 干净感）===== */
-  --bg-app: #0d0f12;
-  --bg-surface: #181b20;
-  --bg-raised: #21252b;
-  --bg-sidebar: #121418;
-  --bg-soft: #252a30;
-
-  /* ===== 文本：中性灰阶，去蓝色倾向 ===== */
-  --text-primary: #f5f6f7;
-  --text-secondary: #b7bdc5;
-  --text-tertiary: #838b95;
-
-  /* ===== 边框：更弱 ===== */
-  --border-subtle: #2f343c;
-
-  /* ===== 强调色 ===== */
-  --accent: #4e8fff;
-  --accent-soft: rgba(78, 143, 255, 0.12);
-
-  /* ===== 状态色 ===== */
-  --approval: #f2b866;
-  --done: #7edb99;
-  --error: #ff9a93;
-  --idle: #b7bdc5;
-
-  /* ===== 尺寸/字体：圆角收窄 ===== */
-  --r-sm: 6px;
-  --r-md: 10px;
-  --font:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "PingFang SC",
-    "Segoe UI",
-    "Microsoft YaHei",
-    sans-serif;
-
-  /* ---- 派生 token（深色 · Flyme 3 收敛）---- */
-  --on-error: #101214;
-  --interactive-hover: var(--bg-soft);
-  --card-border: #252a31;
-  --menu-active-bg: var(--accent-soft);
-
   /* ---- Element Plus 主题映射（深色）----
    * EP 深色约定：light-3/5/7/8/9 = 主色向深色底（--bg-app）混合 70/50/30/20/10%，
    * dark-2 = 主色向白混合 80%。 */

@@ -1,0 +1,42 @@
+/* Legacy variable names -> Clear Edge v2 tokens (T1).
+ * Views still reference the v1 names; these aliases make them follow the new palette
+ * with zero view changes. Delete this file once every view uses --ce-* (T10).
+ * Theme-independent: the --ce-* targets switch with html[data-theme]. */
+:root {
+  --bg-app: var(--ce-bg-page);
+  --bg-surface: var(--ce-bg-surface);
+  --bg-sidebar: var(--ce-bg-sidebar);
+  --bg-raised: var(--ce-bg-elevated);
+  --bg-soft: var(--ce-fill-soft);
+  --interactive-hover: var(--ce-fill-hover);
+
+  --border-subtle: var(--ce-border);
+  --card-border: var(--ce-border);
+
+  --text-primary: var(--ce-text-primary);
+  --text-secondary: var(--ce-text-secondary);
+  --text-tertiary: var(--ce-text-tertiary);
+
+  --accent: var(--ce-accent-fg);
+  --accent-soft: var(--ce-accent-soft);
+  --menu-active-bg: var(--ce-accent-soft);
+
+  --done: var(--ce-success-fg);
+  --approval: var(--ce-warning-fg);
+  --error: var(--ce-danger-fg);
+  --on-error: var(--ce-on-accent);
+  --idle: var(--ce-idle);
+
+  --r-sm: var(--ce-radius-md);
+  --r-md: var(--ce-radius-lg);
+  --font: var(--ce-font-sans);
+
+  --space-1: var(--ce-space-1);
+  --space-2: var(--ce-space-2);
+  --space-3: var(--ce-space-3);
+  --space-4: var(--ce-space-4);
+  --space-5: var(--ce-space-5);
+  --space-6: var(--ce-space-6);
+  --dur-fast: var(--ce-dur-fast);
+  --dur-base: var(--ce-dur-base);
+}
