@@ -121,3 +121,86 @@ describe("Dashboard system-proxy ↔ 后端状态联动", () => {
     expect(cfg.systemProxy).toBe(true);
   });
 });
+describe("Dashboard 状态核心 / 模式 / 快捷切换", () => {
+  const groups = [
+    { name: "扶梯出行", type: "Selector", now: "人工优选", all: ["人工优选", "自动优选", "DIRECT"] },
+    { name: "人工优选", type: "Selector", now: "HK 01", all: ["DIRECT", "HK 01", "JP 01"] },
+    { name: "自动优选", type: "URLTest", now: "JP 01", all: ["HK 01", "JP 01"] },
+    { name: "GLOBAL", type: "Selector", now: "DIRECT", all: ["DIRECT"] },
+  ];
+
+  function mockBackend(opts: { running: boolean; systemProxy?: boolean; tun?: boolean }) {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_config") {
+        const c = baseConfig({ "system-proxy": opts.systemProxy ?? false });
+        c.tun.enable = opts.tun ?? false;
+        return Promise.resolve(c);
+      }
+      if (cmd === "get_status") return Promise.resolve({ running: opts.running, status: opts.running ? "running" : "stopped", version: "v1.19.2" });
+      if (cmd === "get_proxy_groups") return Promise.resolve(groups);
+      return Promise.resolve(undefined);
+    });
+  }
+
+  async function mountDashboard(opts: Parameters<typeof mockBackend>[0]) {
+    setActivePinia(createPinia());
+    invokeMock.mockReset();
+    mockBackend(opts);
+    await useConfigStore().load();
+    const { useCoreStore } = await import("@/stores/core");
+    await useCoreStore().refresh();
+    const w = mount(DashboardView, mountOptions);
+    await flushPromises();
+    return w;
+  }
+
+  it("核心运行且系统代理开启 → 显示「已连接」", async () => {
+    const w = await mountDashboard({ running: true, systemProxy: true });
+    expect(w.find('[role="status"]').text()).toBe("ui.core.running");
+  });
+
+  it("核心运行但系统代理与 TUN 都关闭 → 如实说明尚未接管流量", async () => {
+    const w = await mountDashboard({ running: true });
+    expect(w.find('[role="status"]').text()).toBe("dashboard.status_idle");
+  });
+
+  it("核心停止时主按钮启动核心；运行时停止核心", async () => {
+    const stopped = await mountDashboard({ running: false });
+    await stopped.find(".ce-core__button").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("start_core");
+
+    const running = await mountDashboard({ running: true, systemProxy: true });
+    await running.find(".ce-core__button").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("stop_core");
+  });
+
+  it("代理模式 1 次点击切换", async () => {
+    const w = await mountDashboard({ running: true, systemProxy: true });
+    const radios = w.findAll('[role="radio"]');
+    expect(radios.map((r) => r.attributes("aria-checked"))).toEqual(["true", "false", "false"]);
+    await radios[1].trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("set_proxy_mode", { mode: "global" });
+  });
+
+  it("TUN 开关复用同一 set_tun_mode 动作", async () => {
+    const w = await mountDashboard({ running: true, systemProxy: true });
+    const switches = w.findAll(".set-row input[type=checkbox]");
+    expect(switches).toHaveLength(2);
+    await switches[1].setValue(true);
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("set_tun_mode", { enable: true });
+  });
+
+  it("快捷切换默认显示扶梯出行指向的组，点节点即切换（1 次点击）", async () => {
+    const w = await mountDashboard({ running: true, systemProxy: true });
+    const names = w.findAll(".ce-tile__name").map((n) => n.text());
+    expect(names).toEqual(["HK 01", "JP 01"]); // 人工优选组，已屏蔽 DIRECT
+    expect(w.findAll(".ce-tile")[0].classes()).toContain("is-selected");
+    await w.findAll(".ce-tile__main")[1].trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("select_proxy_group", { group: "人工优选", proxy: "JP 01" });
+  });
+});

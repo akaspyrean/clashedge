@@ -1,10 +1,10 @@
-<!-- src/views/ProfilesView.vue - 配置文件管理（独立导航页）：
-     工具栏（新建 / 订阅 / [更多▾: 导入/导出]）+ 配置文件卡片列表。
+<!-- src/views/ProfilesView.vue - 订阅管理（独立导航页）：
+     工具栏（新建配置 / 导入·导出▾ / 添加订阅[唯一 primary]）+ 订阅卡片网格。
      本文件只做编排：哪个对话框打开、对哪个配置操作；表单与提交逻辑在 components/profiles/*。 -->
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowDown } from "@element-plus/icons-vue";
+import { ChevronDown, Plus } from "lucide-vue-next";
 import ContentDialog from "@/components/profiles/ContentDialog.vue";
 import ExportDialog from "@/components/profiles/ExportDialog.vue";
 import ProfileCard from "@/components/profiles/ProfileCard.vue";
@@ -30,6 +30,7 @@ const subscribeOpen = ref(false);
 const newOpen = ref(false);
 const importOpen = ref(false);
 const exportOpen = ref(false);
+const exportTarget = ref<string | null>(null);
 const renameOpen = ref(false);
 const editOpen = ref(false);
 const uaOpen = ref(false);
@@ -44,8 +45,15 @@ function open(kind: "rename" | "edit" | "ua", name: string, ua?: string | null) 
   else uaOpen.value = true;
 }
 
-// 订阅更新：按配置名粒度的在途集合，连点同一张卡不重复拉取。
+// 订阅更新：按配置名粒度的在途集合，连点同一张卡不重复拉取；
+// 失败集合仅在本次会话内记忆，用于卡片上的「更新失败」状态标签。
 const refreshing = ref(new Set<string>());
+const failed = ref(new Set<string>());
+
+function onExport(name: string | null) {
+  exportTarget.value = name;
+  exportOpen.value = true;
+}
 
 async function onActivate(name: string) {
   try {
@@ -61,8 +69,10 @@ async function onRefresh(name: string) {
   refreshing.value.add(name);
   try {
     await profiles.refreshSubscription(name);
+    failed.value.delete(name);
     notify.ok();
   } catch (e) {
+    failed.value.add(name);
     notify.fail(e);
   } finally {
     refreshing.value.delete(name);
@@ -71,10 +81,11 @@ async function onRefresh(name: string) {
 
 async function onDelete(name: string) {
   if (
-    !(await confirm(t("common.confirm"), {
-      title: t("common.delete"),
-      confirmText: t("common.confirm"),
+    !(await confirm(t("profiles.delete_body"), {
+      title: t("profiles.delete_title", { name }),
+      confirmText: t("profiles.delete_confirm"),
       cancelText: t("profiles.cancel"),
+      danger: true,
     }))
   )
     return;
@@ -89,24 +100,25 @@ async function onDelete(name: string) {
 
 <template>
   <div class="page">
-    <h2 class="page-title">{{ $t("profiles.title") }}</h2>
 
-    <!-- 工具栏：新建（主动作）/ 订阅管理 / 更多（导入/导出收进菜单） -->
     <div class="toolbar">
-      <el-button type="primary" @click="newOpen = true">{{ $t("profiles.new") }}</el-button>
-      <el-button @click="subscribeOpen = true">{{ $t("profiles.subscribe_manage") }}</el-button>
+      <h2 class="page-title">{{ $t("profiles.title") }}</h2>
+      <el-button @click="newOpen = true">{{ $t("profiles.new") }}</el-button>
       <el-dropdown trigger="click">
         <el-button aria-haspopup="menu">
-          {{ $t("profiles.more") }}
-          <el-icon class="toolbar-caret"><ArrowDown /></el-icon>
+          {{ $t("profiles.import_export") }}
+          <ChevronDown :size="16" :stroke-width="1.75" class="toolbar-caret" aria-hidden="true" />
         </el-button>
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item @click="importOpen = true">{{ $t("profiles.import") }}</el-dropdown-item>
-            <el-dropdown-item @click="exportOpen = true">{{ $t("profiles.export") }}</el-dropdown-item>
+            <el-dropdown-item @click="onExport(null)">{{ $t("profiles.export") }}</el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+      <el-button type="primary" @click="subscribeOpen = true">
+        <Plus :size="16" :stroke-width="1.75" aria-hidden="true" />{{ $t("profiles.add_subscription") }}
+      </el-button>
     </div>
 
     <el-empty
@@ -119,11 +131,13 @@ async function onDelete(name: string) {
         <ProfileCard
           :profile="p"
           :busy="refreshing.has(p.name)"
+          :failed="failed.has(p.name)"
           @activate="onActivate(p.name)"
           @refresh="onRefresh(p.name)"
           @rename="open('rename', p.name)"
           @edit="open('edit', p.name)"
           @ua="open('ua', p.name, p.user_agent)"
+          @export="onExport(p.name)"
           @delete="onDelete(p.name)"
         />
       </li>
@@ -132,7 +146,7 @@ async function onDelete(name: string) {
     <SubscribeDialog v-model="subscribeOpen" />
     <ContentDialog v-model="newOpen" mode="create" />
     <ContentDialog v-model="importOpen" mode="import" />
-    <ExportDialog v-model="exportOpen" />
+    <ExportDialog v-model="exportOpen" :initial="exportTarget" />
     <RenameDialog v-model="renameOpen" :target="target" />
     <RawEditDialog v-model="editOpen" :target="target" />
     <UserAgentDialog v-model="uaOpen" :target="target" :current="targetUa" />
@@ -142,21 +156,35 @@ async function onDelete(name: string) {
 <style scoped>
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--ce-space-3);
+  margin-bottom: var(--ce-space-5);
+}
+
+.toolbar .page-title {
+  margin: 0 auto 0 0;
 }
 
 .toolbar-caret {
-  margin-left: 4px;
+  margin-left: var(--ce-space-1);
 }
 
 .profile-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--ce-space-4);
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.profile-list > li {
+  display: flex;
+  min-width: 0;
+}
+
+.profile-list > li > :deep(*) {
+  flex: 1;
 }
 </style>

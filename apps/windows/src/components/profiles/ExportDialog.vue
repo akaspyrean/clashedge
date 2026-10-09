@@ -7,6 +7,7 @@ import { useAction } from "@/composables/useAction";
 import { useProfilesStore } from "@/stores/profiles";
 
 const visible = defineModel<boolean>({ required: true });
+const props = defineProps<{ /** 从某张卡片的「导出」进入时预选该配置 */ initial?: string | null }>();
 const { t } = useI18n();
 const profiles = useProfilesStore();
 const { busy, run } = useAction();
@@ -17,7 +18,7 @@ const content = ref("");
 watch(visible, (v) => {
   if (v) {
     content.value = "";
-    target.value = profiles.profiles[0]?.name ?? "";
+    target.value = props.initial ?? profiles.profiles[0]?.name ?? "";
   }
 });
 

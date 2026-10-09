@@ -59,4 +59,37 @@ describe("useLogStream", () => {
     expect(levelClass("debug")).toBe("lv-debug");
     expect(levelClass("anything")).toBe("lv-info");
   });
+
+  it("stamps each line with a local HH:MM:SS time", async () => {
+    const { api } = setup();
+    await flushPromises();
+    api.clear();
+    handlers["log-line"]({ payload: { level: "info", message: "x" } });
+    expect(api.entries.value[0].time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("pause holds new lines back and resume merges them in order", async () => {
+    const { api } = setup();
+    await flushPromises();
+    api.clear();
+    handlers["log-line"]({ payload: { level: "info", message: "a" } });
+    api.pause();
+    handlers["log-line"]({ payload: { level: "warning", message: "b" } });
+    handlers["log-line"]({ payload: { level: "error", message: "c" } });
+    expect(api.entries.value.map((e) => e.message)).toEqual(["a"]);
+    api.resume();
+    expect(api.entries.value.map((e) => e.message)).toEqual(["a", "b", "c"]);
+    expect(api.paused.value).toBe(false);
+  });
+
+  it("clear also drops lines buffered while paused", async () => {
+    const { api } = setup();
+    await flushPromises();
+    api.clear();
+    api.pause();
+    handlers["log-line"]({ payload: { level: "info", message: "held" } });
+    api.clear();
+    api.resume();
+    expect(api.entries.value).toEqual([]);
+  });
 });

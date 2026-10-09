@@ -95,6 +95,40 @@ Invoke-Step 'npm audit (high / critical)' {
   Set-Location $repoRoot
 }
 
+# Design tokens: design/tokens.json is the single source. Regenerating must not change the
+# generated files, otherwise someone edited a generated file by hand or forgot to run the generator.
+Invoke-Step 'design tokens are up to date (npm run tokens)' {
+  $generated = @(
+    (Join-Path $scaff 'src\styles\tokens.css'),
+    (Join-Path $repoRoot 'apps\android\app\src\main\java\com\clashedge\android\ui\theme\Tokens.kt')
+  )
+  Set-Location $scaff
+  npm run tokens
+  Set-Location $repoRoot
+  if ($LASTEXITCODE -ne 0) { return }
+  # T10 卡规格：git diff --exit-code。不要用文件哈希前后比对——CI 的 Windows runner
+  # 以 autocrlf 检出（CRLF），生成器写 LF，哈希必然不等而误报；git diff 按归一化
+  # 内容比较，只抓真实改动。
+  git diff --exit-code -- $generated
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Generated token files changed after npm run tokens. Commit the regenerated output (do not edit tokens.css / Tokens.kt by hand)." -ForegroundColor Red
+    $global:LASTEXITCODE = 1
+  }
+}
+
+# Views and components may only reference --ce-* tokens: no hex or rgb()/rgba() literals.
+Invoke-Step 'no colour literals in views / components' {
+  $src = Join-Path $scaff 'src'
+  $files = @(Get-ChildItem (Join-Path $src 'views'), (Join-Path $src 'components') -Recurse -Include *.vue,*.ts -File |
+             Where-Object { $_.Name -notlike '*.spec.ts' })
+  $files += Get-Item (Join-Path $src 'App.vue')
+  $hits = $files | Select-String -Pattern '#[0-9a-fA-F]{3}([0-9a-fA-F]{3}([0-9a-fA-F]{2})?)?\b|\brgba?\('
+  if ($hits) {
+    foreach ($h in $hits) { Write-Host ("{0}:{1}: {2}" -f $h.Path, $h.LineNumber, $h.Line.Trim()) -ForegroundColor Red }
+    $global:LASTEXITCODE = 1
+  }
+}
+
 Invoke-Step 'npm test (Vitest unit + component tests)' {
   Set-Location $scaff
   npm test

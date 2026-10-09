@@ -1,18 +1,42 @@
-<!-- src/views/ConnectionsView.vue - 连接列表：每 2s 轮询 get_connections -->
+<!-- src/views/ConnectionsView.vue - 连接：顶部实时速率 + 60 秒流量图，下方活动连接表。
+     - 顶部卡片：下载 / 上传速率、活动连接数、本次会话流量 + CeTrafficChart
+     - 连接表：主机 · 规则 → 链路 · 类型 · ↓ · ↑ · 时长；筛选框；「全部断开…」走 useConfirm
+     - 轮询沿用 usePolling + store 的自适应间隔；后端已裁剪到 500 条，仍保留截断提示
+     - 暂无「已关闭」数据来源，故只做「活动」；单条断开 / 进程名后端未提供，本页不含 -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
+import { Search } from "lucide-vue-next";
+import CeTrafficChart from "@/components/ui/CeTrafficChart.vue";
 import { useAction } from "@/composables/useAction";
+import { useConfirm } from "@/composables/useConfirm";
 import { usePolling } from "@/composables/usePolling";
 import { pollIntervalFor, useConnectionsStore } from "@/stores/connections";
-import { formatBytes } from "@/utils/format";
+import { formatBytes, formatRate } from "@/utils/format";
 
 const MAX_DISPLAY = 500;
 
+const { t } = useI18n();
 const store = useConnectionsStore();
 const closing = useAction();
+const confirm = useConfirm();
 
-const connections = computed(() => store.connections);
+const query = ref("");
 const connectionCount = computed(() => store.count);
+
+const rows = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  const all = store.connections.map((c) => ({
+    ...c,
+    // mihomo 的 chains 以最终出口节点开头，反转后按「入口组 → … → 节点」阅读。
+    chain: [...c.chains].reverse().join(" → "),
+    kind: c.type ? `${c.network} · ${c.type}` : c.network,
+  }));
+  if (!q) return all;
+  return all.filter((c) => [c.host, c.rule, c.chain, c.kind].some((s) => s.toLowerCase().includes(q)));
+});
+
+const latest = (series: number[]) => series[series.length - 1] ?? 0;
 
 /** start 为 Unix 毫秒时间戳 → 显示连接已持续的时长（mm:ss / hh:mm:ss）。 */
 function formatStart(start: number): string {
@@ -32,6 +56,13 @@ const { tick } = usePolling(
 );
 
 async function onCloseAll() {
+  const ok = await confirm(t("connections.close_all_body", { n: connectionCount.value }), {
+    title: t("connections.close_all_title"),
+    confirmText: t("connections.close_all_confirm"),
+    cancelText: t("common.cancel"),
+    danger: true,
+  });
+  if (!ok) return;
   const r = await closing.run(() => store.closeAll(), { silent: true });
   if (r.ok) void tick();
 }
@@ -39,54 +70,79 @@ async function onCloseAll() {
 
 <template>
   <div class="page connections-page">
-    <div class="page-head">
-      <h2 class="page-title">{{ $t("connections.title") }}</h2>
-      <div class="page-head-right">
-        <span class="conn-count" v-if="connectionCount > 0">{{ connectionCount }}</span>
-        <span class="totals">
-          {{ $t("connections.total_download") }}
-          <b>{{ formatBytes(store.downloadTotal) }}</b>
-          <span class="totals-sep">|</span>
-          {{ $t("connections.total_upload") }}
-          <b>{{ formatBytes(store.uploadTotal) }}</b>
-        </span>
-        <el-button type="danger" plain size="small" :loading="closing.busy.value" @click="onCloseAll">
-          {{ $t("connections.close_all") }}
-        </el-button>
+    <h2 class="page-title">{{ $t("connections.title") }}</h2>
+
+    <section class="ce-card overview" :aria-label="$t('connections.overview')">
+      <div class="stats">
+        <div class="stat">
+          <span class="stat-label">↓ {{ $t("connections.download_rate") }}</span>
+          <span class="stat-value">{{ formatRate(latest(store.rateDown)) }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">↑ {{ $t("connections.upload_rate") }}</span>
+          <span class="stat-value">{{ formatRate(latest(store.rateUp)) }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">{{ $t("connections.active") }}</span>
+          <span class="stat-value">{{ connectionCount }}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">{{ $t("connections.session") }}</span>
+          <span class="stat-value">↓ {{ formatBytes(store.downloadTotal) }} · ↑ {{ formatBytes(store.uploadTotal) }}</span>
+        </div>
       </div>
+      <CeTrafficChart :down="store.rateDown" :up="store.rateUp" />
+    </section>
+
+    <div class="list-head">
+      <h3 class="list-title">
+        {{ $t("connections.active") }}
+        <span v-if="connectionCount > 0" class="conn-count">{{ connectionCount }}</span>
+      </h3>
+      <label class="search-box">
+        <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
+        <input
+          v-model="query"
+          type="search"
+          :placeholder="$t('connections.filter_placeholder')"
+          :aria-label="$t('connections.filter_placeholder')"
+        />
+      </label>
+      <el-button
+        text
+        class="close-all"
+        :disabled="connectionCount === 0"
+        :loading="closing.busy.value"
+        @click="onCloseAll"
+      >
+        {{ $t("connections.close_all") }}
+      </el-button>
     </div>
 
-    <el-table
-      v-if="connections.length > 0"
-      :data="connections"
-      size="small"
-      max-height="65vh"
-      class="connections-table"
-      :aria-label="$t('connections.title')"
-    >
-      <el-table-column
-        prop="host"
-        :label="$t('connections.host')"
-        min-width="180"
-        show-overflow-tooltip
-      />
-      <el-table-column prop="network" :label="$t('connections.network')" width="70" />
-      <el-table-column
-        prop="rule"
-        :label="$t('connections.rule')"
-        min-width="120"
-        show-overflow-tooltip
-      />
-      <el-table-column :label="$t('connections.upload')" min-width="90" align="right">
-        <template #default="{ row }">{{ formatBytes(row.upload) }}</template>
-      </el-table-column>
-      <el-table-column :label="$t('connections.download')" min-width="90" align="right">
-        <template #default="{ row }">{{ formatBytes(row.download) }}</template>
-      </el-table-column>
-      <el-table-column :label="$t('connections.time')" min-width="90" align="right">
-        <template #default="{ row }">{{ formatStart(row.start) }}</template>
-      </el-table-column>
-    </el-table>
+    <section v-if="store.connections.length > 0" class="ce-card connections-table" :aria-label="$t('connections.title')">
+      <div class="grid head">
+        <span>{{ $t("connections.host") }}</span>
+        <span>{{ $t("connections.rule_chain") }}</span>
+        <span>{{ $t("connections.kind") }}</span>
+        <span class="num">↓</span>
+        <span class="num">↑</span>
+        <span class="num">{{ $t("connections.time") }}</span>
+      </div>
+      <ul class="conn-list">
+        <li v-for="c in rows" :key="c.id" class="grid">
+          <span class="host" :title="c.host">{{ c.host || "—" }}</span>
+          <span class="route">
+            <span class="rule" :title="c.rule">{{ c.rule }}</span>
+            <span v-if="c.chain" class="chain" :title="c.chain">{{ c.chain }}</span>
+          </span>
+          <span><span class="kind-tag">{{ c.kind }}</span></span>
+          <span class="num mono">{{ formatBytes(c.download) }}</span>
+          <span class="num mono">{{ formatBytes(c.upload) }}</span>
+          <span class="num mono dim">{{ formatStart(c.start) }}</span>
+        </li>
+      </ul>
+      <p v-if="rows.length === 0" class="no-match">{{ $t("connections.no_match") }}</p>
+    </section>
 
     <el-empty v-else :description="$t('connections.empty')" />
 
@@ -97,78 +153,216 @@ async function onCloseAll() {
 </template>
 
 <style scoped>
-.page-head {
+.overview {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: var(--ce-space-4);
+  margin-bottom: var(--ce-space-5);
+  min-width: 0;
+}
+
+.stats {
+  display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--ce-space-3) var(--ce-space-8);
 }
 
-.page-head .page-title {
-  margin-bottom: 0;
-}
-
-.page-head-right {
+.stat {
   display: flex;
+  flex-direction: column;
+}
+
+.stat-label {
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
+}
+
+.stat-value {
+  font: var(--ce-type-title-2);
+  font-variant-numeric: tabular-nums;
+  color: var(--ce-text-primary);
+}
+
+.list-head {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: var(--ce-space-3);
+  margin-bottom: var(--ce-space-3);
+}
+
+.list-title {
+  margin: 0 auto 0 0;
+  font: var(--ce-type-title-3);
 }
 
 .conn-count {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  background: var(--bg-soft);
-  padding: 2px 10px;
-  border-radius: 10px;
-  white-space: nowrap;
-}
-
-.totals {
-  font-size: 13px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-}
-
-/* 实时跳动的数字用等宽数字防抖动；分隔符弱化为纯留白（Flyme 靠间距不靠标点）。 */
-.totals b {
-  color: var(--text-secondary);
-  font-weight: 500;
+  margin-left: var(--ce-space-1);
+  color: var(--ce-text-tertiary);
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 
-.totals-sep {
-  margin: 0 4px;
-  color: var(--border-subtle);
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: var(--ce-space-2);
+  width: 260px;
+  height: var(--ce-control-h);
+  padding: 0 var(--ce-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--ce-radius-md);
+  background: var(--ce-fill-soft);
+  color: var(--ce-text-tertiary);
 }
 
-.truncated-notice {
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-tertiary);
-  padding: 8px;
-  background: var(--bg-soft);
-  border: 1px solid var(--card-border);
-  border-top: none;
-  border-radius: 0 0 var(--r-md) var(--r-md);
+.search-box:focus-within {
+  border-color: var(--ce-accent-bg);
+  background: var(--ce-bg-surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ce-accent-bg) 18%, transparent);
+}
+
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ce-text-primary);
+  font: var(--ce-type-body);
+}
+
+/* 「全部断开…」：danger 文字按钮（EP text + danger 色），确认走 useConfirm。 */
+.close-all {
+  color: var(--ce-danger-fg);
+}
+
+.close-all:hover:not(.is-disabled) {
+  color: var(--ce-danger-fg);
+  background: var(--ce-danger-soft);
 }
 
 .connections-table {
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: var(--bg-soft);
-  --el-table-border-color: var(--border-subtle);
-  --el-table-header-text-color: var(--text-tertiary);
-  --el-table-text-color: var(--text-primary);
-  --el-table-row-hover-bg-color: var(--interactive-hover);
-  border: 1px solid var(--card-border);
-  border-radius: var(--r-md);
+  padding: 0;
   overflow: hidden;
 }
 
-/* 流量/时间列实时跳动：等宽数字防抖动。 */
-.connections-table :deep(.el-table .cell) {
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 2fr) 110px 88px 88px 72px;
+  align-items: center;
+  gap: var(--ce-space-3);
+  min-height: var(--ce-row-h);
+  padding: 0 var(--ce-space-4);
+}
+
+.head {
+  min-height: 36px;
+  border-bottom: 1px solid var(--ce-divider);
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
+}
+
+.conn-list {
+  max-height: 60vh;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.conn-list .grid {
+  border-top: 1px solid var(--ce-divider);
+}
+
+.conn-list .grid:first-child {
+  border-top: 0;
+}
+
+.conn-list .grid:hover {
+  background: var(--ce-fill-hover);
+}
+
+.num {
+  text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font: var(--ce-type-mono);
+}
+
+.dim {
+  color: var(--ce-text-secondary);
+}
+
+.host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--ce-type-mono);
+}
+
+.route {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rule,
+.chain {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule {
+  font: var(--ce-type-callout);
+}
+
+.chain {
+  color: var(--ce-accent-fg);
+  font: var(--ce-type-caption);
+  font-weight: 400;
+}
+
+.kind-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--ce-space-2);
+  border-radius: var(--ce-radius-sm);
+  background: var(--ce-fill-soft);
+  color: var(--ce-text-secondary);
+  font: var(--ce-type-caption);
+  font-family: var(--ce-font-mono);
+  white-space: nowrap;
+}
+
+.no-match {
+  margin: 0;
+  padding: var(--ce-space-4);
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-callout);
+}
+
+.truncated-notice {
+  padding: var(--ce-space-2);
+  text-align: center;
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
+  font-weight: 400;
+}
+
+@media (max-width: 959px) {
+  .grid {
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.4fr) 88px 72px 72px;
+  }
+
+  .grid > :nth-child(3),
+  .head > :nth-child(3) {
+    display: none;
+  }
 }
 </style>

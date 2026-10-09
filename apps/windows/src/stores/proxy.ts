@@ -55,6 +55,15 @@ export const useProxyStore = defineStore("proxy", {
         this.testing = false;
       }
     },
+    /** 重新测试单个节点（节点格上的延迟标签点击）；结果写入 nodeDelays。 */
+    async testNode(name: string) {
+      try {
+        const r = (await proxyApi.testLatency(name))[0];
+        this.nodeDelays[name] = r ? r.delay : null;
+      } catch {
+        this.nodeDelays[name] = null;
+      }
+    },
     /** 手动测速：对组内所有节点（排除 DIRECT 兜底）逐一测试延迟，
      *  结果写入 nodeDelays，供节点列表展示，辅助人工挑选。
      *  分块限并发（每批 10 个）防止节点过多时一次性全量并发压垮后端；
@@ -62,10 +71,15 @@ export const useProxyStore = defineStore("proxy", {
     async testGroupProxies(group: string) {
       const g = this.groups.find((x) => x.name === group);
       if (!g) return;
-      const nodes = g.all.filter((p) => p !== "DIRECT");
+      await this.testNodes(g.all.filter((p) => p !== "DIRECT"));
+    },
+    /** 批量测速指定节点（去重）：分块限并发（每批 10 个）防止一次性全量并发压垮后端；
+     *  testingNodes 标志防重入。 */
+    async testNodes(names: string[]) {
       if (this.testingNodes) return;
       this.testingNodes = true;
       try {
+        const nodes = [...new Set(names)];
         const CHUNK = 10;
         for (let i = 0; i < nodes.length; i += CHUNK) {
           const batch = nodes.slice(i, i + CHUNK);

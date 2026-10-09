@@ -1,0 +1,17 @@
+/* JetBrains Mono (SIL OFL 1.1) — bundled locally; CSP only allows font-src 'self' data:.
+ * License text: src/assets/fonts/OFL-JetBrainsMono.txt · listed in THIRD_PARTY_NOTICES.md */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../assets/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../assets/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}

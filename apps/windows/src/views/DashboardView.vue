@@ -1,316 +1,406 @@
-<!-- src/views/DashboardView.vue - 概览：核心状态 + 核心控制 + 系统代理开关
-     设计约束：概览只是「入口」，不做重管理 UI。
-     - 状态卡：核心状态与「启动/停止 → 重载 → 重启」同卡，顺序排布
-     - 设置卡：仅保留系统代理开关（订阅管理已移回独立「配置」页） -->
+<!-- src/views/DashboardView.vue - 首页：状态核心 + 实时流量 + 快捷切换 + 当前订阅
+     设计约束：首页是「入口」，不做重管理 UI；所有动作复用现有 store action，不新增后端接口。
+     - 状态核心：启动/停止（主连接按钮）、重启、重载、代理模式、系统代理、TUN
+     - 实时流量：速率由 connections store 的累计值求差得出（沿用轮询策略，不另起轮询）
+     - 快捷切换：策略组下拉 + 节点格；自动优选组只读 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import StatusPill from "@/components/StatusPill.vue";
+import { useI18n } from "vue-i18n";
+import { Zap, ArrowRight } from "lucide-vue-next";
+import CeNodeTile from "@/components/ui/CeNodeTile.vue";
+import CeSegmented from "@/components/ui/CeSegmented.vue";
+import CeSparkline from "@/components/ui/CeSparkline.vue";
+import CeStatusCore, { type CoreState } from "@/components/ui/CeStatusCore.vue";
 import { useAction } from "@/composables/useAction";
+import { useNodeRetest } from "@/composables/useNodeRetest";
+import { usePolling } from "@/composables/usePolling";
+import { resolveGroupId, sortRuleGroups } from "@/constants/groups";
 import { useConfigStore } from "@/stores/config";
+import { pollIntervalFor, useConnectionsStore } from "@/stores/connections";
 import { useCoreStore } from "@/stores/core";
+import { useProfilesStore } from "@/stores/profiles";
 import { useProxyStore } from "@/stores/proxy";
+import { formatBytes, parseUserinfo, splitRate } from "@/utils/format";
 
+const { t } = useI18n();
 const core = useCoreStore();
 const config = useConfigStore();
 const proxyStore = useProxyStore();
+const connections = useConnectionsStore();
+const profiles = useProfilesStore();
 
-// Dashboard 需要当前节点/延迟：进入页面且核心运行时加载一次代理组，
-// 复用「代理」页同一个 store，不重复建数据源；核心从停止→运行（含在
-// 本页启动核心）后也要刷新，保证「界面状态 = 应用状态」。
+// 进入页面且核心运行时加载一次代理组与订阅列表（复用「代理」「订阅」页同一个 store）；
+// 核心从停止→运行（含在本页启动核心）后也要刷新，保证「界面状态 = 应用状态」。
 onMounted(() => {
+  void profiles.list();
   if (core.status.running) void proxyStore.loadGroups();
 });
 watch(
   () => core.status.running,
   (running) => {
     if (running) void proxyStore.loadGroups();
-  }
+  },
+);
+
+// 流量轮询：沿用 connections store 的自适应间隔；核心未运行时不请求。
+usePolling(
+  async () => {
+    if (core.status.running) await connections.refresh();
+  },
+  () => pollIntervalFor(connections.count),
 );
 
 const running = computed(() => core.status.running);
-// 核心控制动作 in-flight 守卫：restart/reload 无自带的 starting/stopping 状态，
-// 用统一 busy 标志防止连点重复触发；start/stop 已由 store 的 starting/stopping 兜底。
-const coreActionBusy = ref(false);
-const statusKey = computed(() =>
-  core.starting
-    ? "dashboard.starting"
-    : core.stopping
-      ? "dashboard.stopping"
-      : running.value
-        ? "dashboard.running"
-        : "dashboard.stopped"
+
+// ---- 状态核心 ----
+const coreError = computed(() => (core.status.status ?? "").startsWith("error:"));
+const carrying = computed(() => config.systemProxy || config.tunEnabled);
+const coreState = computed<CoreState>(() => {
+  if (core.starting) return "starting";
+  if (coreError.value) return "error";
+  return running.value ? "running" : "stopped";
+});
+/** 「已连接」= 核心运行且系统代理或 TUN 至少开启一个；运行但没接管流量时如实说明。 */
+const coreLabel = computed(() =>
+  coreState.value === "running" && !carrying.value ? t("dashboard.status_idle") : undefined,
+);
+const versionLine = computed(() =>
+  t("dashboard.version_port", { version: core.status.version ?? "—", port: config.config?.["mixed-port"] ?? "—" }),
 );
 
-/** 当前节点所处的组。
- *  - 全局模式：GLOBAL 组的当前选中；
- *  - 规则模式：优先选「当前选中是真实节点」的组（排除 DIRECT/REJECT/PASS 占位），
- *    顺序对齐「代理」页（扶梯出行→人工智能→影音视听→人工优选→自动优选），
- *    避免某组停在占位节点时把它误当出口；全都占位则回退第一组。
- *  - 直连模式：无代理节点。
- * 取到的 `now` 即为真实出口选中，确保概览与代理页一致。 */
-const PLACEHOLDER_NODES = new Set(["DIRECT", "REJECT", "PASS"]);
-const currentGroup = computed(() => {
-  const groups = proxyStore.groups;
-  if (!groups.length) return undefined;
-  if (config.proxyMode === "direct") return undefined;
-  if (config.proxyMode === "global") {
-    return groups.find((g) => g.name === "GLOBAL") ?? groups[0];
-  }
-  const order = ["扶梯出行", "人工智能", "影音视听", "人工优选", "自动优选", "GLOBAL"];
-  const ranked = [...groups].sort((a, b) => {
-    const ai = order.indexOf(a.name);
-    const bi = order.indexOf(b.name);
-    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-  });
-  // 优先「当前选中非占位」的组：真实出口节点优先展示，自动优选不会被占位组吃掉
-  const withReal = ranked.find((g) => g.now && !PLACEHOLDER_NODES.has(g.now));
-  return withReal ?? ranked[0];
-});
-const currentNode = computed(() => {
-  if (config.proxyMode === "direct") return "—";
-  return resolveNodeName(currentGroup.value?.now);
-});
-
-/** 组链解析：`now` 可能指向另一个代理组（如 扶梯出行 → 人工优选 → 节点），
- *  沿链下钻直到真实节点；防环 + 深度上限，解析不出原样返回。 */
-function resolveNodeName(name: string | undefined, depth = 0): string {
-  if (!name) return "—";
-  const groups = proxyStore.groups;
-  const group = groups.find((g) => g.name === name);
-  if (!group || depth >= 5) return name;
-  if (!group.now || PLACEHOLDER_NODES.has(group.now)) return name;
-  if (groups.some((g) => g.name === group.now)) {
-    return resolveNodeName(group.now, depth + 1);
-  }
-  return group.now;
-}
-/** 当前节点延迟：有数据时显示，无数据时 template 完全不渲染。 */
-const currentLatency = computed(() => {
-  const g = currentGroup.value;
-  if (!g) return null;
-  const d = proxyStore.delays[g.name];
-  return d == null ? null : `${d} ms`;
-});
-
-// 核心控制动作：重启 / 重载共用一个在途守卫（二者互斥）；启动 / 停止由 store 的
-// starting / stopping 兜底。失败统一走 useAction 的提示。
+// 动作守卫：restart/reload 无自带 starting 状态，用统一 busy 防连点；start/stop 由 store 兜底。
+const coreActionBusy = ref(false);
 const coreAction = useAction(coreActionBusy);
-const systemProxy = useAction();
+const startStop = useAction(ref(false));
+const onToggleCore = () =>
+  startStop.run(() => (running.value && !coreError.value ? core.stop() : core.start()));
+const onRestart = () => coreAction.run(() => core.restart());
+const onReload = () => coreAction.run(() => core.reload());
 
+const modeAction = useAction();
+const systemProxy = useAction();
+const tun = useAction();
+const modeOptions = computed(() =>
+  ["rule", "global", "direct"].map((m) => ({ value: m, label: t(`tray.mode_${m}`) })),
+);
+const onModeChange = (mode: string) => modeAction.run(() => config.setProxyMode(mode));
 /** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色）。 */
 const onSystemProxyChange = (val: boolean | string | number) =>
   systemProxy.run(() => config.setSystemProxy(Boolean(val)));
-const onRestart = () => coreAction.run(() => core.restart());
-const onReload = () => coreAction.run(() => core.reload());
-// start / stop 的在途状态由 store 管（loading 绑定 core.starting / core.stopping），这里只统一失败提示。
-const startStop = useAction(ref(false));
-const onStart = () => startStop.run(() => core.start());
-const onStop = () => startStop.run(() => core.stop());
+/** TUN 开关：与设置 › TUN 同一个 action，提权流程不变。 */
+const onTunChange = (val: boolean | string | number) =>
+  tun.run(() => config.setTunMode(Boolean(val)), { success: true });
+
+// ---- 实时流量 ----
+const downRate = computed(() => splitRate(connections.rateDown[connections.rateDown.length - 1] ?? 0));
+const upRate = computed(() => splitRate(connections.rateUp[connections.rateUp.length - 1] ?? 0));
+const sessionLine = computed(() =>
+  t("dashboard.session", {
+    down: formatBytes(connections.downloadTotal),
+    up: formatBytes(connections.uploadTotal),
+    count: connections.count,
+  }),
+);
+
+// ---- 快捷切换 ----
+const groups = computed(() => sortRuleGroups(proxyStore.groups));
+/** 默认显示「扶梯出行」当前指向的组（如 → 人工优选）；它指向的是节点则显示它自己。 */
+const defaultGroupName = computed(() => {
+  const entry = groups.value.find((g) => resolveGroupId(g.name) === "proxy") ?? groups.value[0];
+  if (!entry) return "";
+  return groups.value.some((g) => g.name === entry.now) ? entry.now : entry.name;
+});
+const pickedGroup = ref<string | null>(null);
+const activeGroup = computed(
+  () => groups.value.find((g) => g.name === (pickedGroup.value ?? defaultGroupName.value)) ?? groups.value[0],
+);
+const readonlyGroup = computed(() => resolveGroupId(activeGroup.value?.name ?? "") === "auto");
+const tiles = computed(() => {
+  const g = activeGroup.value;
+  if (!g) return [];
+  const leaf = ["manual", "auto"].includes(resolveGroupId(g.name));
+  return g.all
+    .filter((p) => !(leaf && p === "DIRECT"))
+    .map((name) => {
+      const d = proxyStore.nodeDelays[name];
+      return {
+        name,
+        ms: d ?? null,
+        timeout: d === null,
+        testing: testingNodes.value.has(name),
+        selected: g.now === name,
+      };
+    });
+});
+const { testing: testingNodes, retest: onRetest } = useNodeRetest();
+const select = useAction();
+const onSelectNode = (name: string) =>
+  activeGroup.value && select.run(() => proxyStore.select(activeGroup.value!.name, name));
+const onTestGroup = () => activeGroup.value && proxyStore.testGroupProxies(activeGroup.value.name);
+
+// ---- 当前订阅 ----
+const sub = computed(() => {
+  const p = profiles.activeProfile;
+  if (!p) return null;
+  const info = parseUserinfo(p.userinfo);
+  const pct = info && info.total > 0 ? Math.min(100, Math.round((info.used / info.total) * 100)) : null;
+  let expire = "";
+  let expireTone = "";
+  if (info?.expire) {
+    const days = Math.ceil((info.expire * 1000 - Date.now()) / 86_400_000);
+    expire =
+      days < 0
+        ? t("dashboard.sub_expired")
+        : `${new Date(info.expire * 1000).toLocaleDateString()} · ${t("dashboard.sub_days_left", { n: days })}`;
+    expireTone = days < 0 ? "is-danger" : days <= 7 ? "is-warning" : "";
+  } else if (info?.expire === 0) {
+    expire = t("dashboard.sub_never");
+  }
+  return {
+    name: p.name,
+    used: info ? formatBytes(info.used) : "",
+    total: info ? (info.total ? formatBytes(info.total) : t("profiles.traffic_unlimited")) : "",
+    pct,
+    expire,
+    expireTone,
+  };
+});
 </script>
 
 <template>
   <div class="page">
     <h2 class="page-title">{{ $t("dashboard.title") }}</h2>
 
-    <!-- 状态卡：核心状态 + 核心控制按钮（同卡，顺序：启动/停止 → 重载 → 重启） -->
-    <el-card shadow="never" class="status-card">
-      <template #header>
-        <div class="status-head">
-          <span>{{ $t("dashboard.core_status") }}</span>
-          <StatusPill :active="running" :label="$t(statusKey)" />
-        </div>
-      </template>
+    <div class="dash-grid">
+      <!-- 状态核心 -->
+      <section class="ce-card core-card" :aria-label="$t('dashboard.core_status')">
+        <CeStatusCore :state="coreState" :label="coreLabel" @toggle="onToggleCore">
+          <span class="core-meta">{{ versionLine }}</span>
+          <span class="core-links">
+            <el-button text :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
+            <el-button text :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
+          </span>
+        </CeStatusCore>
 
-      <div class="status-grid">
-        <div class="stat-item">
-          <div class="stat-label">{{ $t("dashboard.current_node") }}</div>
-          <div class="stat-value node-value" :title="currentNode">
-            <span class="node-name">{{ currentNode }}</span>
-            <span v-if="currentLatency" class="node-latency">{{ currentLatency }}</span>
+        <div class="core-divider" aria-hidden="true"></div>
+
+        <div class="core-controls">
+          <div class="control-block">
+            <span class="control-label">{{ $t("dashboard.proxy_mode") }}</span>
+            <CeSegmented
+              :model-value="config.proxyMode"
+              :options="modeOptions"
+              :ariaLabel="$t('dashboard.proxy_mode')"
+              @update:model-value="(v) => onModeChange(String(v))"
+            />
+          </div>
+          <div class="set-row">
+            <div class="set-info">
+              <div class="set-label">{{ $t("dashboard.system_proxy") }}</div>
+            </div>
+            <el-switch
+              :model-value="config.systemProxy"
+              :aria-label="$t('dashboard.system_proxy')"
+              :loading="systemProxy.busy.value"
+              @change="onSystemProxyChange"
+            />
+          </div>
+          <div class="set-row">
+            <div class="set-info">
+              <div class="set-label">{{ $t("dashboard.tun_mode") }}</div>
+              <div class="set-hint">{{ $t("dashboard.tun_hint") }}</div>
+            </div>
+            <el-switch
+              :model-value="config.tunEnabled"
+              :aria-label="$t('dashboard.tun_mode')"
+              :loading="tun.busy.value"
+              @change="onTunChange"
+            />
           </div>
         </div>
-        <div class="stat-item">
-          <div class="stat-label">{{ $t("dashboard.proxy_mode") }}</div>
-          <div class="stat-value">{{ $t("tray.mode_" + config.proxyMode) }}</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-label">{{ $t("dashboard.core_version") }}</div>
-          <div class="stat-value">{{ core.status.version ?? "—" }}</div>
-        </div>
-      </div>
+      </section>
 
-      <!-- 核心控制：主动作（启动/停止）突出，重载/重启降为次级文字按钮。
-           停止是高频常规操作而非破坏性操作，用中性色，不制造警觉。 -->
-      <div class="core-actions">
-        <el-button
-          v-if="!running"
-          type="primary"
-          class="core-btn"
-          :loading="core.starting"
-          @click="onStart"
-        >
-          {{ $t("dashboard.start") }}
-        </el-button>
-        <el-button
-          v-else
-          plain
-          class="core-btn"
-          :loading="core.stopping"
-          @click="onStop"
-        >
-          {{ $t("dashboard.stop") }}
-        </el-button>
-        <div class="core-secondary">
-          <el-button
-            text
-            :disabled="!running || coreActionBusy"
-            :loading="coreActionBusy"
-            @click="onRestart"
-          >
-            {{ $t("dashboard.restart") }}
-          </el-button>
-          <el-button
-            text
-            :disabled="!running || coreActionBusy"
-            :loading="coreActionBusy"
-            @click="onReload"
-          >
-            {{ $t("dashboard.reload") }}
-          </el-button>
+      <!-- 实时流量 -->
+      <section class="ce-card traffic-card" :aria-label="$t('dashboard.traffic_title')">
+        <h3 class="card-title">{{ $t("dashboard.traffic_title") }}</h3>
+        <div class="rates">
+          <div class="rate">
+            <span class="rate-label">↓ {{ $t("ui.chart.down") }}</span>
+            <span class="rate-value">{{ downRate[0] }}</span>
+            <span class="rate-unit">{{ downRate[1] }}</span>
+          </div>
+          <div class="rate">
+            <span class="rate-label">↑ {{ $t("ui.chart.up") }}</span>
+            <span class="rate-value">{{ upRate[0] }}</span>
+            <span class="rate-unit">{{ upRate[1] }}</span>
+          </div>
         </div>
-      </div>
-    </el-card>
-
-    <!-- 设置卡：仅系统代理开关（订阅管理已移回「配置」页） -->
-    <el-card shadow="never" class="settings-card">
-      <div class="set-row">
-        <div class="set-info">
-          <div class="set-label">{{ $t("dashboard.system_proxy") }}</div>
-          <div class="set-hint">{{ $t("dashboard.system_proxy_hint") }}</div>
-        </div>
-        <el-switch
-          :model-value="config.systemProxy"
-          :aria-label="$t('dashboard.system_proxy')"
-          :loading="systemProxy.busy.value"
-          @change="onSystemProxyChange"
+        <CeSparkline
+          :down="connections.rateDown"
+          :up="connections.rateUp"
+          :label="$t('dashboard.traffic_chart_label')"
         />
-      </div>
-    </el-card>
+        <p class="session-line">{{ sessionLine }}</p>
+      </section>
+
+      <!-- 快捷切换 -->
+      <section class="ce-card quick-card" :aria-label="$t('dashboard.quick_title')">
+        <div class="quick-head">
+          <h3 class="card-title">{{ $t("dashboard.quick_title") }}</h3>
+          <el-select
+            v-if="groups.length"
+            :model-value="activeGroup?.name"
+            :aria-label="$t('dashboard.quick_group')"
+            class="group-select"
+            @change="(v: string) => (pickedGroup = v)"
+          >
+            <el-option v-for="g in groups" :key="g.name" :label="g.name" :value="g.name" />
+          </el-select>
+          <span class="quick-spacer"></span>
+          <el-button text :disabled="!activeGroup || proxyStore.testingNodes" :loading="proxyStore.testingNodes" @click="onTestGroup">
+            <Zap :size="16" :stroke-width="1.75" aria-hidden="true" />{{ $t("dashboard.quick_test") }}
+          </el-button>
+          <a class="quick-all" href="#/proxies">
+            {{ $t("dashboard.quick_all") }}<ArrowRight :size="16" :stroke-width="1.75" aria-hidden="true" />
+          </a>
+        </div>
+        <p v-if="readonlyGroup" class="quick-note">{{ $t("dashboard.quick_readonly") }}</p>
+        <div v-if="tiles.length" class="tile-grid">
+          <CeNodeTile
+            v-for="n in tiles"
+            :key="n.name"
+            :name="n.name"
+            :ms="n.ms"
+            :timeout="n.timeout"
+            :testing="n.testing"
+            :selected="n.selected"
+            :readonly="readonlyGroup"
+            @select="onSelectNode(n.name)"
+            @retest="onRetest(n.name)"
+          />
+        </div>
+        <p v-else class="quick-empty">{{ $t("dashboard.quick_empty") }}</p>
+      </section>
+
+      <!-- 当前订阅 -->
+      <section class="ce-card sub-card" :aria-label="$t('dashboard.sub_title')">
+        <h3 class="card-title">{{ $t("dashboard.sub_title") }}</h3>
+        <template v-if="sub">
+          <div class="sub-name">{{ sub.name }}</div>
+          <template v-if="sub.used">
+            <div class="sub-row">
+              <span class="sub-key">{{ $t("dashboard.sub_used") }}</span>
+              <span class="sub-val">{{ sub.used }} <span class="sub-total">/ {{ sub.total }}</span></span>
+            </div>
+            <div
+              v-if="sub.pct !== null"
+              class="sub-bar"
+              role="progressbar"
+              :aria-valuenow="sub.pct"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :aria-label="$t('dashboard.sub_used')"
+            >
+              <i :style="{ width: sub.pct + '%' }"></i>
+            </div>
+          </template>
+          <div v-if="sub.expire" class="sub-row">
+            <span class="sub-key">{{ $t("dashboard.sub_expire") }}</span>
+            <span class="sub-val" :class="sub.expireTone">{{ sub.expire }}</span>
+          </div>
+        </template>
+        <p v-else class="quick-empty">{{ $t("dashboard.sub_none") }}</p>
+        <a class="quick-all sub-link" href="#/profiles">
+          {{ $t("dashboard.sub_manage") }}<ArrowRight :size="16" :stroke-width="1.75" aria-hidden="true" />
+        </a>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.status-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-weight: 500;
-}
-
-/* 状态指示由全局 .status-pill/.status-dot/.running 提供（styles.css），
- * 本页不再重复定义，保证与 Logs 页语义色一致。 */
-
-.status-grid {
+/* 两行 2:1 栅格；窗口宽度 < 960 时单列。 */
+.dash-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--ce-space-4);
 }
 
-/* 小窗口：三列过窄，降为上下堆叠的行式（保留分隔线语义改为上边框）。 */
-@media (max-width: 640px) {
-  .status-grid {
-    grid-template-columns: 1fr;
-    row-gap: 4px;
-  }
-  .stat-item + .stat-item {
-    border-left: none;
-    border-top: 1px solid var(--card-border);
+@media (max-width: 959px) {
+  .dash-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
-.stat-item {
-  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+.card-title {
+  margin: 0;
+  font: var(--ce-type-title-3);
+  color: var(--ce-text-primary);
 }
 
-.stat-item + .stat-item {
-  border-left: 1px solid var(--card-border);
-}
-
-.stat-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  margin-bottom: 6px;
-}
-
-.stat-value {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-/* 当前节点：与其它 stat-value 同字号同字重（协调），
- * 名称超长省略、完整名走 title；延迟作为次级信息跟随。 */
-.node-value {
+/* ---- 状态核心 ---- */
+.core-card {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ce-space-6);
 }
 
-.node-value .node-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.core-card > :first-child {
+  flex: 1 1 320px;
 }
 
-.node-latency {
-  flex: none;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-tertiary);
+.core-meta {
+  font: var(--ce-type-callout);
+  color: var(--ce-text-secondary);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
-.status-card {
-  /* 单值！EP 头部用 calc(var(--el-card-padding) - 2px)，双值会让 calc
-     失效、头部内边距归零（核心状态/运行中贴边的根因）。 */
-  --el-card-padding: var(--space-5);
+.core-links {
+  display: flex;
+  gap: var(--ce-space-1);
+  margin-left: calc(var(--ce-space-3) * -1);
 }
 
-.core-actions {
-  margin-top: 20px;
+.core-divider {
+  align-self: stretch;
+  width: 1px;
+  background: var(--ce-divider);
+}
+
+@media (max-width: 749px) {
+  .core-divider {
+    display: none;
+  }
+}
+
+.core-controls {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: var(--ce-space-3);
+  min-width: 0;
+}
+
+.control-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  align-items: flex-start;
+  gap: var(--ce-space-2);
 }
 
-.core-btn {
-  width: 100%;
-  margin-left: 0 !important;
-}
-
-/* 次级动作：文字按钮一行，视觉权重明显低于主动作。 */
-.core-secondary {
-  display: flex;
-  justify-content: flex-end;
-  gap: 4px;
-}
-
-.core-secondary .el-button + .el-button {
-  margin-left: 8px;
-}
-
-.settings-card {
-  margin-top: 16px;
+.control-label,
+.rate-label,
+.sub-key {
+  font: var(--ce-type-caption);
+  color: var(--ce-text-tertiary);
 }
 
 .set-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--ce-space-4);
 }
 
 .set-info {
@@ -318,14 +408,166 @@ const onStop = () => startStop.run(() => core.stop());
 }
 
 .set-label {
-  font-weight: 500;
-  font-size: 14px;
-  color: var(--text-primary);
+  font: var(--ce-type-body);
+  color: var(--ce-text-primary);
 }
 
 .set-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--text-tertiary);
+  font: var(--ce-type-caption);
+  font-weight: 400;
+  color: var(--ce-text-tertiary);
+}
+
+/* ---- 实时流量 ---- */
+.traffic-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ce-space-3);
+  min-width: 0;
+}
+
+.rates {
+  display: flex;
+  gap: var(--ce-space-5);
+}
+
+.rate {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rate-value {
+  font: var(--ce-type-display);
+  font-variant-numeric: tabular-nums;
+  color: var(--ce-text-primary);
+}
+
+.rate-unit {
+  font: var(--ce-type-callout);
+  color: var(--ce-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-line {
+  margin: 0;
+  font: var(--ce-type-callout);
+  color: var(--ce-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 快捷切换 ---- */
+.quick-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ce-space-3);
+  min-width: 0;
+}
+
+.quick-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ce-space-3);
+}
+
+.group-select {
+  width: 160px;
+}
+
+.quick-spacer {
+  flex: 1;
+}
+
+.quick-note {
+  margin: 0;
+  font: var(--ce-type-callout);
+  color: var(--ce-text-secondary);
+}
+
+.quick-empty {
+  margin: 0;
+  font: var(--ce-type-callout);
+  color: var(--ce-text-tertiary);
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--ce-space-3);
+}
+
+.quick-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ce-space-1);
+  font: var(--ce-type-callout);
+  font-weight: 500;
+  color: var(--ce-accent-fg);
+  text-decoration: none;
+}
+
+.quick-all:hover {
+  text-decoration: underline;
+}
+
+/* ---- 当前订阅 ---- */
+.sub-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ce-space-3);
+  min-width: 0;
+}
+
+.sub-name {
+  font: var(--ce-type-title-3);
+  color: var(--ce-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sub-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ce-space-3);
+}
+
+.sub-val {
+  font: var(--ce-type-callout);
+  color: var(--ce-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.sub-val.is-warning {
+  color: var(--ce-warning-fg);
+}
+
+.sub-val.is-danger {
+  color: var(--ce-danger-fg);
+}
+
+.sub-total {
+  color: var(--ce-text-tertiary);
+}
+
+.sub-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--ce-radius-full);
+  background: var(--ce-fill-soft);
+}
+
+.sub-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: var(--ce-radius-full);
+  background: var(--ce-accent-bg);
+}
+
+.sub-link {
+  margin-top: auto;
 }
 </style>

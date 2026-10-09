@@ -46,3 +46,14 @@ export function isValidCidr(entry: string): boolean {
   if (Number(m[2]) > 32) return false;
   return m[1].split(".").every((oct) => Number(oct) <= 255);
 }
+
+/** 速率（字节/秒）→ "4.82 MB/s"。 */
+export function formatRate(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+/** 速率拆成 [数值, 单位]，供大号数值 + 小号单位的排版："4.82 MB/s" → ["4.82", "MB/s"]。 */
+export function splitRate(bytesPerSecond: number): [string, string] {
+  const [value, unit] = formatBytes(bytesPerSecond).split(" ");
+  return [value, `${unit}/s`];
+}

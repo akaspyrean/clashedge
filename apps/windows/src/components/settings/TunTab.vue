@@ -6,12 +6,10 @@ import type { ClashConfig } from "@/api/config";
 import PrefList from "@/components/PrefList.vue";
 import PrefRow from "@/components/PrefRow.vue";
 import { useAction } from "@/composables/useAction";
-import { useSettingsSave } from "@/composables/useSettingsSave";
 import { useConfigStore } from "@/stores/config";
 
 const { t } = useI18n();
 const configStore = useConfigStore();
-const { save } = useSettingsSave();
 const cfg = computed(() => configStore.config as ClashConfig);
 const tun = useAction();
 
@@ -27,7 +25,7 @@ const onTun = (v: boolean | string | number) =>
 </script>
 
 <template>
-  <PrefList :save-label="t('common.save')" @save="save">
+  <PrefList>
     <PrefRow :title="t('tun.enable')">
       <template #default="{ label }">
         <el-switch :model-value="cfg.tun.enable" :aria-label="label" :loading="tun.busy.value" @change="onTun" />
