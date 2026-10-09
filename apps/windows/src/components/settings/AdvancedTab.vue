@@ -9,7 +9,6 @@ import PrefRow from "@/components/PrefRow.vue";
 import { useAction } from "@/composables/useAction";
 import { useConfirm } from "@/composables/useConfirm";
 import { useNotify } from "@/composables/useNotify";
-import { useSettingsSave } from "@/composables/useSettingsSave";
 import { useConfigStore } from "@/stores/config";
 import { useGeodataStore } from "@/stores/geodata";
 import { formatBytes } from "@/utils/format";
@@ -19,7 +18,6 @@ const configStore = useConfigStore();
 const geoStore = useGeodataStore();
 const confirm = useConfirm();
 const notify = useNotify();
-const { save } = useSettingsSave();
 
 const cfg = computed(() => configStore.config as ClashConfig);
 
@@ -71,7 +69,7 @@ onUnmounted(() => unlisten?.());
 </script>
 
 <template>
-  <PrefList :save-label="t('common.save')" @save="save">
+  <PrefList>
     <PrefRow :title="t('general.log_level')">
       <template #default="{ label }">
         <el-select v-model="cfg['log-level']" :aria-label="label" style="width: 160px">

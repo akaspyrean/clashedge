@@ -3,11 +3,11 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ClashConfig } from "@/api/config";
+import CeSegmented from "@/components/ui/CeSegmented.vue";
 import PrefList from "@/components/PrefList.vue";
 import PrefRow from "@/components/PrefRow.vue";
 import { useAction } from "@/composables/useAction";
 import { useConfirm } from "@/composables/useConfirm";
-import { useSettingsSave } from "@/composables/useSettingsSave";
 import { useAppStore } from "@/stores/app";
 import { useConfigStore } from "@/stores/config";
 import { isValidCidr } from "@/utils/format";
@@ -17,7 +17,6 @@ const { t } = useI18n();
 const appStore = useAppStore();
 const configStore = useConfigStore();
 const confirm = useConfirm();
-const { save } = useSettingsSave();
 
 const cfg = computed(() => configStore.config as ClashConfig);
 
@@ -29,6 +28,11 @@ const systemProxy = useAction();
 const dataDir = useAction();
 
 const theme = ref<"system" | "dark" | "light">(getTheme());
+const themeOptions = computed(() => [
+  { value: "light" as const, label: t("settings.theme_light") },
+  { value: "dark" as const, label: t("settings.theme_dark") },
+  { value: "system" as const, label: t("settings.theme_system") },
+]);
 watch(theme, (v) => setTheme(v), { immediate: true });
 
 // mihomo 官方模板仅这三值；script 是 Clash Premium 遗留，后端会拒绝。
@@ -76,7 +80,7 @@ async function onAllowLan(val: boolean | string | number) {
 </script>
 
 <template>
-  <PrefList :save-label="t('common.save')" @save="save">
+  <PrefList>
     <PrefRow :title="t('settings.language')">
       <template #default="{ label }">
         <el-select
@@ -93,11 +97,7 @@ async function onAllowLan(val: boolean | string | number) {
 
     <PrefRow :title="t('settings.theme')">
       <template #default="{ label }">
-        <el-radio-group v-model="theme" :aria-label="label">
-          <el-radio-button value="system">{{ t("settings.theme_system") }}</el-radio-button>
-          <el-radio-button value="light">{{ t("settings.theme_light") }}</el-radio-button>
-          <el-radio-button value="dark">{{ t("settings.theme_dark") }}</el-radio-button>
-        </el-radio-group>
+        <CeSegmented v-model="theme" :options="themeOptions" :ariaLabel="label" />
       </template>
     </PrefRow>
 

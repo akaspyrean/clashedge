@@ -42,6 +42,15 @@ const hintId = `pref-${uid}-hint`;
   min-height: 44px;
 }
 
+/* 设置搜索命中：整行淡底高亮（由 SettingsView 添加 class）。 */
+.pref-row.pref-hit {
+  margin: 0 calc(var(--ce-space-3) * -1);
+  padding-right: var(--ce-space-3);
+  padding-left: var(--ce-space-3);
+  border-radius: var(--ce-radius-md);
+  background: var(--ce-accent-soft);
+}
+
 .pref-info {
   min-width: 0;
 }

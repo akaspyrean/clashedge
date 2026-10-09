@@ -21,7 +21,7 @@ defineEmits<{ (e: "save"): void }>();
 
 <style scoped>
 .pref-list {
-  max-width: 680px;
+  width: 100%;
 }
 
 /* 相邻行（含插槽里渲染的 PrefRow 根节点）之间的分隔线 */

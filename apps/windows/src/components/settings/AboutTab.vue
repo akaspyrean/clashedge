@@ -94,13 +94,12 @@ onUnmounted(() => unlisten?.());
       </el-button>
       <el-button
         v-if="update.availableVersion && !update.staged"
-        type="primary"
         :loading="update.downloading"
         @click="onDownload"
       >
         {{ update.downloading ? t("about.downloading") : t("about.download_btn") }}
       </el-button>
-      <el-button v-if="update.staged" type="primary" @click="onRestartApply">
+      <el-button v-if="update.staged" @click="onRestartApply">
         {{ t("about.restart_apply") }}
       </el-button>
       <el-button v-if="update.staged" plain :loading="discarding.busy.value" @click="onDiscard">

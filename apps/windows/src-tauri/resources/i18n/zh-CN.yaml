@@ -105,6 +105,9 @@ geodata:
 
 settings:
   title: "设置"
+  search_placeholder: "搜索设置"
+  search_count: "找到 {n} 项"
+  search_none: "没有匹配的设置"
   tabs:
     general: "常规"
     proxy: "代理"
