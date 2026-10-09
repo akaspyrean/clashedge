@@ -3,11 +3,12 @@ name: Diagnose Update Pubkey
 on:
   workflow_dispatch:
 
-# Temporary diagnostic: the two secrets are from DIFFERENT keypairs (key IDs
-# b91bd8c9... vs 9987b1a6...). This run extracts the real public key that pairs
-# with TAURI_SIGNING_PRIVATE_KEY by signing a known message and verifying
-# candidate 32-byte chunks from the seckey blob (the pubkey is stored in
-# plaintext inside the seckey). Prints only non-secret material. Delete after use.
+# Temporary diagnostic: the signature made by TAURI_SIGNING_PRIVATE_KEY carries
+# key_id b91bd8c9... which MATCHES CLASHEDGE_UPDATE_PUBKEY. This run proves the
+# pair end-to-end: verify the probe signature against the pubkey secret's key
+# (unwrapped from its base64-wrapped file text) — exactly what release publish
+# will do once the code unwraps the base64 layer. Prints only non-secret
+# material. Delete after use.
 
 jobs:
   diagnose:
@@ -19,10 +20,11 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm i @tauri-apps/cli >/dev/null 2>&1
 
-      - name: Sign known message and extract pairing public key
+      - name: Verify probe signature against pubkey secret
         env:
           PRIVKEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           PRIVKEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBKEY_SECRET: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
         run: |
           printf 'clashedge-pairing-probe\n' > /tmp/probe.txt
           cd /tmp/signer
@@ -31,78 +33,49 @@ jobs:
             npx tauri signer sign /tmp/probe.txt 2>&1 | tail -2
           cd /
           python3 - <<'PY'
-          import base64, hashlib, os, subprocess, sys
+          import base64, hashlib, os, sys
           try:
               from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-              from cryptography.exceptions import InvalidSignature
           except ImportError:
+              import subprocess
               subprocess.run([sys.executable, "-m", "pip", "install", "-q", "cryptography"], check=True)
               from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-              from cryptography.exceptions import InvalidSignature
 
           def b64dec(s):
               try: return base64.b64decode("".join(s.split()), validate=True)
               except Exception: return None
 
-          priv = os.environ.get("PRIVKEY","")
-          text = b64dec(priv).decode("utf-8", "replace")
-          seckey_blob = None
-          for l in text.splitlines():
-              if l.startswith("untrusted comment") or l.startswith("trusted comment"): continue
-              blob = b64dec(l)
-              if blob is not None: seckey_blob = blob; break
-          print(f"seckey blob: {len(seckey_blob)} bytes, sig_alg={seckey_blob[:2].hex()}")
-          kid = seckey_blob[6:14]
-          print(f"seckey key_id: {kid.hex()}")
-
-          sig_text = open("/tmp/probe.txt.sig").read()
-          decoded = b64dec(sig_text).decode("utf-8", "replace")
-          sig_blob = None
-          for l in decoded.splitlines():
-              if l.startswith("untrusted comment") or l.startswith("trusted comment"): continue
-              blob = b64dec(l)
-              if blob is not None: sig_blob = blob; break
-          sig_alg = sig_blob[:2]
-          print(f"signature blob: {len(sig_blob)} bytes, alg={sig_alg.hex()} ({'prehashed ED' if sig_alg==b'ED' else 'legacy Ed'})")
+          # 1. the probe signature (made by the signing key, same as release publish does)
+          decoded = b64dec(open("/tmp/probe.txt.sig").read()).decode("utf-8", "replace")
+          sig_blob = next(b64dec(l) for l in decoded.splitlines()
+                          if not l.startswith(("untrusted comment","trusted comment")) and b64dec(l))
           sig64 = sig_blob[10:74]
-          sig_kid = sig_blob[2:10]
-          print(f"signature key_id: {sig_kid.hex()}")
-          print(f"seckey   key_id: {kid.hex()}")
-          print(f"sig/seckey key_id match: {sig_kid == kid}")
-          print(f"seckey kdf_alg={seckey_blob[2:4].hex()} chk_alg={seckey_blob[4:6].hex()} (5363='Sc' scrypt)")
-          trusted = next((l for l in decoded.splitlines() if l.startswith('trusted comment')), '')
-          print(f"trusted comment: {trusted[:60]!r}")
+          print(f"signature: {len(sig_blob)} bytes, alg={sig_blob[:2].hex()}, key_id={sig_blob[2:10].hex()}")
 
+          # 2. the pubkey secret's key: unwrap base64 -> line2 = 42-byte pubkey blob
+          pub = os.environ.get("PUBKEY_SECRET","")
+          t = b64dec(pub).decode("utf-8", "replace")
+          print(f"pubkey secret unwrapped: {len(t)} bytes, {len(t.splitlines())} lines")
+          pk_b64 = None
+          for l in t.splitlines():
+              if l.startswith(("untrusted comment","trusted comment")): continue
+              b = b64dec(l)
+              if b is not None and len(b) == 42:
+                  pk_b64 = "".join(l.split()); break
+          if pk_b64 is None:
+              print("no 42-byte pubkey blob in the pubkey secret"); sys.exit(1)
+          print(f"pubkey secret key: {pk_b64}")
+          print(f"key_id match (sig vs pubkey): {sig_blob[2:10] == b64dec(pk_b64)[2:10]}")
+
+          # 3. the definitive check — same math release publish will run
           msg = open("/tmp/probe.txt","rb").read()
-          # brute-force: the 32-byte ed25519 pubkey lives in plaintext somewhere in the blob;
-          # try multiple message/target variants
-          variants = [
-              ("raw", msg),
-              ("raw-nostrip", msg.rstrip(b"\n")),
-              ("blake2b-512", hashlib.blake2b(msg, digest_size=64).digest()),
-              ("blake2b-512-nostrip", hashlib.blake2b(msg.rstrip(b"\n"), digest_size=64).digest()),
-              ("sha512", hashlib.sha512(msg).digest()),
-          ]
-          found = None
-          for i in range(0, len(seckey_blob) - 31):
-              cand = seckey_blob[i:i+32]
-              for name, t in variants:
-                  try:
-                      Ed25519PublicKey.from_public_bytes(cand).verify(sig64, t)
-                      found = (i, cand, name); break
-                  except Exception:
-                      pass
-              if found: break
-          if not found:
-              print("NO candidate chunk verifies — inspect format manually"); sys.exit(1)
-          i, pub32, used_target = found
-          print(f"\ned25519 public key found at seckey blob offset {i}")
-          print(f"verified against: {used_target}")
-          minisign_pub = b"Ed" + kid + pub32
-          pk_b64 = base64.b64encode(minisign_pub).decode()
-          print(f"\nCORRECT minisign public key (set CLASHEDGE_UPDATE_PUBKEY to this):")
-          print(pk_b64)
-          print(f"len={len(pk_b64)} startsRW={pk_b64.startswith('RW')}")
-          print(f"\nalso valid as full minisign.pub text:")
-          print(f"untrusted comment: ClashEdge updater\n{pk_b64}")
+          try:
+              Ed25519PublicKey.from_public_bytes(b64dec(pk_b64)[10:42]).verify(
+                  sig64, hashlib.blake2b(msg, digest_size=64).digest())
+              print("\n=== PAIRING VERIFIED: release publish will PASS ===")
+              print("=> the committed parse_update_pubkey (base64 unwrap) is sufficient.")
+              print("=> CLASHEDGE_UPDATE_PUBKEY needs NO change; re-tag v1.1.0 to ship.")
+          except Exception as e:
+              print(f"\n=== PAIRING FAILED: {type(e).__name__} ===")
+              print("=> set CLASHEDGE_UPDATE_PUBKEY to the matching pubkey of the signing key.")
           PY
