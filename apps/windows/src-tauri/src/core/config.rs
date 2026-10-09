@@ -142,6 +142,7 @@ pub(crate) fn merge_rules(config: Config) -> Config {
 pub fn build_runtime_config(
     app: &Config,
     profile_content: Option<&str>,
+    region_map: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<serde_yaml::Value> {
     let mut map = serde_yaml::Mapping::new();
     macro_rules! put {
@@ -281,18 +282,16 @@ pub fn build_runtime_config(
     }
 
     // 5) proxies / proxy-groups / rules：
-    //    应用始终采用内置组骨架（GLOBAL + 5 组）与内置规则链——这是应用的核心结构
-    //    （规则模式固定 5 组）。订阅自带的 proxy-groups/rules 不采用（其规则引用的组
-    //    在应用中不存在，整组采用会导致叶子组拿不到节点）。订阅只提供节点：
-    //    节点名强制注入叶子组——人工优选（手动选择）只含真实节点不含 DIRECT，
-    //    自动优选（url-test）只注入真实代理节点——DIRECT 不是代理节点，注入它会让
-    //    url-test 把直连当作零延迟最优节点永久霸占自动组，所有真实节点拿不到流量。
+    //    应用始终采用内置组骨架（GLOBAL + 5 组）与内置规则链。订阅只提供节点。
+    //    有区域信息时按区域动态分组：
+    //    - 自动优选（url-test）：全部节点测速选最低延迟（不变）
+    //    - 人工优选（select）：如含美国节点 -> [美国优选(url-test), 美国节点...],
+    //      默认=美国优选=最低延迟美国节点, 用户可手选任意美国节点;
+    //      无美国节点时降级为 [自动优选, 全部节点...].
+    //    - 美国优选 + 各非美国区域组（香港优选/日本优选/...）动态生成,
+    //      追加到 GLOBAL 与 扶梯出行 选项尾部.
+    //    无区域信息（旧 profile/无 GeoIP.dat/DoH 失败）-> 退化为当前行为.
     let mut groups = app.proxy_groups.clone();
-    // 有效节点来源：激活 Profile 的 `proxies` 优先，其次「导入配置」带入的
-    // AppConfig.extra.proxies（用户显式导入完整 mihomo 配置）。
-    // extra.proxies（导入配置带入的节点）必须与激活 Profile 的节点走同一
-    // 注入路径：只写顶层 proxies、不注入叶子组的话，节点存在于配置但
-    // 人工优选仍为 [DIRECT]、自动优选被零节点兜底删除，所有流量直连。
     let effective_proxies = profile_proxies.or_else(|| {
         app.extra
             .get("proxies")
@@ -306,44 +305,80 @@ pub fn build_runtime_config(
             .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
             .collect();
         if !node_names.is_empty() {
+            let us_nodes = partition_by_region(&node_names, region_map, "US");
+            let (region_groups, us_group_name) =
+                build_region_groups(&node_names, region_map, &us_nodes);
+
             for group in groups.iter_mut() {
                 let Some(gmap) = group.as_mapping_mut() else {
                     continue;
                 };
-                let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else {
+                let Some(gname) = gmap
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .map(str::to_string)
+                else {
                     continue;
                 };
-                let is_leaf = gname == "人工优选" || gname == "自动优选";
-                if !is_leaf {
-                    continue;
-                }
-                if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
-                    plist.clear();
-                    // 人工优选与自动优选都只注入真实代理节点。
-                    // 自动优选（url-test）不得含 DIRECT：url-test 会把直连当
-                    // 作零延迟节点永远选中，真实节点永远拿不到流量。
-                    for n in &node_names {
-                        plist.push(serde_yaml::Value::from(n.clone()));
+
+                if gname == "自动优选" {
+                    if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
+                        plist.clear();
+                        for n in &node_names {
+                            plist.push(serde_yaml::Value::from(n.clone()));
+                        }
+                    }
+                } else if gname == "人工优选" {
+                    if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
+                        plist.clear();
+                        if !us_nodes.is_empty() {
+                            plist.push(serde_yaml::Value::from(
+                                us_group_name
+                                    .clone()
+                                    .unwrap_or_else(|| "美国优选".to_string()),
+                            ));
+                            for n in &us_nodes {
+                                plist.push(serde_yaml::Value::from(n.clone()));
+                            }
+                        } else {
+                            plist.push(serde_yaml::Value::from("自动优选"));
+                            for n in &node_names {
+                                plist.push(serde_yaml::Value::from(n.clone()));
+                            }
+                        }
+                    }
+                } else if (gname == "GLOBAL" || gname == "扶梯出行") && !region_groups.is_empty()
+                {
+                    if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
+                        for rg in &region_groups {
+                            let gname_rg = rg.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                            if !plist.iter().any(|v| v.as_str() == Some(gname_rg)) {
+                                plist.push(serde_yaml::Value::from(gname_rg.to_string()));
+                            }
+                        }
                     }
                 }
+            }
+            for rg in region_groups {
+                groups.push(rg);
             }
         }
         put!("proxies", serde_yaml::to_value(proxies)?);
     }
 
-    // 6) 零节点兜底：mihomo（v1.19.x）拒绝 proxies 为空的代理组
-    //    （"`use` or `proxies` missing"，配置校验直接失败，核心无法启动）。
-    //    约束：自动优选是 url-test 组，只能含真实节点——DIRECT/REJECT 占位
-    //    都不行（url-test 会把 DIRECT 当零延迟节点永久霸占，REJECT 则黑掉流量）。
-    //    故零节点时不生成自动优选组，并从其余组的 proxies 引用中同步剔除，
-    //    保证不存在悬空引用；人工优选（select）补 DIRECT 兜底保持直连可用。
-    //    一旦订阅提供节点，step 5 会注入真实节点名，自动优选恢复生成。
+    // 6) 零节点兜底：mihomo 拒绝 proxies 为空的代理组。
+    //    自动优选是 url-test 组，零节点时删除整组并从引用中剔除；
+    //    空的动态区域组同样删除；人工优选（select）补 DIRECT 兜底。
     let mut drop_auto_group = false;
     for group in groups.iter_mut() {
         let Some(gmap) = group.as_mapping_mut() else {
             continue;
         };
-        let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else {
+        let Some(gname) = gmap
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+        else {
             continue;
         };
         if gname == "自动优选" {
@@ -358,18 +393,35 @@ pub fn build_runtime_config(
         }
     }
     if drop_auto_group {
-        groups.retain(|g| g.get("name").and_then(|n| n.as_str()) != Some("自动优选"));
+        groups.retain(|g| {
+            let name = g.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if name == "自动优选" {
+                return false;
+            }
+            if name.ends_with("优选") && name != "人工优选" {
+                let is_empty = g
+                    .get("proxies")
+                    .and_then(|p| p.as_sequence())
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true);
+                if is_empty {
+                    return false;
+                }
+            }
+            true
+        });
         for group in groups.iter_mut() {
             let Some(gmap) = group.as_mapping_mut() else {
                 continue;
             };
-            // 从引用列表剔除自动优选
             if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
                 plist.retain(|v| v.as_str() != Some("自动优选"));
             }
-            // 人工优选为空时补 DIRECT：MATCH 兜底规则会把全部流量引向
-            // 扶梯出行 → 叶子组，DIRECT 占位让无订阅状态保持直连可用。
-            let Some(gname) = gmap.get("name").and_then(|n| n.as_str()) else {
+            let Some(gname) = gmap
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(str::to_string)
+            else {
                 continue;
             };
             if gname == "人工优选" {
@@ -401,6 +453,155 @@ pub fn build_runtime_config(
     Ok(serde_yaml::Value::Mapping(map))
 }
 
+fn region_display_name(code: &str) -> String {
+    match code {
+        "US" => "美国",
+        "HK" => "香港",
+        "TW" => "台湾",
+        "JP" => "日本",
+        "SG" => "新加坡",
+        "KR" => "韩国",
+        "MY" => "马来西亚",
+        "TH" => "泰国",
+        "PH" => "菲律宾",
+        "VN" => "越南",
+        "ID" => "印度尼西亚",
+        "IN" => "印度",
+        "TR" => "土耳其",
+        "AE" => "阿联酋",
+        "RU" => "俄罗斯",
+        "DE" => "德国",
+        "GB" => "英国",
+        "FR" => "法国",
+        "NL" => "荷兰",
+        "SE" => "瑞典",
+        "CH" => "瑞士",
+        "ES" => "西班牙",
+        "IT" => "意大利",
+        "CA" => "加拿大",
+        "MX" => "墨西哥",
+        "BR" => "巴西",
+        "AR" => "阿根廷",
+        "AU" => "澳大利亚",
+        "NZ" => "新西兰",
+        "ZA" => "南非",
+        "EG" => "埃及",
+        "SA" => "沙特",
+        "IL" => "以色列",
+        "KH" => "柬埔寨",
+        "PK" => "巴基斯坦",
+        "BD" => "孟加拉",
+        "KZ" => "哈萨克斯坦",
+        _ => code,
+    }
+    .to_string()
+}
+
+fn partition_by_region(
+    node_names: &[String],
+    region_map: Option<&std::collections::HashMap<String, String>>,
+    code: &str,
+) -> Vec<String> {
+    match region_map {
+        Some(map) => node_names
+            .iter()
+            .filter(|n| map.get(*n).map(|c| c == code).unwrap_or(false))
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+fn build_region_groups(
+    node_names: &[String],
+    region_map: Option<&std::collections::HashMap<String, String>>,
+    us_nodes: &[String],
+) -> (Vec<serde_yaml::Value>, Option<String>) {
+    let Some(rmap) = region_map else {
+        return (Vec::new(), None);
+    };
+
+    let mut by_region: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for n in node_names {
+        if let Some(code) = rmap.get(n) {
+            by_region.entry(code.clone()).or_default().push(n.clone());
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut us_group_name = None;
+    if !us_nodes.is_empty() {
+        let base_name = "美国优选";
+        let group_name = if node_names.iter().any(|n| n == base_name) {
+            format!("{} (region)", base_name)
+        } else {
+            base_name.to_string()
+        };
+        us_group_name = Some(group_name.clone());
+        out.push(make_url_test_group(&group_name, us_nodes));
+    }
+
+    let mut codes: Vec<&String> = by_region.keys().filter(|c| c.as_str() != "US").collect();
+    codes.sort();
+    for code in codes {
+        let nodes = by_region.get(code).unwrap();
+        if nodes.is_empty() {
+            continue;
+        }
+        let base_name = format!("{}优选", region_display_name(code));
+        let group_name = if node_names.iter().any(|n| n == &base_name) {
+            format!("{} (region)", base_name)
+        } else {
+            base_name
+        };
+        out.push(make_url_test_group(&group_name, nodes));
+    }
+    (out, us_group_name)
+}
+
+fn make_url_test_group(name: &str, nodes: &[String]) -> serde_yaml::Value {
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(
+        serde_yaml::Value::from("name"),
+        serde_yaml::Value::from(name),
+    );
+    m.insert(
+        serde_yaml::Value::from("type"),
+        serde_yaml::Value::from("url-test"),
+    );
+    m.insert(
+        serde_yaml::Value::from("url"),
+        serde_yaml::Value::from("https://cp.cloudflare.com/generate_204"),
+    );
+    m.insert(
+        serde_yaml::Value::from("interval"),
+        serde_yaml::Value::from(300),
+    );
+    m.insert(
+        serde_yaml::Value::from("tolerance"),
+        serde_yaml::Value::from(100),
+    );
+    m.insert(
+        serde_yaml::Value::from("expected-status"),
+        serde_yaml::Value::from(204),
+    );
+    m.insert(
+        serde_yaml::Value::from("timeout"),
+        serde_yaml::Value::from(5000),
+    );
+    m.insert(
+        serde_yaml::Value::from("proxies"),
+        serde_yaml::Value::Sequence(
+            nodes
+                .iter()
+                .map(|n| serde_yaml::Value::from(n.clone()))
+                .collect(),
+        ),
+    );
+    serde_yaml::Value::Mapping(m)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,7 +614,7 @@ mod tests {
         app.general.mixed_port = 7788;
         app.proxy.external_controller = "127.0.0.1:11111".to_string();
 
-        let runtime = build_runtime_config(&app, None).unwrap();
+        let runtime = build_runtime_config(&app, None, None).unwrap();
         let map = runtime.as_mapping().unwrap();
 
         // 应用级键不得进入运行时
@@ -456,7 +657,7 @@ proxies:
     cipher: auto
 "#;
 
-        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let runtime = build_runtime_config(&app, Some(profile), None).unwrap();
         let map = runtime.as_mapping().unwrap();
 
         // proxies 保留
@@ -483,7 +684,7 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(manual_names, vec!["Node1", "Node2"]);
+        assert_eq!(manual_names, vec!["自动优选", "Node1", "Node2"]);
         let auto = groups
             .iter()
             .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选"))
@@ -506,7 +707,7 @@ proxies:
         // 因此整组移除，且其余组的引用列表同步剔除避免悬空引用；
         // 人工优选（select）补 DIRECT 兜底使配置校验通过。
         let app = Config::default();
-        let runtime = build_runtime_config(&app, None).unwrap();
+        let runtime = build_runtime_config(&app, None, None).unwrap();
         let groups = runtime
             .as_mapping()
             .unwrap()
@@ -559,6 +760,268 @@ proxies:
         assert_eq!(names, vec!["DIRECT"]);
     }
 
+    /// 区域分组：有美国节点时人工优选=[美国优选, 美国节点...]，
+    /// 美国优选组生成（url-test 仅美国节点），GLOBAL/扶梯出行追加区域组引用。
+    #[test]
+    fn build_runtime_config_region_us_nodes_build_manual_and_region_groups() {
+        let app = Config::default();
+        let profile = r#"
+proxies:
+  - name: US1
+    type: ss
+    server: 8.8.8.8
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+  - name: HK1
+    type: ss
+    server: 1.2.4.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+"#;
+        let mut region = std::collections::HashMap::new();
+        region.insert("US1".to_string(), "US".to_string());
+        region.insert("HK1".to_string(), "HK".to_string());
+
+        let runtime = build_runtime_config(&app, Some(profile), Some(&region)).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
+
+        let find = |name: &str| {
+            groups
+                .iter()
+                .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
+                .unwrap_or_else(|| panic!("group {} missing", name))
+        };
+
+        // 人工优选：[美国优选, US1]，默认选美国优选（自动最低延迟美国节点）
+        let manual = find("人工优选");
+        let manual_names: Vec<&str> = manual
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(manual_names, vec!["美国优选", "US1"]);
+
+        // 美国优选：url-test 仅美国节点
+        let us_group = find("美国优选");
+        assert_eq!(
+            us_group.get("type").and_then(|t| t.as_str()),
+            Some("url-test")
+        );
+        let us_names: Vec<&str> = us_group
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(us_names, vec!["US1"]);
+
+        // 香港优选：url-test 仅香港节点
+        let hk_group = find("香港优选");
+        let hk_names: Vec<&str> = hk_group
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(hk_names, vec!["HK1"]);
+
+        // 自动优选：全部节点（不变）
+        let auto = find("自动优选");
+        let auto_names: Vec<&str> = auto
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(auto_names, vec!["US1", "HK1"]);
+
+        // GLOBAL / 扶梯出行 追加区域组引用（尾部，不动默认选中）
+        let global = find("GLOBAL");
+        let global_names: Vec<&str> = global
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert!(global_names.contains(&"美国优选"));
+        assert!(global_names.contains(&"香港优选"));
+        assert_eq!(global_names.first(), Some(&"DIRECT"));
+
+        let futi = find("扶梯出行");
+        let futi_names: Vec<&str> = futi
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(futi_names.first(), Some(&"人工优选"));
+        assert!(futi_names.contains(&"美国优选"));
+        assert!(futi_names.contains(&"香港优选"));
+    }
+
+    /// 区域分组：无美国节点但有其他区域时，人工优选降级为 [自动优选, 全部节点...]，
+    /// 其他区域组正常生成。
+    #[test]
+    fn build_runtime_config_region_no_us_falls_back_to_auto_first() {
+        let app = Config::default();
+        let profile = r#"
+proxies:
+  - name: HK1
+    type: ss
+    server: 1.2.4.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+  - name: JP1
+    type: ss
+    server: 1.2.4.2
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+"#;
+        let mut region = std::collections::HashMap::new();
+        region.insert("HK1".to_string(), "HK".to_string());
+        region.insert("JP1".to_string(), "JP".to_string());
+
+        let runtime = build_runtime_config(&app, Some(profile), Some(&region)).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
+
+        let find = |name: &str| {
+            groups
+                .iter()
+                .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
+        };
+
+        // 无美国节点 → 不生成美国优选组
+        assert!(
+            find("美国优选").is_none(),
+            "US group must not exist without US nodes"
+        );
+
+        // 人工优选降级：[自动优选, HK1, JP1]
+        let manual = find("人工优选").unwrap();
+        let manual_names: Vec<&str> = manual
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(manual_names, vec!["自动优选", "HK1", "JP1"]);
+
+        // 其他区域组生成
+        assert!(find("香港优选").is_some());
+        assert!(find("日本优选").is_some());
+    }
+
+    /// 区域分组：region_map 为 None（旧 profile）→ 完全退化为当前行为，
+    /// 人工优选=[自动优选, 全部节点]，无动态区域组。
+    #[test]
+    fn build_runtime_config_region_none_falls_back_to_flat_behavior() {
+        let app = Config::default();
+        let profile = r#"
+proxies:
+  - name: N1
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+"#;
+        let runtime = build_runtime_config(&app, Some(profile), None).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
+
+        let names: Vec<&str> = groups
+            .iter()
+            .filter_map(|g| g.get("name").and_then(|n| n.as_str()))
+            .collect();
+        // 固定 6 组，无任何动态区域组
+        assert_eq!(
+            names,
+            vec![
+                "GLOBAL",
+                "扶梯出行",
+                "人工智能",
+                "影音视听",
+                "人工优选",
+                "自动优选"
+            ]
+        );
+
+        let manual = groups
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("人工优选"))
+            .unwrap();
+        let manual_names: Vec<&str> = manual
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(manual_names, vec!["自动优选", "N1"]);
+    }
+
+    /// 区域分组：节点名与区域组名冲突（如节点恰好叫"香港优选"）→ 组名加 (region) 后缀。
+    #[test]
+    fn build_runtime_config_region_group_name_collision_gets_suffix() {
+        let app = Config::default();
+        let profile = r#"
+proxies:
+  - name: 香港优选
+    type: ss
+    server: 1.2.4.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+"#;
+        let mut region = std::collections::HashMap::new();
+        region.insert("香港优选".to_string(), "HK".to_string());
+
+        let runtime = build_runtime_config(&app, Some(profile), Some(&region)).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
+        let names: Vec<&str> = groups
+            .iter()
+            .filter_map(|g| g.get("name").and_then(|n| n.as_str()))
+            .collect();
+        assert!(
+            names.contains(&"香港优选 (region)"),
+            "collision must be suffixed: {:?}",
+            names
+        );
+        // 节点名本身保持不变
+        let node_names: Vec<&str> = map
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+            .collect();
+        assert_eq!(node_names, vec!["香港优选"]);
+    }
+
     #[test]
     fn build_runtime_config_subscription_restores_full_group_structure() {
         // 有真实节点时自动优选必须恢复生成，且只含真实节点名。
@@ -572,7 +1035,7 @@ proxies:
     cipher: aes-128-gcm
     password: pwd
 "#;
-        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let runtime = build_runtime_config(&app, Some(profile), None).unwrap();
         let groups = runtime
             .as_mapping()
             .unwrap()
@@ -635,7 +1098,7 @@ rules:
   - MATCH,"🚀 节点选择"
 "#;
 
-        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let runtime = build_runtime_config(&app, Some(profile), None).unwrap();
         let map = runtime.as_mapping().unwrap();
 
         // 应用固定结构不被订阅覆盖：内置 6 组（GLOBAL + 5）
@@ -670,7 +1133,7 @@ rules:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(manual_names, vec!["Fast"]);
+        assert_eq!(manual_names, vec!["自动优选", "Fast"]);
         let auto = groups
             .iter()
             .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选"))
@@ -730,7 +1193,7 @@ proxies:
     password: x
 "#;
 
-        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let runtime = build_runtime_config(&app, Some(profile), None).unwrap();
         let map = runtime.as_mapping().unwrap();
 
         // 受控键保持应用值
@@ -820,7 +1283,7 @@ proxies:
         app.extra.insert("proxies".into(), proxies);
 
         // 无激活 Profile（read_active_profile → None）的典型导入场景
-        let runtime = build_runtime_config(&app, None).unwrap();
+        let runtime = build_runtime_config(&app, None, None).unwrap();
         assert_eq!(
             runtime
                 .as_mapping()
@@ -852,7 +1315,7 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(names, vec!["Imported"]);
+        assert_eq!(names, vec!["自动优选", "Imported"]);
     }
 
     /// 激活 Profile 带空 `proxies:` 列表时不得遮蔽导入节点（Some([]) 曾使
@@ -867,7 +1330,7 @@ proxies:
         app.extra
             .insert("proxies".into(), nodes.get("proxies").unwrap().clone());
 
-        let runtime = build_runtime_config(&app, Some("proxies: []\n")).unwrap();
+        let runtime = build_runtime_config(&app, Some("proxies: []\n"), None).unwrap();
         let map = runtime.as_mapping().unwrap();
         assert_eq!(
             map.get("proxies").unwrap().as_sequence().map(|s| s.len()),
@@ -903,7 +1366,7 @@ proxies:
     cipher: aes-128-gcm
     password: y
 "#;
-        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let runtime = build_runtime_config(&app, Some(profile), None).unwrap();
         let names: Vec<String> = runtime
             .as_mapping()
             .unwrap()
@@ -922,10 +1385,10 @@ proxies:
     fn sniffer_is_opt_in_and_never_from_subscription() {
         let mut app = Config::default();
         let profile = "sniffer:\n  enable: true\n  evil: 1\nproxies: []\n";
-        let off = build_runtime_config(&app, Some(profile)).unwrap();
+        let off = build_runtime_config(&app, Some(profile), None).unwrap();
         assert!(off.as_mapping().unwrap().get("sniffer").is_none());
         app.general.sniffer = true;
-        let on = build_runtime_config(&app, Some(profile)).unwrap();
+        let on = build_runtime_config(&app, Some(profile), None).unwrap();
         let sn = on.as_mapping().unwrap().get("sniffer").unwrap();
         assert_eq!(sn.get("enable").and_then(|v| v.as_bool()), Some(true));
         assert!(
@@ -943,7 +1406,7 @@ proxies:
     fn tun_strict_route_and_no_null_interface_name() {
         let mut app = Config::default();
         app.tun.strict_route = true;
-        let rt = build_runtime_config(&app, None).unwrap();
+        let rt = build_runtime_config(&app, None, None).unwrap();
         let tun = rt.as_mapping().unwrap().get("tun").unwrap();
         assert_eq!(
             tun.get("strict-route").and_then(|v| v.as_bool()),
@@ -1016,7 +1479,7 @@ rule-providers:
     path: "C:\\evil.yaml"
 "#;
 
-        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let runtime = build_runtime_config(&app, Some(profile), None).unwrap();
         let map = runtime.as_mapping().unwrap();
 
         // proxy-providers 不透传
@@ -1076,7 +1539,7 @@ rule-providers:
     fn build_runtime_config_emits_full_tun_section() {
         let mut app = Config::default();
         app.tun.enable = true;
-        let runtime = build_runtime_config(&app, None).unwrap();
+        let runtime = build_runtime_config(&app, None, None).unwrap();
         let tun = runtime
             .as_mapping()
             .unwrap()
@@ -1120,7 +1583,7 @@ rule-providers:
         for stack in ["mixed", "system", "gvisor"] {
             let mut app = Config::default();
             app.tun.stack = stack.to_string();
-            let runtime = build_runtime_config(&app, None).unwrap();
+            let runtime = build_runtime_config(&app, None, None).unwrap();
             let tun = runtime
                 .as_mapping()
                 .unwrap()

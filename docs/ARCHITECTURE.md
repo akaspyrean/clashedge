@@ -31,7 +31,7 @@ scripts/
   ci/quality.ps1        # 唯一质量门（CI 与 Release 共用）
   windows/              # build-portable.ps1、scan-portable-paths.ps1
   release/make-update-manifest.py
-tests/fixtures/         # 跨语言共享的测试夹具
+tests/                  # 跨语言共享的测试夹具（Rust 测试使用内联 YAML，无需外部文件）
 build/assets/           # prepare.ps1 的缓存与 staging（gitignored）
 ```
 
