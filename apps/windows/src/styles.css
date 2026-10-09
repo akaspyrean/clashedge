@@ -12,132 +12,185 @@
 @import "./styles/legacy-aliases.css";
 @import "./styles/fonts.css";
 
-/* ---- Element Plus 主题映射（T2 将改为 --ce-* 直连）---- */
+/* ---- Element Plus 主题映射 ----
+ * 彩色「文字/图标」位置统一取 *-fg；「填充」位置（主按钮、开关、选中单选/复选、
+ * 危险按钮）在下方单独指回 --ce-accent-bg / --ce-danger-bg 并配白字，避免同一个
+ * 蓝色同时承担文字与填充两个角色而两头不达标（见设计规范 §3.1）。
+ * 色阶约定：light-3/5/7/8/9 = 主色向底色混合 70/50/30/20/10%；dark-2 = 主色向反色混合 80%。 */
 :root {
-  /* ---- Element Plus 主题映射（浅色）----
-   * 色阶按 EP 约定派生：light-3/5/7/8/9 = 主色向白混合 70/50/30/20/10%，
-   * dark-2 = 主色向黑混合 80%。 */
-  --el-color-primary: var(--accent);
-  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #fff);
-  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #fff);
-  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #fff);
-  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #fff);
-  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #fff);
-  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #000);
+  --el-color-primary: var(--ce-accent-fg);
+  --el-color-primary-light-3: color-mix(in srgb, var(--ce-accent-fg) 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--ce-accent-fg) 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--ce-accent-fg) 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--ce-accent-fg) 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--ce-accent-fg) 10%, #fff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--ce-accent-fg) 80%, #000);
 
-  --el-color-success: var(--done);
-  --el-color-success-light-3: color-mix(in srgb, var(--done) 70%, #fff);
-  --el-color-success-light-5: color-mix(in srgb, var(--done) 50%, #fff);
-  --el-color-success-light-7: color-mix(in srgb, var(--done) 30%, #fff);
-  --el-color-success-light-8: color-mix(in srgb, var(--done) 20%, #fff);
-  --el-color-success-light-9: color-mix(in srgb, var(--done) 10%, #fff);
-  --el-color-success-dark-2: color-mix(in srgb, var(--done) 80%, #000);
+  --el-color-success: var(--ce-success-fg);
+  --el-color-success-light-3: color-mix(in srgb, var(--ce-success-fg) 70%, #fff);
+  --el-color-success-light-5: color-mix(in srgb, var(--ce-success-fg) 50%, #fff);
+  --el-color-success-light-7: color-mix(in srgb, var(--ce-success-fg) 30%, #fff);
+  --el-color-success-light-8: color-mix(in srgb, var(--ce-success-fg) 20%, #fff);
+  --el-color-success-light-9: color-mix(in srgb, var(--ce-success-fg) 10%, #fff);
+  --el-color-success-dark-2: color-mix(in srgb, var(--ce-success-fg) 80%, #000);
 
-  --el-color-warning: var(--approval);
-  --el-color-warning-light-3: color-mix(in srgb, var(--approval) 70%, #fff);
-  --el-color-warning-light-5: color-mix(in srgb, var(--approval) 50%, #fff);
-  --el-color-warning-light-7: color-mix(in srgb, var(--approval) 30%, #fff);
-  --el-color-warning-light-8: color-mix(in srgb, var(--approval) 20%, #fff);
-  --el-color-warning-light-9: color-mix(in srgb, var(--approval) 10%, #fff);
-  --el-color-warning-dark-2: color-mix(in srgb, var(--approval) 80%, #000);
+  --el-color-warning: var(--ce-warning-fg);
+  --el-color-warning-light-3: color-mix(in srgb, var(--ce-warning-fg) 70%, #fff);
+  --el-color-warning-light-5: color-mix(in srgb, var(--ce-warning-fg) 50%, #fff);
+  --el-color-warning-light-7: color-mix(in srgb, var(--ce-warning-fg) 30%, #fff);
+  --el-color-warning-light-8: color-mix(in srgb, var(--ce-warning-fg) 20%, #fff);
+  --el-color-warning-light-9: color-mix(in srgb, var(--ce-warning-fg) 10%, #fff);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--ce-warning-fg) 80%, #000);
 
-  --el-color-danger: var(--error);
-  --el-color-danger-light-3: color-mix(in srgb, var(--error) 70%, #fff);
-  --el-color-danger-light-5: color-mix(in srgb, var(--error) 50%, #fff);
-  --el-color-danger-light-7: color-mix(in srgb, var(--error) 30%, #fff);
-  --el-color-danger-light-8: color-mix(in srgb, var(--error) 20%, #fff);
-  --el-color-danger-light-9: color-mix(in srgb, var(--error) 10%, #fff);
-  --el-color-danger-dark-2: color-mix(in srgb, var(--error) 80%, #000);
+  --el-color-danger: var(--ce-danger-fg);
+  --el-color-danger-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, #fff);
+  --el-color-danger-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, #fff);
+  --el-color-danger-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, #fff);
+  --el-color-danger-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, #fff);
+  --el-color-danger-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, #fff);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #000);
 
-  --el-color-error: var(--error);
-  --el-color-error-light-3: color-mix(in srgb, var(--error) 70%, #fff);
-  --el-color-error-light-5: color-mix(in srgb, var(--error) 50%, #fff);
-  --el-color-error-light-7: color-mix(in srgb, var(--error) 30%, #fff);
-  --el-color-error-light-8: color-mix(in srgb, var(--error) 20%, #fff);
-  --el-color-error-light-9: color-mix(in srgb, var(--error) 10%, #fff);
-  --el-color-error-dark-2: color-mix(in srgb, var(--error) 80%, #000);
+  --el-color-error: var(--ce-danger-fg);
+  --el-color-error-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, #fff);
+  --el-color-error-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, #fff);
+  --el-color-error-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, #fff);
+  --el-color-error-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, #fff);
+  --el-color-error-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, #fff);
+  --el-color-error-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #000);
 
-  --el-color-info: var(--idle);
-  --el-color-info-light-3: color-mix(in srgb, var(--idle) 70%, #fff);
-  --el-color-info-light-5: color-mix(in srgb, var(--idle) 50%, #fff);
-  --el-color-info-light-7: color-mix(in srgb, var(--idle) 30%, #fff);
-  --el-color-info-light-8: color-mix(in srgb, var(--idle) 20%, #fff);
-  --el-color-info-light-9: color-mix(in srgb, var(--idle) 10%, #fff);
-  --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #000);
+  --el-color-info: var(--ce-idle);
+  --el-color-info-light-3: color-mix(in srgb, var(--ce-idle) 70%, #fff);
+  --el-color-info-light-5: color-mix(in srgb, var(--ce-idle) 50%, #fff);
+  --el-color-info-light-7: color-mix(in srgb, var(--ce-idle) 30%, #fff);
+  --el-color-info-light-8: color-mix(in srgb, var(--ce-idle) 20%, #fff);
+  --el-color-info-light-9: color-mix(in srgb, var(--ce-idle) 10%, #fff);
+  --el-color-info-dark-2: color-mix(in srgb, var(--ce-idle) 80%, #000);
 }
 
 html[data-theme="dark"] {
-  /* ---- Element Plus 主题映射（深色）----
-   * EP 深色约定：light-3/5/7/8/9 = 主色向深色底（--bg-app）混合 70/50/30/20/10%，
-   * dark-2 = 主色向白混合 80%。 */
-  --el-color-primary: var(--accent);
-  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #101214);
-  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #101214);
-  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #101214);
-  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #101214);
-  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #101214);
-  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #fff);
+  --el-color-primary: var(--ce-accent-fg);
+  --el-color-primary-light-3: color-mix(in srgb, var(--ce-accent-fg) 70%, var(--ce-bg-page));
+  --el-color-primary-light-5: color-mix(in srgb, var(--ce-accent-fg) 50%, var(--ce-bg-page));
+  --el-color-primary-light-7: color-mix(in srgb, var(--ce-accent-fg) 30%, var(--ce-bg-page));
+  --el-color-primary-light-8: color-mix(in srgb, var(--ce-accent-fg) 20%, var(--ce-bg-page));
+  --el-color-primary-light-9: color-mix(in srgb, var(--ce-accent-fg) 10%, var(--ce-bg-page));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--ce-accent-fg) 80%, #fff);
 
-  --el-color-success: var(--done);
-  --el-color-success-light-3: color-mix(in srgb, var(--done) 70%, #101214);
-  --el-color-success-light-5: color-mix(in srgb, var(--done) 50%, #101214);
-  --el-color-success-light-7: color-mix(in srgb, var(--done) 30%, #101214);
-  --el-color-success-light-8: color-mix(in srgb, var(--done) 20%, #101214);
-  --el-color-success-light-9: color-mix(in srgb, var(--done) 10%, #101214);
-  --el-color-success-dark-2: color-mix(in srgb, var(--done) 80%, #fff);
+  --el-color-success: var(--ce-success-fg);
+  --el-color-success-light-3: color-mix(in srgb, var(--ce-success-fg) 70%, var(--ce-bg-page));
+  --el-color-success-light-5: color-mix(in srgb, var(--ce-success-fg) 50%, var(--ce-bg-page));
+  --el-color-success-light-7: color-mix(in srgb, var(--ce-success-fg) 30%, var(--ce-bg-page));
+  --el-color-success-light-8: color-mix(in srgb, var(--ce-success-fg) 20%, var(--ce-bg-page));
+  --el-color-success-light-9: color-mix(in srgb, var(--ce-success-fg) 10%, var(--ce-bg-page));
+  --el-color-success-dark-2: color-mix(in srgb, var(--ce-success-fg) 80%, #fff);
 
-  --el-color-warning: var(--approval);
-  --el-color-warning-light-3: color-mix(in srgb, var(--approval) 70%, #101214);
-  --el-color-warning-light-5: color-mix(in srgb, var(--approval) 50%, #101214);
-  --el-color-warning-light-7: color-mix(in srgb, var(--approval) 30%, #101214);
-  --el-color-warning-light-8: color-mix(in srgb, var(--approval) 20%, #101214);
-  --el-color-warning-light-9: color-mix(in srgb, var(--approval) 10%, #101214);
-  --el-color-warning-dark-2: color-mix(in srgb, var(--approval) 80%, #fff);
+  --el-color-warning: var(--ce-warning-fg);
+  --el-color-warning-light-3: color-mix(in srgb, var(--ce-warning-fg) 70%, var(--ce-bg-page));
+  --el-color-warning-light-5: color-mix(in srgb, var(--ce-warning-fg) 50%, var(--ce-bg-page));
+  --el-color-warning-light-7: color-mix(in srgb, var(--ce-warning-fg) 30%, var(--ce-bg-page));
+  --el-color-warning-light-8: color-mix(in srgb, var(--ce-warning-fg) 20%, var(--ce-bg-page));
+  --el-color-warning-light-9: color-mix(in srgb, var(--ce-warning-fg) 10%, var(--ce-bg-page));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--ce-warning-fg) 80%, #fff);
 
-  --el-color-danger: var(--error);
-  --el-color-danger-light-3: color-mix(in srgb, var(--error) 70%, #101214);
-  --el-color-danger-light-5: color-mix(in srgb, var(--error) 50%, #101214);
-  --el-color-danger-light-7: color-mix(in srgb, var(--error) 30%, #101214);
-  --el-color-danger-light-8: color-mix(in srgb, var(--error) 20%, #101214);
-  --el-color-danger-light-9: color-mix(in srgb, var(--error) 10%, #101214);
-  --el-color-danger-dark-2: color-mix(in srgb, var(--error) 80%, #fff);
+  --el-color-danger: var(--ce-danger-fg);
+  --el-color-danger-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, var(--ce-bg-page));
+  --el-color-danger-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, var(--ce-bg-page));
+  --el-color-danger-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, var(--ce-bg-page));
+  --el-color-danger-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, var(--ce-bg-page));
+  --el-color-danger-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, var(--ce-bg-page));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #fff);
 
-  --el-color-error: var(--error);
-  --el-color-error-light-3: color-mix(in srgb, var(--error) 70%, #101214);
-  --el-color-error-light-5: color-mix(in srgb, var(--error) 50%, #101214);
-  --el-color-error-light-7: color-mix(in srgb, var(--error) 30%, #101214);
-  --el-color-error-light-8: color-mix(in srgb, var(--error) 20%, #101214);
-  --el-color-error-light-9: color-mix(in srgb, var(--error) 10%, #101214);
-  --el-color-error-dark-2: color-mix(in srgb, var(--error) 80%, #fff);
+  --el-color-error: var(--ce-danger-fg);
+  --el-color-error-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, var(--ce-bg-page));
+  --el-color-error-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, var(--ce-bg-page));
+  --el-color-error-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, var(--ce-bg-page));
+  --el-color-error-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, var(--ce-bg-page));
+  --el-color-error-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, var(--ce-bg-page));
+  --el-color-error-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #fff);
 
-  --el-color-info: var(--idle);
-  --el-color-info-light-3: color-mix(in srgb, var(--idle) 70%, #101214);
-  --el-color-info-light-5: color-mix(in srgb, var(--idle) 50%, #101214);
-  --el-color-info-light-7: color-mix(in srgb, var(--idle) 30%, #101214);
-  --el-color-info-light-8: color-mix(in srgb, var(--idle) 20%, #101214);
-  --el-color-info-light-9: color-mix(in srgb, var(--idle) 10%, #101214);
-  --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #fff);
+  --el-color-info: var(--ce-idle);
+  --el-color-info-light-3: color-mix(in srgb, var(--ce-idle) 70%, var(--ce-bg-page));
+  --el-color-info-light-5: color-mix(in srgb, var(--ce-idle) 50%, var(--ce-bg-page));
+  --el-color-info-light-7: color-mix(in srgb, var(--ce-idle) 30%, var(--ce-bg-page));
+  --el-color-info-light-8: color-mix(in srgb, var(--ce-idle) 20%, var(--ce-bg-page));
+  --el-color-info-light-9: color-mix(in srgb, var(--ce-idle) 10%, var(--ce-bg-page));
+  --el-color-info-dark-2: color-mix(in srgb, var(--ce-idle) 80%, #fff);
 }
 
-/* ---- 深色主题 EP 对比度修正 ----
- * 深色 --accent 为浅蓝 #77A7FF，Element Plus 默认在 accent 底上使用白字，
- * 对比度不足（WCAG < 3:1）。主按钮 / 选中单选按钮文字改用深色保证可读性。 */
-html[data-theme="dark"] .el-button--primary {
-  --el-button-text-color: #101214;
-  --el-button-hover-text-color: #101214;
-  --el-button-active-text-color: #101214;
-  --el-button-disabled-text-color: rgba(16, 18, 20, 0.5);
+/* ---- 填充位置：品牌蓝 / 危险红底 + 白字（对比度 ≥ 4.5:1）---- */
+.el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-text-color: var(--ce-on-accent);
+  --el-button-bg-color: var(--ce-accent-bg);
+  --el-button-border-color: var(--ce-accent-bg);
+  --el-button-hover-text-color: var(--ce-on-accent);
+  --el-button-hover-bg-color: var(--ce-accent-bg-hover);
+  --el-button-hover-border-color: var(--ce-accent-bg-hover);
+  --el-button-active-text-color: var(--ce-on-accent);
+  --el-button-active-bg-color: var(--ce-accent-bg-press);
+  --el-button-active-border-color: var(--ce-accent-bg-press);
+  --el-button-disabled-text-color: var(--ce-text-disabled);
+  --el-button-disabled-bg-color: var(--ce-fill-disabled);
+  --el-button-disabled-border-color: var(--ce-fill-disabled);
 }
 
-html[data-theme="dark"] .el-button--primary.is-plain,
-html[data-theme="dark"] .el-button--primary.is-text,
-html[data-theme="dark"] .el-button--primary.is-link {
-  --el-button-hover-text-color: #101214;
-  --el-button-active-text-color: #101214;
+.el-button--danger:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-text-color: var(--ce-on-accent);
+  --el-button-bg-color: var(--ce-danger-bg);
+  --el-button-border-color: var(--ce-danger-bg);
+  --el-button-hover-text-color: var(--ce-on-accent);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--ce-danger-bg) 88%, #000);
+  --el-button-hover-border-color: color-mix(in srgb, var(--ce-danger-bg) 88%, #000);
+  --el-button-active-text-color: var(--ce-on-accent);
+  --el-button-active-bg-color: color-mix(in srgb, var(--ce-danger-bg) 78%, #000);
+  --el-button-active-border-color: color-mix(in srgb, var(--ce-danger-bg) 78%, #000);
+  --el-button-disabled-text-color: var(--ce-text-disabled);
+  --el-button-disabled-bg-color: var(--ce-fill-disabled);
+  --el-button-disabled-border-color: var(--ce-fill-disabled);
 }
 
-html[data-theme="dark"] .el-radio-button {
-  --el-radio-button-checked-text-color: #101214;
+.el-button:not(.is-disabled):active {
+  transform: scale(0.98);
+}
+
+.el-switch {
+  --el-switch-on-color: var(--ce-accent-bg);
+  --el-switch-off-color: var(--ce-switch-off);
+}
+
+.el-radio-button {
+  --el-radio-button-checked-bg-color: var(--ce-accent-bg);
+  --el-radio-button-checked-text-color: var(--ce-on-accent);
+  --el-radio-button-checked-border-color: var(--ce-accent-bg);
+}
+
+.el-checkbox {
+  --el-checkbox-checked-bg-color: var(--ce-accent-bg);
+  --el-checkbox-checked-input-border-color: var(--ce-accent-bg);
+  --el-checkbox-checked-icon-color: var(--ce-on-accent);
+}
+
+.el-radio {
+  --el-radio-input-border-color-hover: var(--ce-accent-bg);
+}
+
+.el-radio__input.is-checked .el-radio__inner {
+  background: var(--ce-accent-bg);
+  border-color: var(--ce-accent-bg);
+}
+
+/* Toast（ElMessage）：设计规范里的反色 Toast。 */
+.el-message {
+  --el-message-bg-color: var(--ce-toast-bg);
+  --el-message-border-color: transparent;
+  --el-message-text-color: var(--ce-toast-text);
+  --el-message-close-icon-color: var(--ce-toast-text);
+  min-height: 44px;
+  border-radius: var(--ce-radius-md);
+  box-shadow: var(--ce-shadow-e2);
+}
+
+.el-message .el-message__content {
+  color: var(--ce-toast-text);
 }
 
 body {
@@ -193,12 +246,10 @@ body {
   max-width: 1080px;
 }
 
-/* 页面标题：Flyme 式轻盈层级——中字号中字重，不做视觉重锤。 */
+/* 页面标题：28/36/600（--ce-type-title-1）。 */
 .page-title {
-  margin: 0 0 16px;
-  font-size: 17px;
-  font-weight: 500;
-  letter-spacing: 0.2px;
+  margin: 0 0 var(--ce-space-5);
+  font: var(--ce-type-title-1);
   color: var(--text-primary);
 }
 
@@ -206,20 +257,20 @@ body {
  * 统一卡片 / 侧边栏 / 滚动条 / 空态，使各视图层次一致、克制的阴影与描边。
  * 原则：只在现有结构上加细节，不做布局重构。 */
 
-/* Element Plus 组件圆角与设计 token 对齐（按钮/输入框/下拉/开关等统一 8px）。 */
+/* Element Plus 组件圆角与设计 token 对齐：按钮/输入框 md，小控件 sm。 */
 :root,
 html[data-theme="dark"] {
-  --el-border-radius-base: var(--r-sm);
-  --el-border-radius-small: 6px;
-  --el-border-radius-round: 999px;
+  --el-border-radius-base: var(--ce-radius-md);
+  --el-border-radius-small: var(--ce-radius-sm);
+  --el-border-radius-round: var(--ce-radius-full);
 }
 
 /* 卡片：默认无阴影，靠底色与极细描边分层；hover 轻微抬升（可点击卡片场景）。 */
 .el-card {
   --el-card-bg-color: var(--bg-surface);
   --el-card-border-color: var(--card-border);
-  --el-card-border-radius: var(--r-md);
-  border-radius: var(--r-md);
+  --el-card-border-radius: var(--ce-radius-lg);
+  border-radius: var(--ce-radius-lg);
   box-shadow: none;
 }
 
@@ -321,7 +372,8 @@ html[data-theme="dark"] {
 
 /* 对话框：更明确的圆角与浅阴影，避免默认直角生硬。 */
 .el-dialog {
-  border-radius: var(--r-md);
+  border-radius: var(--ce-radius-xl);
+  box-shadow: var(--ce-shadow-e3);
   --el-dialog-bg-color: var(--bg-surface);
 }
 
