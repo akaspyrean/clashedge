@@ -321,7 +321,7 @@ pub async fn import_profile(app: AppHandle, name: String, content: String) -> Re
     validate_subscription_content(&content)?;
 
     // 归一化为 proxies-only 节点集（兼容 proxy-providers 型订阅）
-    let (normalized, _warnings) = normalize_subscription_body(&app, &content).await?;
+    let (normalized, _warnings) = normalize_subscription_body(&app, &name, &content).await?;
     let normalized = format!("# profile: {}\n{}", name, normalized);
     validate_profile_strict(&normalized)?;
 
@@ -422,7 +422,7 @@ pub async fn import_profile_from_url(
     // 归一化为 proxies-only 节点集：兼容 proxy-providers 型订阅（Issue #1）。
     // 只保留节点，订阅自带的 groups/rules/hosts 等不进入存储（应用掌握策略结构）。
     let body = strip_subscribe_header(&text);
-    let (normalized, warnings) = normalize_subscription_body(&app, &body).await?;
+    let (normalized, warnings) = normalize_subscription_body(&app, &name, &body).await?;
     if !warnings.is_empty() {
         warn!("Import '{}': {}", redact_url(&url), warnings.join("；"));
     }
