@@ -1,15 +1,14 @@
 /* src/styles.css - 全局样式（Clear Edge v2）
  * Token 源：design/tokens.json -> npm run tokens -> styles/tokens.css（自动生成，勿手改）。
- * 旧变量名经 styles/legacy-aliases.css 映射到 --ce-* ；视图迁移完成后删除别名文件（T10）。
+ * 所有视图 / 组件只引用 --ce-*（旧变量名别名已删除）。
  * 规范：docs/redesign/AI_DEV_INSTRUCTIONS.md（优先于 docs/DESIGN_SYSTEM.md v1.0）。
  * Element Plus 深色主题（dark/css-vars.css）依赖 html.dark class，
  * 故 theme.ts/main.ts 同时维护 data-theme 属性与 dark class（EP）。
  * 窗口原生底色由 tauri.conf.json 的 backgroundColor 固定（深色），不再由前端同步。 */
 
-/* 顺序：EP dark css-vars -> tokens -> legacy aliases -> 字体 -> 其余规则 */
+/* 顺序：EP dark css-vars -> tokens -> 字体 -> 其余规则 */
 @import "element-plus/theme-chalk/dark/css-vars.css";
 @import "./styles/tokens.css";
-@import "./styles/legacy-aliases.css";
 @import "./styles/fonts.css";
 
 /* ---- Element Plus 主题映射 ----
@@ -195,9 +194,9 @@ html[data-theme="dark"] {
 
 body {
   margin: 0;
-  font-family: var(--font);
-  background-color: var(--bg-app);
-  color: var(--text-primary);
+  font-family: var(--ce-font-sans);
+  background-color: var(--ce-bg-page);
+  color: var(--ce-text-primary);
   height: 100vh;
   overflow: hidden;
 }
@@ -212,8 +211,8 @@ body {
 }
 
 .app-aside {
-  background-color: var(--bg-sidebar);
-  border-right: 1px solid var(--border-subtle);
+  background-color: var(--ce-bg-sidebar);
+  border-right: 1px solid var(--ce-border);
   display: flex;
   flex-direction: column;
 }
@@ -223,22 +222,22 @@ body {
   border-right: none;
   background: transparent;
   --el-menu-bg-color: transparent;
-  --el-menu-hover-bg-color: var(--interactive-hover);
-  --el-menu-active-color: var(--accent);
-  --el-menu-text-color: var(--text-secondary);
+  --el-menu-hover-bg-color: var(--ce-fill-hover);
+  --el-menu-active-color: var(--ce-accent-fg);
+  --el-menu-text-color: var(--ce-text-secondary);
 }
 
 .app-footer {
   flex: none;
   padding: 12px 20px;
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--ce-text-tertiary);
 }
 
 .app-main {
   padding: 20px 24px;
   overflow: auto;
-  background-color: var(--bg-app);
+  background-color: var(--ce-bg-page);
 }
 
 /* ---- 通用页面 ---- */
@@ -250,7 +249,7 @@ body {
 .page-title {
   margin: 0 0 var(--ce-space-5);
   font: var(--ce-type-title-1);
-  color: var(--text-primary);
+  color: var(--ce-text-primary);
 }
 
 /* ---- 精致化精修 ----
@@ -267,8 +266,8 @@ html[data-theme="dark"] {
 
 /* 卡片：默认无阴影，靠底色与极细描边分层；hover 轻微抬升（可点击卡片场景）。 */
 .el-card {
-  --el-card-bg-color: var(--bg-surface);
-  --el-card-border-color: var(--card-border);
+  --el-card-bg-color: var(--ce-bg-surface);
+  --el-card-border-color: var(--ce-border);
   --el-card-border-radius: var(--ce-radius-lg);
   border-radius: var(--ce-radius-lg);
   box-shadow: none;
@@ -280,37 +279,37 @@ html[data-theme="dark"] {
 .el-card__header {
   font-size: 14px;
   font-weight: 500;
-  padding: var(--space-3) var(--space-5);
+  padding: var(--ce-space-3) var(--ce-space-5);
 }
 
 /* 侧边栏：选中项仅用淡底色 + 强调色文字（单一强调，不做双重指示），
  * 圆角胶囊比整块高亮更轻盈。 */
 .app-menu .el-menu-item {
   position: relative;
-  border-radius: var(--r-sm);
+  border-radius: var(--ce-radius-md);
   margin: 2px 8px;
   height: 40px;
   line-height: 40px;
   transition:
-    background-color var(--dur-fast) ease,
-    color var(--dur-fast) ease;
+    background-color var(--ce-dur-fast) ease,
+    color var(--ce-dur-fast) ease;
 }
 
 .app-menu .el-menu-item.is-active {
-  background: var(--menu-active-bg);
-  color: var(--accent);
+  background: var(--ce-accent-soft);
+  color: var(--ce-accent-fg);
   font-weight: 500;
 }
 
 .app-menu .el-menu-item:hover {
-  background: var(--interactive-hover);
-  color: var(--text-primary);
+  background: var(--ce-fill-hover);
+  color: var(--ce-text-primary);
 }
 
 /* 全局细滚动条：贴合深/浅主题，避免系统默认粗滚动条破坏精致感。 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border-subtle) transparent;
+  scrollbar-color: var(--ce-border) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -319,12 +318,12 @@ html[data-theme="dark"] {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-subtle);
+  background: var(--ce-border);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
+  background: var(--ce-text-tertiary);
 }
 
 ::-webkit-scrollbar-track {
@@ -333,30 +332,30 @@ html[data-theme="dark"] {
 
 /* 表格：表头与行间分隔更柔和，圆角由容器决定（ConnectionsView 已设）。 */
 .el-table {
-  --el-table-header-text-color: var(--text-tertiary);
-  --el-table-text-color: var(--text-primary);
-  --el-table-border-color: var(--border-subtle);
-  --el-table-row-hover-bg-color: var(--interactive-hover);
+  --el-table-header-text-color: var(--ce-text-tertiary);
+  --el-table-text-color: var(--ce-text-primary);
+  --el-table-border-color: var(--ce-border);
+  --el-table-row-hover-bg-color: var(--ce-fill-hover);
 }
 
 /* 空态：图标/文案颜色跟随文本弱化层级，间距更舒展；
  * 插画收敛到 128px，避免大箱子图霸占视觉中心。 */
 .el-empty {
   --el-empty-padding: 32px 0;
-  --el-empty-fill-color-0: var(--bg-soft);
-  --el-empty-fill-color-1: var(--border-subtle);
-  --el-empty-fill-color-2: var(--bg-soft);
-  --el-empty-fill-color-3: var(--border-subtle);
-  --el-empty-fill-color-4: var(--bg-soft);
-  --el-empty-fill-color-5: var(--border-subtle);
-  --el-empty-fill-color-6: var(--bg-soft);
-  --el-empty-fill-color-7: var(--border-subtle);
-  --el-empty-fill-color-8: var(--bg-soft);
-  --el-empty-fill-color-9: var(--border-subtle);
+  --el-empty-fill-color-0: var(--ce-fill-soft);
+  --el-empty-fill-color-1: var(--ce-border);
+  --el-empty-fill-color-2: var(--ce-fill-soft);
+  --el-empty-fill-color-3: var(--ce-border);
+  --el-empty-fill-color-4: var(--ce-fill-soft);
+  --el-empty-fill-color-5: var(--ce-border);
+  --el-empty-fill-color-6: var(--ce-fill-soft);
+  --el-empty-fill-color-7: var(--ce-border);
+  --el-empty-fill-color-8: var(--ce-fill-soft);
+  --el-empty-fill-color-9: var(--ce-border);
 }
 
 .el-empty__description {
-  color: var(--text-tertiary);
+  color: var(--ce-text-tertiary);
 }
 
 .el-empty__image {
@@ -374,23 +373,23 @@ html[data-theme="dark"] {
 .el-dialog {
   border-radius: var(--ce-radius-xl);
   box-shadow: var(--ce-shadow-e3);
-  --el-dialog-bg-color: var(--bg-surface);
+  --el-dialog-bg-color: var(--ce-bg-surface);
 }
 
 /* 页签（Settings）：选中项用强调色 + 中字重，与侧边导航一致。 */
 .el-tabs__item {
-  color: var(--text-secondary);
-  transition: color var(--dur-fast) ease;
+  color: var(--ce-text-secondary);
+  transition: color var(--ce-dur-fast) ease;
 }
 
 .el-tabs__item.is-active {
-  color: var(--accent);
+  color: var(--ce-accent-fg);
   font-weight: 500;
 }
 
 /* 描述列表（About）：底色随 surface，分隔更含蓄。 */
 .el-descriptions {
-  --el-descriptions-item-bordered-label-background: var(--bg-soft);
+  --el-descriptions-item-bordered-label-background: var(--ce-fill-soft);
 }
 
 /* 卡片：surface 底 + 1px 描边 + lg 圆角 + 内边距 20；卡片里不再嵌套卡片，内部分组用分割线。 */
@@ -412,7 +411,7 @@ html[data-theme="dark"] {
 .el-select__wrapper:focus-visible,
 .el-tabs__item:focus-visible,
 .el-menu-item:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ce-accent-fg);
   outline-offset: 2px;
 }
 

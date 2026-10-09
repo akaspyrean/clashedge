@@ -58,13 +58,13 @@ const hintId = `pref-${uid}-hint`;
 .pref-title {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--ce-text-primary);
 }
 
 .pref-hint {
   margin-top: 2px;
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--ce-text-tertiary);
 }
 
 .pref-control {

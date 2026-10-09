@@ -123,6 +123,6 @@ onUnmounted(() => unlisten?.());
 .pref-hint {
   margin-top: 2px;
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--ce-text-tertiary);
 }
 </style>

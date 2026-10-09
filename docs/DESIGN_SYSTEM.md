@@ -1,165 +1,122 @@
-# ClashEdge Hybrid Design System
+# ClashEdge Design System · Clear Edge v2
 
-> 版本 1.0 · 适用 ClashEdge 桌面端（Tauri + Element Plus）
-> Token 实现：`apps/windows/src/styles.css`（单一事实来源）
-
----
-
-## 0. 品牌性格
-
-> **Quiet Power** —— 安静的力量。
-
-视觉气质：**轻、静、清晰、克制、可靠、有生命力**。
-
-界面不抢戏。层级靠留白与明度海拔表达，不靠装饰；信息密度服务于代理管理场景，不追求"科技感"表演。
+> **版本 2.0** · 适用 ClashEdge Windows 客户端（Tauri 2 + Vue 3 + Element Plus）
+> **v1.0（Hybrid / Quiet Power）已被本版本取代。** v1.0 中「圆角 ≤ 12」「只用 ease 曲线」「禁止缩放动画」等规则不再适用。
+>
+> 单一事实来源：[`design/tokens.json`](../design/tokens.json)。
+> 运行 `npm run tokens`（在 `apps/windows` 下）生成 `src/styles/tokens.css` 与 Android 的 `Tokens.kt`，**不要手改生成文件**。
+> 开发任务拆分与验收见 [`docs/redesign/AI_DEV_INSTRUCTIONS.md`](redesign/AI_DEV_INSTRUCTIONS.md)。
 
 ---
 
-## 1. 设计来源：吸收，不复刻
+## 1. 原则
 
-| 来源 | 吸收什么 | 明确不吸收什么 |
-|------|----------|----------------|
-| **Flyme 3** | 轻盈、留白、内容优先、低装饰、干净的列表节奏 | 拟物残留、强彩色分区 |
-| **Apple HIG** | 排版纪律、4pt 网格间距、克制的交互反馈、动效时长约束、深色海拔分层 | 玻璃拟态、毛玻璃材质、 vibrancy |
-| **ClashEdge 自有** | Gray Blue 中性色系统 + Natural Semantic Colors（自然语义色） | — |
+- **清晰、克制、可读。** 层级靠留白、字号与底色，不靠装饰。
+- **状态不只靠颜色。** 色点必须配形状（圆 / 菱形 / 横杠 / 转圈 / 空心圆）和文字。
+- **数值等宽。** 速率、延迟、流量、端口、计数一律 `font-variant-numeric: tabular-nums`；端口、IP、URL、日志、规则用 `--ce-font-mono`。
+- **一个视图最多一个 primary 按钮。** 品牌蓝只做填充，文字与图标用 `accent-fg`。
+- **不动功能，只改呈现。** 代理组（扶梯出行 · 人工智能 · 影音视听 · 人工优选 · 自动优选，另有隐藏的 GLOBAL）的名称、数量、类型、顺序不可改动。
 
-**融合规则**：冲突时 Apple 的排版与间距纪律 > Flyme 的轻盈气质 > 组件库默认值。
+## 2. 颜色
 
-### 反模式（出现即回归）
+所有颜色都是 `--ce-*` Token，随 `html[data-theme="light|dark"]` 切换。完整数值见 `design/tokens.json`。
 
-```text
-✗ 科技 Dashboard 风        ✗ AI 紫蓝渐变
-✗ 卡片墙（卡片套卡片）      ✗ 玻璃拟态 / backdrop-blur
-✗ 高饱和状态灯             ✗ 圆角大面包（radius > 16px）
-✗ 强阴影                   ✗ 炫技动画（> 300ms 的装饰动效）
-✗ 像素级复刻任何厂商 UI
-```
+| 角色 | Token | 用途 |
+|---|---|---|
+| 页面 / 卡片 / 弹层 | `bg-page` · `bg-surface` · `bg-elevated` | 页面底 / 卡片与侧栏 / 菜单与对话框 |
+| 悬停 / 按下 | `fill-hover` · `fill-soft` | 悬停底 / 按下底、分段控件轨道、搜索框底 |
+| 描边 / 分割 | `border` · `divider` | 1px 描边 / 组内分割线 |
+| 文字 | `text-primary` · `-secondary` · `-tertiary` · `-disabled` | 主 / 次 / 三级（表头、占位）/ 禁用 |
+| 品牌 | `accent-bg`(+`-hover`/`-press`) · `accent-fg` · `accent-soft` · `on-accent` | **accent-bg 只用作填充**（主按钮、开关开启、选中单选，配白字 5.01:1）；**accent-fg 只用作文字或图标**（链接、选中项文字）；accent-soft 选中浅底 |
+| 语义 | `success` · `warning` · `danger` · `pending` 各 `-solid` / `-fg` / `-soft` | **`-solid` 只能用于色点、图标、图表线条，不能用于文字**；彩色文字一律用 `-fg`；`-soft` 为标签与提示的底 |
+| 危险填充 | `danger-bg` | 危险按钮填充，配白字 5.22:1 |
+| 图表 | `chart-down` · `chart-up` · `chart-grid` | 下载 / 上传 / 网格线 |
+| 其他 | `switch-off` · `toast-bg` · `toast-text` · `scrim` · `idle` | 开关关闭轨道 / Toast / 遮罩 / 未运行 |
 
----
+对比度：accent-bg 上白字 5.01:1；danger-bg 上白字 5.22:1；浅色 accent-fg/surface 6.36:1；深色 accent-fg/surface 5.81:1、/accent-soft 5.15:1。新增前景/背景组合必须 ≥ 4.5:1（大字 ≥ 3:1）。
 
-## 2. 无障碍基线：WCAG AA
+## 3. 字体与字号
 
-所有正文/控件文本对其背景 **≥ 4.5:1**；大号文本（≥18.66px bold 或 24px）**≥ 3:1**。
-当前 v1.0 色板实测（相对亮度法）：
+`--ce-font-sans`（Segoe UI Variable → YaHei UI → 系统）、`--ce-font-mono`（JetBrains Mono，OFL，随包附带于 `src/assets/fonts/`）。CSP 只允许 `font-src 'self' data:`，**禁止使用 Google Fonts 或任何 CDN**。
 
-| 前景 / 背景 | 对比度 | 达标 |
-|-------------|--------|------|
-| 深色 text-primary `#F5F6F7` / surface `#191C21` | 15.79 | AAA |
-| 深色 text-secondary `#B9BFC7` / surface | 9.22 | AAA |
-| 深色 text-tertiary `#858D97` / surface | 5.09 | AA |
-| 深色 accent `#4E8FFF` / surface（链接文字） | 5.45 | AA |
-| 深色主按钮：深字 `#101214` / accent 底 `#4E8FFF` | **5.99** | AA |
-| 浅色 text-primary `#1C1F24` / white | 16.52 | AAA |
-| 浅色 text-tertiary `#667085` / white | 4.97 | AA |
-| 浅色主按钮：white / accent `#2A62CC` | 5.65 | AA |
-| 语义色文字（error/done/approval）/ surface | 8.37–10.15 | AAA |
+| Token（桌面 字号/行高/字重） | 用途 |
+|---|---|
+| `type-display` 40/48/700 | 首页速率等关键数值（只用于数值） |
+| `type-title-1` 28/36/600 | 页面标题 `.page-title` |
+| `type-title-2` 20/28/600 | 区块标题、对话框标题 |
+| `type-title-3` 16/24/600 | 卡片标题 |
+| `type-body` 14/22/400（按钮 500） | 正文 |
+| `type-callout` 13/20/400 | 辅助说明 |
+| `type-caption` 12/16/400·500 | 标签、表头、时间 |
+| `type-mono` 13/20/400 | 日志、规则、IP |
 
-**铁律**：
-1. 深色主题主按钮文字用 `--on-accent-strong`（近黑），**禁止改白字**（仅 3.14:1，不达标）。
-2. 新增任何前景/背景组合必须先跑对比度计算再合入。
-3. 语义色只用于语义（错误/成功/警告），不做装饰。
+用法：`font: var(--ce-type-title-3);`，不要写字号字面量。
 
----
+## 4. 形状、间距、阴影、动效、尺寸
 
-## 3. 色彩系统
+- **圆角**：`radius-xs 6 · sm 8 · md 12 · lg 16 · xl 20 · full 999`。按钮、输入框 md；卡片 lg（节点格 14）；对话框 xl；延迟标签 sm。
+- **间距**：`space-1…16`（4 / 8 / 12 / 16 / 20 / 24 / 32 / 40 / 48 / 64）。
+- **阴影**：`shadow-e1`（分段控件选中段）· `e2`（菜单、Toast）· `e3`（对话框）。**卡片默认不加阴影**：1px `border` + surface 底。
+- **动效**：`ease-standard / enter / exit`；`ease-spring` 仅用于开关拇指和主连接按钮；`dur-instant 80 · fast 140 · base 220 · slow 320`。保留 `prefers-reduced-motion` 全局降级。
+- **尺寸**：`control-h 36`（`-sm` 28、`-lg` 44）· `row-h 44` · `icon 20`（描边 1.75）· `sidebar-w 232`（收起 64）。
 
-### 3.1 Gray Blue 中性色（海拔分层）
+## 5. 延迟分级（全局统一，设置中可调阈值）
 
-深色主题按"海拔"递进，相邻层亮度差 ≥ 4%，让表面自己浮起来：
+| 档位 | 条件 | 形状 | 颜色组 | 显示 |
+|---|---|---|---|---|
+| 良好 | ≤ 200 ms | 圆 | success | `86 ms` |
+| 一般 | 201–500 ms | 菱形 | warning | `320 ms` |
+| 较差 | > 500 ms | 横杠 | danger | `860 ms` |
+| 超时 | 超时或失败 | 无 | `fill-soft` 底 + secondary 文字 | `超时` |
+| 测速中 | — | 转圈 | pending | `测速中` |
+| 未测 | 无数据 | 无 | 1px 虚线描边 + tertiary 文字 | `– ms` |
 
-```text
-bg-app     #0E1013   应用底
-bg-sidebar #131519   导航（略高于底）
-bg-surface #191C21   卡片 / 弹层
-bg-raised  #23272E   卡内嵌块 / hover 面
-bg-soft    #262B33   交互反馈底
-```
+读屏文案：「延迟 86 毫秒，良好」。实现：`src/utils/latency.ts` + `components/ui/CeLatencyTag.vue`。
 
-浅色主题镜像同理（app 灰底 → 白卡面 → 灰 raised）。
+## 6. 组件
 
-**用法**：分层优先级 表面底色 > 间距 > 描边。描边只做"确认边界"，不做主要分层手段——`--card-border` 必须比 `--border-subtle` 更弱。
+自有组件在 `src/components/ui/`，都只引用 `--ce-*`：
 
-### 3.2 强调色 Accent
+| 组件 | 说明 |
+|---|---|
+| `CeSegmented` | 分段控件，`role="radiogroup"`，方向键 / Home / End 切换；用于代理模式、主题 |
+| `CeLatencyTag` | 延迟标签，可点击（单击重新测该节点） |
+| `CeNodeTile` | 节点格：覆盖整格的选择按钮 + 独立的延迟标签按钮（不嵌套按钮）；选中 = accent 描边 + 右上角勾 |
+| `CeStatusCore` | 主连接按钮（直径 96）+ 状态文字；停止 / 启动中 / 运行中 / 异常 |
+| `CeTrafficChart` | 60 秒流量图，手写 SVG，单 Y 轴，十字线 + Tooltip，「查看数据表」 |
+| `CeSparkline` | 首页迷你曲线 |
+| `StatusPill` | 状态胶囊：色点形状 + 颜色 + 文字 |
 
-| 主题 | 值 | 性格 |
-|------|-----|------|
-| 深 | `#4E8FFF` | 干净自信的蓝，向 iOS systemBlue(dark) 靠拢 |
-| 浅 | `#2A62CC` | 同色相加深保证对比 |
+Element Plus 通过 `styles.css` 桥接：彩色**文字**位置取 `*-fg`；**填充**位置（主 / 危险按钮、开关、选中单选与复选）指回 `accent-bg` / `danger-bg` 并配白字。按钮按下 `scale(.98)`；焦点环统一 `2px solid var(--ce-accent-bg)`、偏移 2px。
 
-**用量纪律**：一屏内 accent 只出现在「当前选中 / 主操作 / 链接」三种位置。大面积重复出现即为滥用。
+- **卡片**：surface 底 + 1px border + lg 圆角 + 内边距 20–24（全局 `.ce-card`）。**卡片里不再嵌套卡片**，内部分组用 `divider`。
+- **危险操作**走 `useConfirm(..., { danger: true })`：确认按钮写明具体动作（如「删除订阅」），默认焦点在「取消」，按钮顺序 [取消][删除…]。
+- **Toast**（ElMessage）：高 44，`toast-bg`，e2；普通 3s，带操作 5s，错误 6s。
+- **图标**：`lucide-vue-next`，尺寸 20，`stroke-width` 1.75，只用线性图标。不使用 emoji、毛玻璃（`backdrop-filter`）、渐变、装饰性大阴影。
 
-### 3.3 自然语义色（Natural Semantic Colors）
+## 7. 信息架构
 
-| 语义 | 深 | 含义锚点 |
-|------|-----|---------|
-| error | `#FF9A93` | 失败、危险操作（珊瑚红，非纯红） |
-| done/success | `#7EDB99` | 成功、运行中（自然绿） |
-| approval/warning | `#F2B866` | 需注意、待确认（琥珀） |
+侧栏顺序：**首页 / 代理 / 订阅 / 规则 / 连接 / 日志 / 设置**。更名只改 i18n 的值，**不改路由路径和 i18n 键名**（避免影响托盘和测试）。
 
-深色下用粉彩明度（作为文字可读），浅色下用对应加深的墨色调（见 token）。状态表达优先用文字 + 小圆点，禁用高饱和大色块灯。
+| 导航 | 路由 | 视图 |
+|---|---|---|
+| 首页 | `/dashboard` | `DashboardView`：状态核心、实时流量、快捷切换、当前订阅 |
+| 代理 | `/proxies` | `ProxiesView`：策略组列表 + 节点格 |
+| 订阅 | `/profiles` | `ProfilesView`：订阅卡片网格 |
+| 规则 | `/rules` | `RulesView`：只读 |
+| 连接 | `/connections` | `ConnectionsView`：流量图 + 活动连接 |
+| 日志 | `/logs` | `LogsView`：级别筛选 + 正则搜索 |
+| 设置 | `/settings` | `SettingsView`：单页分组 + 搜索 |
 
----
+## 8. 开发规则
 
-## 4. 排版（Apple 纪律）
+1. 视图和组件的样式里**只能引用 `--ce-*` Token 和布局属性**，禁止 HEX、`rgb()`、字号字面量、圆角字面量（`0`、`50%`、`999px` 除外）。CI 会检查（见 §9）。
+2. 新文案同时加进 `src-tauri/resources/i18n/zh-CN.yaml` 和 `en-US.yaml`（托盘与前端共用）。
+3. 所有可交互元素用原生 `<button>` / `<a>` / `<input>` 或 EP 组件；纯图标按钮必须有 `aria-label`。
+4. 改视觉只改 `design/tokens.json` 再运行 `npm run tokens`，不要在视图里临时调色。
+5. 行为变化时同步更新 `*.spec.ts`，不要删测试来让 CI 变绿。
 
-字体栈：`-apple-system, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei"`。
+## 9. 守护（`scripts/ci/quality.ps1`）
 
-| 层级 | 字号/字重 | 用途 |
-|------|-----------|------|
-| page-title | 17px / 500 / letter-spacing 0.2px | 页面标题（轻，不做重锤） |
-| card-title | 14px / 500 | 卡片标题 |
-| body | 14px / 400 | 正文 |
-| secondary | 13px / 400 | 辅助说明 |
-| caption | 12px / 400 | 标签、hint、数字（tabular-nums） |
-| stat-value | 18px / 600 | 唯一允许的大数值强调 |
-
-**规则**：同屏字重不超过两档（400/500，数值除外）；CJK 不使用 italic；层级靠字号与灰阶，不靠加粗堆叠。
-
-## 5. 间距（4pt 网格）
-
-```text
---space-1: 4px   图标与文字
---space-2: 8px   相关元素间
---space-3: 12px  卡片内组间距
---space-4: 16px  卡片间距 / 页面段落
---space-5: 20px  卡片内边距基准
---space-6: 24px  页面左右留白
-```
-
-页面内容最大宽度 1080px；宁可留白，不填满。
-
-## 6. 形状
-
-```text
---r-sm: 8px    按钮 / 输入框 / 菜单项
---r-md: 12px   卡片 / 弹窗
-```
-
-上限即 12px，禁止"大面包"。阴影默认 none；弹窗允许 `0 8px 24px rgba(0,0,0,.24)` 一档，其余一律描边+底色分层。
-
-## 7. 动效纪律
-
-```text
---dur-fast: 150ms   hover / 颜色过渡
---dur-base: 200ms   展开收起
-easing: ease（唯一缓动）
-```
-
-只做透明度与颜色的微过渡；无位移弹跳、无缩放动画、遵守 `prefers-reduced-motion`。
-
----
-
-## 8. 组件要点
-
-- **侧边导航**：激活态 = 淡染底 + accent 文字，单一强调；图标栏窄窗模式仅在 < 860px 出现。
-- **按钮**：primary 每视图最多一个；次操作一律 default；危险操作 danger-plain + 二次确认。
-- **空状态**：插画统一收敛 128px，一句话说明 + 一个行动入口。
-- **表单**：label 右对齐列宽 150px，控件宽度收敛（select 220px / input ≤ 300px），保存按钮固定在表单尾。
-- **反馈**：操作结果一律 ElMessage；破坏性操作 ElMessageBox 确认。
-
-## 9. 维护流程
-
-1. 改视觉 = 改 `styles.css` token，禁止在视图组件里写死色值/字号/圆角。
-2. 视图 scoped style 只允许引用 token 与布局属性。
-3. 新增颜色组合：先算 WCAG（脚本见 §2），写入本文档表格，再改代码。
-4. 本文档与 `styles.css` 头部注释保持版本同步。
+- **token 产物一致**：运行 `npm run tokens` 后，`tokens.css` 与 `Tokens.kt` 必须与运行前完全相同。
+- **无颜色字面量**：`apps/windows/src` 下的 `views/`、`components/`、`App.vue`（不含 `*.spec.ts`）出现 HEX 或 `rgb()` / `rgba()` 即失败。

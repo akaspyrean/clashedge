@@ -206,8 +206,8 @@ async function onAllowLan(val: boolean | string | number) {
   margin: 0 0 4px;
   border-top: none;
   border-bottom: none;
-  background: var(--bg-soft);
-  border-radius: var(--r-sm);
+  background: var(--ce-fill-soft);
+  border-radius: var(--ce-radius-md);
 }
 
 .sub-row {
@@ -220,7 +220,7 @@ async function onAllowLan(val: boolean | string | number) {
 .sub-label {
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--ce-text-secondary);
 }
 
 .lan-ips-warning {

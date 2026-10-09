@@ -137,7 +137,7 @@ onUnmounted(() => unlisten?.());
 
 .geo-status {
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--ce-text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 </style>

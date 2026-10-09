@@ -257,7 +257,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background-color: var(--bg-app);
+  background-color: var(--ce-bg-page);
 }
 
 .titlebar {
@@ -265,8 +265,8 @@ function onNarrowChange(e: MediaQueryListEvent) {
   height: 36px;
   display: flex;
   align-items: stretch;
-  background-color: var(--bg-surface);
-  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--ce-bg-surface);
+  border-bottom: 1px solid var(--ce-border);
   user-select: none;
   flex-shrink: 0;
 }
@@ -284,7 +284,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  color: var(--text-secondary);
+  color: var(--ce-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -302,7 +302,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   margin: 0;
   padding: 0;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--ce-text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -313,18 +313,18 @@ function onNarrowChange(e: MediaQueryListEvent) {
 }
 
 .tb-btn:hover {
-  background-color: var(--interactive-hover);
-  color: var(--text-primary);
+  background-color: var(--ce-fill-hover);
+  color: var(--ce-text-primary);
 }
 
 .tb-close:hover {
-  background-color: var(--error);
-  color: var(--on-error);
+  background-color: var(--ce-danger-fg);
+  color: var(--ce-on-accent);
 }
 
 /* 键盘可达性：标题栏按钮聚焦时显示清晰焦点环。 */
 .tb-btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ce-accent-fg);
   outline-offset: -2px;
 }
 
@@ -357,10 +357,10 @@ function onNarrowChange(e: MediaQueryListEvent) {
   top: -48px;
   z-index: 3000;
   padding: 8px 14px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--accent);
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  border-radius: var(--ce-radius-md);
+  border: 1px solid var(--ce-accent-fg);
+  background: var(--ce-bg-surface);
+  color: var(--ce-text-primary);
   font-size: 13px;
 }
 
