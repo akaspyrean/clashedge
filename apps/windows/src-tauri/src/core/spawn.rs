@@ -40,6 +40,36 @@ pub fn stdout_log_path(data_dir: &Path) -> PathBuf {
 // runtime-config
 // ---------------------------------------------------------------------------
 
+/// 读取激活 Profile 的区域旁文件（profiles/<name>.region.json）。
+/// 不存在/损坏 → None（build_runtime_config 按无区域信息处理，退化为当前行为）。
+fn read_region_map(
+    data_dir: &Path,
+    config: &Config,
+) -> Option<std::collections::HashMap<String, String>> {
+    let name = config.general.profile.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let safe = sanitize_profile_name(name).ok()?;
+    let path = data_dir
+        .join("profiles")
+        .join(format!("{}.region.json", safe));
+    let text = std::fs::read_to_string(&path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let regions = parsed.get("regions")?.as_object()?;
+    let mut out = std::collections::HashMap::new();
+    for (k, v) in regions {
+        if let Some(code) = v.as_str() {
+            out.insert(k.clone(), code.to_string());
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 /// 读取激活 Profile 的原始内容（名称经净化，防路径穿越）。
 /// 内置预设 `DIRECT` 没有对应文件，直接返回 None（不再每次启动打 warn）。
 pub fn read_active_profile(data_dir: &Path, config: &Config) -> Option<String> {
@@ -67,7 +97,8 @@ pub fn read_active_profile(data_dir: &Path, config: &Config) -> Option<String> {
 /// 哈希用于"配置无实质变化则跳过热重载"（审计 B8）。
 pub fn write_runtime_config(data_dir: &Path, config: &Config) -> Result<(PathBuf, String)> {
     let profile = read_active_profile(data_dir, config);
-    let runtime = build_runtime_config(config, profile.as_deref())?;
+    let region_map = read_region_map(data_dir, config);
+    let runtime = build_runtime_config(config, profile.as_deref(), region_map.as_ref())?;
     let yaml = serde_yaml::to_string(&runtime)?;
     let path = runtime_config_path(data_dir);
     crate::util::atomic::atomic_write(&path, yaml.as_bytes())?;

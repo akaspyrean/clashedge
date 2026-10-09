@@ -10,6 +10,7 @@ pub mod logging;
 pub mod normalizer;
 pub mod paths;
 pub mod process;
+pub mod region;
 pub mod temp;
 pub mod uri_list;
 

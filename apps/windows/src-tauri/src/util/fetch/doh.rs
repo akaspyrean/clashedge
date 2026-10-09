@@ -53,7 +53,7 @@ async fn query(
 }
 
 /// 取 `host` 的真实 A + AAAA 地址。全部端点失败 → Err。
-pub(super) async fn resolve_real_addrs(host: &str) -> Result<Vec<IpAddr>> {
+pub async fn resolve_real_addrs(host: &str) -> Result<Vec<IpAddr>> {
     let client = reqwest::Client::builder()
         .timeout(DOH_TIMEOUT)
         .no_proxy()

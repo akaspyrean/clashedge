@@ -42,4 +42,5 @@ pub use client::{
     fake_ip_range_from_config, get_direct_first, get_direct_first_streaming,
     get_direct_first_with_ua, validate_url_app,
 };
+pub use doh::resolve_real_addrs;
 pub use guards::{redact_url_for_log, validate_url_with};

@@ -237,7 +237,7 @@ pub async fn export_config(app: AppHandle, state: State<'_, crate::AppState>) ->
 
     // 生成运行时配置并落盘
     let mut runtime =
-        crate::core::config::build_runtime_config(&config, profile_content.as_deref())?;
+        crate::core::config::build_runtime_config(&config, profile_content.as_deref(), None)?;
     // 导出脱敏：控制器密钥替换为占位符，避免导出文件泄露真实 secret。
     // 注意：节点密码（proxies 内 password/uuid 等）仍是敏感信息，导出后需妥善保管。
     if let Some(map) = runtime.as_mapping_mut() {
