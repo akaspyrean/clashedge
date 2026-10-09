@@ -393,6 +393,14 @@ html[data-theme="dark"] {
   --el-descriptions-item-bordered-label-background: var(--bg-soft);
 }
 
+/* 卡片：surface 底 + 1px 描边 + lg 圆角 + 内边距 20；卡片里不再嵌套卡片，内部分组用分割线。 */
+.ce-card {
+  background: var(--ce-bg-surface);
+  border: 1px solid var(--ce-border);
+  border-radius: var(--ce-radius-lg);
+  padding: var(--ce-space-5);
+}
+
 /* 状态胶囊样式在 components/StatusPill.vue（scoped）：色点形状 + 颜色 + 文字三重编码。 */
 
 /* ---- 无障碍基线 ----

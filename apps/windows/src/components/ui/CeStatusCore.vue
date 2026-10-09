@@ -8,11 +8,11 @@ import { Power, TriangleAlert } from "lucide-vue-next";
 
 export type CoreState = "stopped" | "starting" | "running" | "error";
 
-const props = defineProps<{ state: CoreState }>();
+const props = defineProps<{ state: CoreState; /** 覆盖默认状态文字（如「核心运行中，尚未接管流量」） */ label?: string }>();
 const emit = defineEmits<{ toggle: [] }>();
 const { t } = useI18n();
 
-const statusText = computed(() => t(`ui.core.${props.state}`));
+const statusText = computed(() => props.label ?? t(`ui.core.${props.state}`));
 const ariaLabel = computed(() => {
   switch (props.state) {
     case "running":

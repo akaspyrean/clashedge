@@ -56,3 +56,11 @@ describe("formatRate", () => {
     expect(formatRate(1024 * 1024 * 4.82)).toBe("4.82 MB/s");
   });
 });
+
+describe("splitRate", () => {
+  it("splits value and unit for big-number layouts", async () => {
+    const { splitRate } = await import("./format");
+    expect(splitRate(1024 * 1024 * 4.82)).toEqual(["4.82", "MB/s"]);
+    expect(splitRate(0)).toEqual(["0", "B/s"]);
+  });
+});

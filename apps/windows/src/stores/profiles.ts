@@ -16,7 +16,7 @@ export const useProfilesStore = defineStore("profiles", {
     async list() {
       this.loading = true;
       try {
-        this.profiles = await profilesApi.list();
+        this.profiles = (await profilesApi.list()) ?? [];
       } catch {
         this.profiles = [];
       } finally {

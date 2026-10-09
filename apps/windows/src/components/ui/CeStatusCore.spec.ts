@@ -24,6 +24,12 @@ describe("CeStatusCore", () => {
     expect(b.attributes("aria-busy")).toBe("true");
   });
 
+  it("lets the caller override the status text without changing the state", () => {
+    const w = mountApp(CeStatusCore as never, { props: { state: "running", label: "custom" } });
+    expect(w.find('[role="status"]').text()).toBe("custom");
+    expect(w.find("button").classes()).toContain("is-running");
+  });
+
   it("emits toggle on click and renders the slot", async () => {
     const w = mountCore("stopped");
     await w.find("button").trigger("click");
