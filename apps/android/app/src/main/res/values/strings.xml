@@ -6,6 +6,7 @@
     <string name="status_disconnected">Disconnected</string>
     <string name="status_connecting">Connecting…</string>
     <string name="status_connected">Connected</string>
+    <string name="status_stopping">Stopping…</string>
     <string name="status_error">Error</string>
     <string name="start_proxy">Start</string>
     <string name="stop_proxy">Stop</string>
@@ -13,7 +14,8 @@
     <!-- Navigation -->
     <string name="nav_home">Home</string>
     <string name="nav_proxies">Proxies</string>
-    <string name="nav_profiles">Profiles</string>
+    <string name="nav_profiles">Subscriptions</string>
+    <string name="nav_more">More</string>
     <string name="nav_logs">Logs</string>
     <string name="nav_settings">Settings</string>
 

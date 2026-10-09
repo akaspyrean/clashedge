@@ -11,7 +11,6 @@
     "tokens": "node ../../scripts/tokens/build.mjs"
   },
   "dependencies": {
-    "@element-plus/icons-vue": "^2.3.2",
     "@tauri-apps/api": "^2",
     "element-plus": "^2.14.4",
     "lucide-vue-next": "1.0.0",
