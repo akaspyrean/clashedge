@@ -7,12 +7,18 @@ import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  House,
+  Globe,
+  Layers,
+  ListFilter,
+  ArrowDownUp,
+  FileText,
+  SlidersHorizontal,
   Minus,
-  FullScreen,
-  CopyDocument,
-  Close,
-} from "@element-plus/icons-vue";
-import { House, Globe, Layers, ListFilter, ArrowDownUp, FileText, SlidersHorizontal } from "lucide-vue-next";
+  Maximize,
+  Copy,
+  X,
+} from "lucide-vue-next";
 import { ElMessage } from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import en from "element-plus/es/locale/lang/en";
@@ -197,7 +203,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
             :aria-label="$t('titlebar.minimize')"
             @click="onMinimize"
           >
-            <el-icon :size="14"><Minus /></el-icon>
+            <Minus :size="14" :stroke-width="1.75" />
           </button>
           <button
             type="button"
@@ -206,10 +212,8 @@ function onNarrowChange(e: MediaQueryListEvent) {
             :aria-label="isMaximized ? $t('titlebar.restore') : $t('titlebar.maximize')"
             @click="onToggleMaximize"
           >
-            <el-icon :size="13">
-              <FullScreen v-if="!isMaximized" />
-              <CopyDocument v-else />
-            </el-icon>
+            <Maximize v-if="!isMaximized" :size="13" :stroke-width="1.75" />
+            <Copy v-else :size="13" :stroke-width="1.75" />
           </button>
           <button
             type="button"
@@ -218,7 +222,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
             :aria-label="$t('titlebar.close')"
             @click="onClose"
           >
-            <el-icon :size="14"><Close /></el-icon>
+            <X :size="14" :stroke-width="1.75" />
           </button>
         </div>
       </header>
