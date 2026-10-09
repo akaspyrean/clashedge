@@ -31,7 +31,6 @@
 //!   只使用 `check_update` 刚验证过并缓存的后端 manifest；
 //! - 本模块只做「检查 / 验签 / 下载 / 暂存」，绝不在运行中自我替换。
 
-use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
@@ -138,33 +137,6 @@ fn is_newer(remote: &str, current: &str) -> bool {
     }
 }
 
-/// 解析更新验签公钥，兼容三种仓库 Secret 注入形态：
-///
-/// 1. 裸 base64（56 字符 "RW..."）→ `from_base64`；
-/// 2. 完整 minisign.pub 文件文本（untrusted comment 行 + 公钥行）→ `decode`；
-/// 3. base64 包裹的密钥文件文本（整份 minisign.pub 被 base64 后存入 Secret）→
-///    先解开外层 base64，再按 minisign.pub 文本解析。
-///
-/// 任一形态命中即返回公钥；全部失败返回 `InvalidEncoding`。
-fn parse_update_pubkey(
-    raw: &str,
-) -> std::result::Result<minisign_verify::PublicKey, minisign_verify::Error> {
-    let trimmed = raw.trim();
-    if let Ok(pk) = minisign_verify::PublicKey::from_base64(trimmed) {
-        return Ok(pk);
-    }
-    if let Ok(pk) = minisign_verify::PublicKey::decode(trimmed) {
-        return Ok(pk);
-    }
-    let cleaned: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-    let bytes = general_purpose::STANDARD
-        .decode(&cleaned)
-        .or_else(|_| general_purpose::STANDARD_NO_PAD.decode(&cleaned))
-        .map_err(|_| minisign_verify::Error::InvalidEncoding)?;
-    let text = String::from_utf8(bytes).map_err(|_| minisign_verify::Error::InvalidEncoding)?;
-    minisign_verify::PublicKey::decode(text.trim())
-}
-
 /// 用内置公钥验证 manifest 的 minisign 签名。
 ///
 /// - `manifest_bytes`：manifest 文件的原始字节（验签对象是文件本身）；
@@ -181,14 +153,7 @@ pub fn verify_manifest_signature(
             "更新验签公钥未配置（CLASHEDGE_UPDATE_PUBKEY）；拒绝接受未签名清单".to_string(),
         ));
     }
-    // minisign-verify 0.3 把公钥解析拆成两个方法：from_base64 只吃纯 base64，
-    // decode 吃完整 minisign.pub 格式（含 untrusted comment 行）。0.2.5 的
-    // from_base64 两者都吃。为兼容仓库 Secret 里可能出现的三种注入形态——
-    // (1) 裸 base64 (56 字符 "RW...")；
-    // (2) 完整 minisign.pub 文本；
-    // (3) base64 包裹的密钥文件文本（整个 minisign.pub 被 base64 后存入）——
-    // 依次尝试，任一命中即可。
-    let pk = parse_update_pubkey(pubkey_b64)
+    let pk = minisign_verify::PublicKey::from_base64(pubkey_b64.trim())
         .map_err(|e| Error::Other(format!("内置更新公钥非法：{}", e)))?;
     let signature = minisign_verify::Signature::decode(sig_file_text)
         .map_err(|e| Error::Other(format!("签名解码失败（.minisig 格式非法）：{}", e)))?;
@@ -686,33 +651,6 @@ mod tests {
             .expect("prehashed minisign signature must verify");
         verify_manifest_signature(TEST_PUBKEY, TEST_MESSAGE, TEST_SIG_LEGACY)
             .expect("legacy minisign signature must verify via fallback");
-    }
-
-    /// 回归：CLASHEDGE_UPDATE_PUBKEY 可能以完整 minisign.pub 格式（含
-    /// untrusted comment 行）注入。minisign-verify 0.3 的 from_base64 只吃纯
-    /// base64，必须经 decode fallback 才能解析完整格式——这条路径正是
-    /// 0.2.5 -> 0.3.0 升级后 release publish 验签失败的根因。
-    #[test]
-    fn full_minisign_pub_format_pubkey_accepted() {
-        let full = format!("untrusted comment: minisign public key\n{}\n", TEST_PUBKEY);
-        verify_manifest_signature(&full, TEST_MESSAGE, TEST_SIG_PREHASHED)
-            .expect("full minisign.pub format pubkey must verify via decode fallback");
-        verify_manifest_signature(&full, TEST_MESSAGE, TEST_SIG_LEGACY)
-            .expect("legacy signature must also verify with full-format pubkey");
-    }
-
-    /// 回归：CLASHEDGE_UPDATE_PUBKEY 的实际形态——整份 minisign.pub 文件被
-    /// base64 后存入 Secret（诊断工作流实测：152 字符单行 base64，解开为
-    /// 114 字节双行文本）。必须解开外层 base64 取出公钥行才能验签，这正是
-    /// release publish「内置更新公钥非法：Invalid encoding」的根因。
-    #[test]
-    fn base64_wrapped_pubkey_file_accepted() {
-        let file_text = format!("untrusted comment: minisign public key\n{}\n", TEST_PUBKEY);
-        let wrapped = general_purpose::STANDARD.encode(file_text.as_bytes());
-        verify_manifest_signature(&wrapped, TEST_MESSAGE, TEST_SIG_PREHASHED)
-            .expect("base64-wrapped minisign.pub file must verify");
-        verify_manifest_signature(&wrapped, TEST_MESSAGE, TEST_SIG_LEGACY)
-            .expect("legacy signature must verify with base64-wrapped pubkey file");
     }
 
     #[test]
