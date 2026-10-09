@@ -77,8 +77,8 @@ jobs:
               try:
                   Ed25519PublicKey.from_public_bytes(cand).verify(sig64, target)
                   found = (i, cand); break
-          except Exception:
-              pass
+              except Exception:
+                  pass
           if not found:
               print("NO candidate chunk verifies — inspect format manually"); sys.exit(1)
           i, pub32 = found
