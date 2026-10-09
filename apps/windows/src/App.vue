@@ -11,13 +11,8 @@ import {
   FullScreen,
   CopyDocument,
   Close,
-  Odometer,
-  SetUp,
-  Document,
-  Link,
-  Tickets,
-  Setting,
 } from "@element-plus/icons-vue";
+import { House, Globe, Layers, ArrowDownUp, FileText, SlidersHorizontal } from "lucide-vue-next";
 import { ElMessage } from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import en from "element-plus/es/locale/lang/en";
@@ -122,12 +117,12 @@ watch(
 );
 
 const menuItems = [
-  { path: "/dashboard", key: "nav.dashboard", icon: Odometer },
-  { path: "/proxies", key: "nav.proxies", icon: SetUp },
-  { path: "/profiles", key: "nav.profiles", icon: Document },
-  { path: "/connections", key: "nav.connections", icon: Link },
-  { path: "/logs", key: "nav.logs", icon: Tickets },
-  { path: "/settings", key: "nav.settings", icon: Setting },
+  { path: "/dashboard", key: "nav.dashboard", icon: House },
+  { path: "/proxies", key: "nav.proxies", icon: Globe },
+  { path: "/profiles", key: "nav.profiles", icon: Layers },
+  { path: "/connections", key: "nav.connections", icon: ArrowDownUp },
+  { path: "/logs", key: "nav.logs", icon: FileText },
+  { path: "/settings", key: "nav.settings", icon: SlidersHorizontal },
 ];
 
 // ---- 自绘标题栏 ----
@@ -237,7 +232,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
               :index="item.path"
               :title="$t(item.key)"
             >
-              <el-icon><component :is="item.icon" /></el-icon>
+              <el-icon><component :is="item.icon" :size="20" :stroke-width="1.75" /></el-icon>
               <span class="menu-label">{{ $t(item.key) }}</span>
             </el-menu-item>
           </el-menu>

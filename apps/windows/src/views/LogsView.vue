@@ -48,7 +48,7 @@ void listEl;
 </template>
 
 <style scoped>
-/* 状态指示由全局 .status-pill/.status-dot/.running 提供（styles.css），
+/* 状态指示样式见 components/StatusPill.vue，
  * 与概览页共用同一套语义色。 */
 
 .log-toolbar {

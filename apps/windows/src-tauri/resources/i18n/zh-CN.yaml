@@ -294,6 +294,41 @@ about:
   export_diagnostics: "导出诊断包"
   diagnostics_done: "诊断包已生成（已脱敏）："
 
+ui:
+  latency:
+    good: "良好"
+    mid: "一般"
+    bad: "较差"
+    timeout: "超时"
+    testing: "测速中"
+    none: "未测"
+    aria: "延迟 {ms} 毫秒，{level}"
+    aria_timeout: "延迟测试超时"
+    aria_testing: "正在测速"
+    aria_none: "尚未测速"
+    retest: "重新测速：{name}"
+  core:
+    stopped: "核心已停止"
+    starting: "启动中…"
+    running: "已连接"
+    error: "异常"
+    aria_start: "启动核心"
+    aria_stop: "停止核心"
+    aria_starting: "核心启动中"
+    aria_error: "核心异常，点击重试"
+  chart:
+    aria: "近 60 秒流量曲线，当前下载 {down}，上传 {up}"
+    down: "下载"
+    up: "上传"
+    seconds_ago: "{n} 秒前"
+    now: "现在"
+    time: "时间"
+    show_table: "查看数据表"
+    hide_table: "隐藏数据表"
+    per_second: "{value}/s"
+  node:
+    selected: "当前使用"
+
 common:
   save: "保存"
   cancel: "取消"

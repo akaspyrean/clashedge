@@ -207,7 +207,7 @@ const onStop = () => startStop.run(() => core.stop());
   font-weight: 500;
 }
 
-/* 状态指示由全局 .status-pill/.status-dot/.running 提供（styles.css），
+/* 状态指示样式见 components/StatusPill.vue，
  * 本页不再重复定义，保证与 Logs 页语义色一致。 */
 
 .status-grid {

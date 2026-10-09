@@ -294,6 +294,41 @@ about:
   export_diagnostics: "Export diagnostics"
   diagnostics_done: "Diagnostics saved (redacted): "
 
+ui:
+  latency:
+    good: "Good"
+    mid: "Fair"
+    bad: "Poor"
+    timeout: "Timeout"
+    testing: "Testing"
+    none: "Untested"
+    aria: "Latency {ms} milliseconds, {level}"
+    aria_timeout: "Latency test timed out"
+    aria_testing: "Testing latency"
+    aria_none: "Not tested yet"
+    retest: "Retest {name}"
+  core:
+    stopped: "Core stopped"
+    starting: "Starting…"
+    running: "Connected"
+    error: "Error"
+    aria_start: "Start core"
+    aria_stop: "Stop core"
+    aria_starting: "Core is starting"
+    aria_error: "Core error, click to retry"
+  chart:
+    aria: "Traffic over the last 60 seconds, download {down}, upload {up}"
+    down: "Download"
+    up: "Upload"
+    seconds_ago: "{n}s ago"
+    now: "Now"
+    time: "Time"
+    show_table: "View data table"
+    hide_table: "Hide data table"
+    per_second: "{value}/s"
+  node:
+    selected: "In use"
+
 common:
   save: "Save"
   cancel: "Cancel"
