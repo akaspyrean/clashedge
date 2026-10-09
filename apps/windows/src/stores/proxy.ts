@@ -71,10 +71,15 @@ export const useProxyStore = defineStore("proxy", {
     async testGroupProxies(group: string) {
       const g = this.groups.find((x) => x.name === group);
       if (!g) return;
-      const nodes = g.all.filter((p) => p !== "DIRECT");
+      await this.testNodes(g.all.filter((p) => p !== "DIRECT"));
+    },
+    /** 批量测速指定节点（去重）：分块限并发（每批 10 个）防止一次性全量并发压垮后端；
+     *  testingNodes 标志防重入。 */
+    async testNodes(names: string[]) {
       if (this.testingNodes) return;
       this.testingNodes = true;
       try {
+        const nodes = [...new Set(names)];
         const CHUNK = 10;
         for (let i = 0; i < nodes.length; i += CHUNK) {
           const batch = nodes.slice(i, i + CHUNK);

@@ -12,6 +12,7 @@ import CeSegmented from "@/components/ui/CeSegmented.vue";
 import CeSparkline from "@/components/ui/CeSparkline.vue";
 import CeStatusCore, { type CoreState } from "@/components/ui/CeStatusCore.vue";
 import { useAction } from "@/composables/useAction";
+import { useNodeRetest } from "@/composables/useNodeRetest";
 import { usePolling } from "@/composables/usePolling";
 import { resolveGroupId, sortRuleGroups } from "@/constants/groups";
 import { useConfigStore } from "@/stores/config";
@@ -131,21 +132,10 @@ const tiles = computed(() => {
       };
     });
 });
-const testingNodes = ref(new Set<string>());
+const { testing: testingNodes, retest: onRetest } = useNodeRetest();
 const select = useAction();
 const onSelectNode = (name: string) =>
   activeGroup.value && select.run(() => proxyStore.select(activeGroup.value!.name, name));
-async function onRetest(name: string) {
-  if (testingNodes.value.has(name)) return;
-  testingNodes.value = new Set(testingNodes.value).add(name);
-  try {
-    await proxyStore.testNode(name);
-  } finally {
-    const next = new Set(testingNodes.value);
-    next.delete(name);
-    testingNodes.value = next;
-  }
-}
 const onTestGroup = () => activeGroup.value && proxyStore.testGroupProxies(activeGroup.value.name);
 
 // ---- 当前订阅 ----
