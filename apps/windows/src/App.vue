@@ -12,7 +12,7 @@ import {
   CopyDocument,
   Close,
 } from "@element-plus/icons-vue";
-import { House, Globe, Layers, ArrowDownUp, FileText, SlidersHorizontal } from "lucide-vue-next";
+import { House, Globe, Layers, ListFilter, ArrowDownUp, FileText, SlidersHorizontal } from "lucide-vue-next";
 import { ElMessage } from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import en from "element-plus/es/locale/lang/en";
@@ -120,6 +120,7 @@ const menuItems = [
   { path: "/dashboard", key: "nav.dashboard", icon: House },
   { path: "/proxies", key: "nav.proxies", icon: Globe },
   { path: "/profiles", key: "nav.profiles", icon: Layers },
+  { path: "/rules", key: "nav.rules", icon: ListFilter },
   { path: "/connections", key: "nav.connections", icon: ArrowDownUp },
   { path: "/logs", key: "nav.logs", icon: FileText },
   { path: "/settings", key: "nav.settings", icon: SlidersHorizontal },

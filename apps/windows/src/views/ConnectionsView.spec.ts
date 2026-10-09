@@ -8,9 +8,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
+const confirmMock = vi.fn();
+vi.mock("@/composables/useConfirm", () => ({ useConfirm: () => confirmMock }));
+
 import { createPinia, setActivePinia } from "pinia";
 import ElementPlus from "element-plus";
-import { testI18n } from "@/test/harness";
+import { stubBrowserApis, testI18n } from "@/test/harness";
 import ConnectionsView from "@/views/ConnectionsView.vue";
 
 function makeConn(id: string) {
@@ -64,6 +67,7 @@ describe("ConnectionsView (v-if/v-else 三态)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     invokeMock.mockReset();
+    stubBrowserApis(vi);
   });
 
   afterEach(() => {
@@ -118,6 +122,45 @@ describe("ConnectionsView (v-if/v-else 三态)", () => {
 
     const notice = wrapper.find(".truncated-notice");
     expect(notice.exists()).toBe(true);
+  });
+
+  it("顶部显示速率 / 活动连接 / 会话流量与 60 秒流量图", async () => {
+    mockList([makeConn("1"), makeConn("2")]);
+    const wrapper = mount(ConnectionsView, mountOptions);
+    await flushPromises();
+    expect(wrapper.findAll(".stat")).toHaveLength(4);
+    expect(wrapper.find(".ce-chart").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("筛选框按主机过滤连接", async () => {
+    mockList([makeConn("1"), makeConn("2"), makeConn("22")]);
+    const wrapper = mount(ConnectionsView, mountOptions);
+    await flushPromises();
+    expect(wrapper.findAll(".conn-list li")).toHaveLength(3);
+    await wrapper.find(".search-box input").setValue("h22");
+    expect(wrapper.findAll(".conn-list li")).toHaveLength(1);
+    await wrapper.find(".search-box input").setValue("nothing");
+    expect(wrapper.find(".no-match").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("「全部断开…」先确认（danger），取消则不调用后端", async () => {
+    mockList([makeConn("1")]);
+    confirmMock.mockResolvedValueOnce(false);
+    const wrapper = mount(ConnectionsView, mountOptions);
+    await flushPromises();
+    await wrapper.find(".close-all").trigger("click");
+    await flushPromises();
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock.mock.calls[0][1]).toMatchObject({ danger: true, confirmText: "connections.close_all_confirm" });
+    expect(invokeMock).not.toHaveBeenCalledWith("close_all_connections");
+
+    confirmMock.mockResolvedValueOnce(true);
+    await wrapper.find(".close-all").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("close_all_connections");
+    wrapper.unmount();
   });
 });
 

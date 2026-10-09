@@ -312,6 +312,11 @@ impl CoreManager {
         self.controller.get_connections().await
     }
 
+    /// 获取规则列表（GET /rules，已裁剪为 type / payload / proxy）
+    pub async fn get_rules(&self) -> Result<Vec<serde_json::Value>> {
+        self.controller.get_rules().await
+    }
+
     /// 关闭全部活动连接（DELETE /connections）
     pub async fn close_all_connections(&self) -> Result<()> {
         self.controller.close_all_connections().await

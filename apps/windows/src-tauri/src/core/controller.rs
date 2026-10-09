@@ -240,6 +240,30 @@ impl ControllerClient {
         Ok(groups)
     }
 
+    /// 获取规则列表（GET /rules），只保留 type / payload / proxy 三个字段。
+    ///
+    /// mihomo 的规则条目还带 size、index、extra（命中统计）等字段；规则页首期只读展示，
+    /// 在 Rust 侧裁剪可以减小 IPC 与 WebView 内存开销（规则表可达上万条）。
+    pub(crate) async fn get_rules(&self) -> Result<Vec<serde_json::Value>> {
+        let url = self.api_url(&["rules"], None)?;
+        let resp = self
+            .api_client
+            .get(url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(Error::Other(format!(
+                "Controller returned {}",
+                resp.status()
+            )));
+        }
+
+        let json: serde_json::Value = resp.json().await?;
+        Ok(trim_rules(&json))
+    }
+
     /// 选择代理组中的某个代理（PUT /proxies/{group}，组名 URL 编码）
     pub(crate) async fn select_proxy_group(&self, group: String, proxy: String) -> Result<()> {
         let url = self.api_url(&["proxies", &group], None)?;
@@ -480,6 +504,32 @@ pub(crate) fn authorization_headers(secret: &str) -> Result<HeaderMap> {
     Ok(headers)
 }
 
+/// 把 GET /rules 的响应裁剪为 `[{type, payload, proxy}]`。
+/// 缺失 / 类型不符的字段回落为空字符串；`rules` 缺失或不是数组时返回空列表。
+fn trim_rules(json: &serde_json::Value) -> Vec<serde_json::Value> {
+    let str_field = |rule: &serde_json::Value, key: &str| -> String {
+        rule.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    json.get("rules")
+        .and_then(|v| v.as_array())
+        .map(|rules| {
+            rules
+                .iter()
+                .map(|rule| {
+                    serde_json::json!({
+                        "type": str_field(rule, "type"),
+                        "payload": str_field(rule, "payload"),
+                        "proxy": str_field(rule, "proxy"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 从 JSON 值取 u64（兼容整数/浮点，缺失返回 0）
 fn value_as_u64(v: Option<&serde_json::Value>) -> u64 {
     v.and_then(|v| v.as_u64())
@@ -490,6 +540,48 @@ fn value_as_u64(v: Option<&serde_json::Value>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_rules_keeps_only_type_payload_proxy() {
+        let json = serde_json::json!({
+            "rules": [
+                {
+                    "index": 0,
+                    "type": "DomainSuffix",
+                    "payload": "openai.com",
+                    "proxy": "人工智能",
+                    "size": -1,
+                    "extra": { "hitCount": 3, "missCount": 1 }
+                },
+                { "type": "Match", "payload": "", "proxy": "DIRECT" }
+            ]
+        });
+        let rules = trim_rules(&json);
+        assert_eq!(rules.len(), 2);
+        assert_eq!(
+            rules[0],
+            serde_json::json!({
+                "type": "DomainSuffix",
+                "payload": "openai.com",
+                "proxy": "人工智能",
+            })
+        );
+        assert_eq!(rules[0].as_object().unwrap().len(), 3);
+        assert_eq!(rules[1]["type"], "Match");
+        assert_eq!(rules[1]["payload"], "");
+    }
+
+    #[test]
+    fn trim_rules_handles_empty_and_malformed_responses() {
+        assert!(trim_rules(&serde_json::json!({ "rules": [] })).is_empty());
+        assert!(trim_rules(&serde_json::json!({})).is_empty());
+        assert!(trim_rules(&serde_json::json!({ "rules": "nope" })).is_empty());
+        // 缺字段 / 类型不符：回落为空字符串而不是 panic
+        let rules = trim_rules(&serde_json::json!({ "rules": [ { "type": 7 }, {} ] }));
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["type"], "");
+        assert_eq!(rules[1]["proxy"], "");
+    }
 
     #[test]
     fn test_api_url_encodes_path_segments() {

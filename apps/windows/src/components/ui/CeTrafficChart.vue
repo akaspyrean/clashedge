@@ -26,6 +26,8 @@ let observer: ResizeObserver | null = null;
 onMounted(() => {
   if (!wrap.value) return;
   width.value = wrap.value.clientWidth || width.value;
+  // 无 ResizeObserver 的环境（测试 / 极旧 WebView）退回初始宽度。
+  if (typeof ResizeObserver === "undefined") return;
   observer = new ResizeObserver(() => {
     width.value = wrap.value?.clientWidth || width.value;
   });
