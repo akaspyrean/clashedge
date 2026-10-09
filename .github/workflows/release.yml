@@ -18,6 +18,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual release from the Actions UI: type a v* tag; the `prepare` job creates
+  # it at main HEAD (if missing) and the rest of the flow releases that commit.
+  # No local git, no source edits required to cut a release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to cut and release (e.g. v1.1.0); created at main HEAD if missing"
+        required: true
 
 permissions:
   contents: read
@@ -35,15 +43,61 @@ env:
   ZIP_NAME: ClashEdge-portable-win64.zip
 
 jobs:
+  # Resolves the release tag (from the manual input or the pushed tag) and
+  # creates it at main HEAD on manual dispatch if it does not exist yet.
+  # Downstream jobs check out this tag and reference needs.prepare.outputs.tag.
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Resolve release tag (create on manual dispatch)
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.ref_name }}"
+          fi
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "Tag '$tag' must match v*"; exit 1 ;;
+          esac
+          if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; releasing its commit."
+            git fetch --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null || true
+          else
+            if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+              echo "Tag $tag missing on a push event — nothing to do"; exit 1
+            fi
+            echo "Creating tag $tag at main HEAD."
+            git tag "$tag"
+            git push origin "$tag"
+          fi
+          sha=$(git rev-parse "$tag^{commit}")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
   # CI and Release share the same quality gate (scripts/ci/quality.ps1):
   # fmt/clippy/test/audit/build + launcher compile & recovery tests.
   # There is exactly one gate, not two.
   quality:
+    needs: prepare
     runs-on: windows-latest
     steps:
       # Pin every action to the official commit SHA to prevent tag hijacking.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.tag }}
           fetch-depth: 0
 
       # A v* tag pushed on some unreviewed branch must never reach the signing
@@ -52,9 +106,9 @@ jobs:
         shell: pwsh
         run: |
           git fetch origin main
-          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          git merge-base --is-ancestor HEAD origin/main
           if ($LASTEXITCODE -ne 0) {
-            throw "Tag ${{ github.ref_name }} ($env:GITHUB_SHA) is not on main - refusing to release."
+            throw "Tag ${{ needs.prepare.outputs.tag }} is not on main - refusing to release."
           }
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -78,7 +132,7 @@ jobs:
         run: .\scripts\ci\quality.ps1
 
   build:
-    needs: quality
+    needs: [prepare, quality]
     runs-on: windows-latest
     # No write access, no signing key: this job runs third-party build code.
     permissions:
@@ -88,6 +142,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -108,7 +164,7 @@ jobs:
       - name: Guard — tag version must match Cargo.toml
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = "${{ needs.prepare.outputs.tag }}"
           $raw = Get-Content .\apps\windows\src-tauri\Cargo.toml -Encoding UTF8 -Raw
           $m = [regex]::Match($raw, '^version = "([^"]+)"', 'Multiline')
           if (-not $m.Success) { throw "Cannot extract version from Cargo.toml" }
@@ -184,7 +240,7 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: build
+    needs: [prepare, build]
     runs-on: windows-latest
     # Secrets (TAURI_SIGNING_*, WINDOWS_CODESIGN_*) should be defined on this
     # Environment, with required reviewers, rather than as repository secrets.
@@ -195,6 +251,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -228,7 +286,7 @@ jobs:
         run: |
           python3 scripts/release/make-update-manifest.py `
             --version "${{ needs.build.outputs.version }}" `
-            --tag "${{ github.ref_name }}" `
+            --tag "${{ needs.prepare.outputs.tag }}" `
             --repo "akaspyrean/clashedge" `
             --dist ".\release" `
             --out ".\release\portable-manifest.json" `
@@ -254,19 +312,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $raw = gh release view ${{ github.ref_name }} --json isDraft 2>$null
+          $raw = gh release view ${{ needs.prepare.outputs.tag }} --json isDraft 2>$null
           if ($LASTEXITCODE -eq 0 -and $raw) {
             $existing = $raw | ConvertFrom-Json
             if ($existing.isDraft) {
               Write-Host "Leftover draft found — deleting and recreating."
-              gh release delete ${{ github.ref_name }} --yes
+              gh release delete ${{ needs.prepare.outputs.tag }} --yes
             } else {
-              throw "Release ${{ github.ref_name }} already exists and is published — refusing to overwrite."
+              throw "Release ${{ needs.prepare.outputs.tag }} already exists and is published — refusing to overwrite."
             }
           }
-          gh release create ${{ github.ref_name }} `
-            --target ${{ github.sha }} `
-            --title "${{ github.ref_name }}" `
+          gh release create ${{ needs.prepare.outputs.tag }} `
+            --target ${{ needs.prepare.outputs.sha }} `
+            --title "${{ needs.prepare.outputs.tag }}" `
             --draft `
             --generate-notes
 
@@ -370,10 +428,10 @@ jobs:
           foreach ($f in @($zip, $sha, $manifest, $sig)) {
             if (-not (Test-Path $f)) { throw "Upload source missing: $f" }
           }
-          gh release upload ${{ github.ref_name }} $zip $sha $manifest $sig --clobber
+          gh release upload ${{ needs.prepare.outputs.tag }} $zip $sha $manifest $sig --clobber
 
       - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit ${{ github.ref_name }} --draft=false
+        run: gh release edit ${{ needs.prepare.outputs.tag }} --draft=false
