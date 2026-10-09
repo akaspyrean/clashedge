@@ -8,7 +8,7 @@ app:
 nav:
   dashboard: "Home"
   proxies: "Proxies"
-  profiles: "Profiles"
+  profiles: "Subscriptions"
   connections: "Connections"
   logs: "Logs"
   settings: "Settings"
@@ -204,7 +204,18 @@ advanced:
   rules: "Rules"
 
 profiles:
-  title: "Profiles"
+  title: "Subscriptions"
+  delete_title: "Delete subscription “{name}”?"
+  delete_body: "The subscription and its nodes will be removed from this device. This cannot be undone."
+  delete_confirm: "Delete subscription"
+  add_subscription: "Add subscription"
+  import_export: "Import / Export"
+  local_file: "Local file"
+  status_failed: "Update failed"
+  status_expiring: "Expiring soon"
+  status_expired: "Expired"
+  usage_unknown: "No usage info"
+  update_failed_hint: "Last update failed"
   new: "New Profile"
   import: "Import Profile"
   export: "Export Profile"
@@ -219,7 +230,7 @@ profiles:
   name_optional_hint: "Leave empty to auto-generate"
   delete: "Delete"
   rename: "Rename"
-  activate: "Activate"
+  activate: "Use"
   update: "Update"
   active: "Active"
   traffic: "Traffic"
@@ -232,7 +243,7 @@ profiles:
   raw_edit: "Raw Edit"
   save: "Save"
   cancel: "Cancel"
-  empty: "No profiles yet. Click 'New Profile' or 'Subscribe Management' to get started"
+  empty: "Nothing here yet. Click “Add subscription” or “New Profile” to start."
 
 proxies:
   search_placeholder: "Search nodes"

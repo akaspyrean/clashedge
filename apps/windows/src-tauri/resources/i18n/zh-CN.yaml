@@ -8,7 +8,7 @@ app:
 nav:
   dashboard: "首页"
   proxies: "代理"
-  profiles: "配置"
+  profiles: "订阅"
   connections: "连接"
   logs: "日志"
   settings: "设置"
@@ -204,7 +204,18 @@ advanced:
   rules: "规则"
 
 profiles:
-  title: "配置"
+  title: "订阅"
+  delete_title: "删除订阅「{name}」？"
+  delete_body: "订阅及其节点将从本机移除，此操作无法撤销。"
+  delete_confirm: "删除订阅"
+  add_subscription: "添加订阅"
+  import_export: "导入 / 导出"
+  local_file: "本地文件"
+  status_failed: "更新失败"
+  status_expiring: "即将到期"
+  status_expired: "已过期"
+  usage_unknown: "无用量信息"
+  update_failed_hint: "上次更新失败"
   new: "新建配置"
   import: "导入配置"
   export: "导出配置"
@@ -219,7 +230,7 @@ profiles:
   name_optional_hint: "留空自动生成"
   delete: "删除"
   rename: "重命名"
-  activate: "激活"
+  activate: "使用"
   update: "更新"
   active: "当前激活"
   traffic: "流量"
@@ -232,7 +243,7 @@ profiles:
   raw_edit: "原始编辑"
   save: "保存"
   cancel: "取消"
-  empty: "暂无配置文件，点击「新建配置」或「订阅管理」开始使用"
+  empty: "暂无订阅或配置，点击「添加订阅」或「新建配置」开始使用"
 
 proxies:
   search_placeholder: "搜索节点"
