@@ -54,4 +54,25 @@ describe("ProfilesView", () => {
     expect(w.findAll("button").some((b) => b.attributes("aria-label") === "profiles.activate: local")).toBe(true);
     w.unmount();
   });
+
+  it("has exactly one primary button: add subscription", async () => {
+    const w = mountApp(ProfilesView, { attachTo: document.body });
+    await flushPromises();
+    const primaries = w.findAll(".el-button--primary");
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0].text()).toContain("profiles.add_subscription");
+    w.unmount();
+  });
+
+  it("lays profiles out as a card grid and keeps every dialog reachable", async () => {
+    const w = mountApp(ProfilesView, { attachTo: document.body });
+    await flushPromises();
+    expect(w.findAll("article.profile-card")).toHaveLength(2);
+    // 工具栏：新建配置 / 导入·导出 / 添加订阅
+    const text = w.find(".toolbar").text();
+    expect(text).toContain("profiles.new");
+    expect(text).toContain("profiles.import_export");
+    expect(text).toContain("profiles.add_subscription");
+    w.unmount();
+  });
 });

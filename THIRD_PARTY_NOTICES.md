@@ -15,6 +15,7 @@ component.
 | Built-in rule sets (direct/proxy/media/ai/ad) | Default rules | Derived from rule-set projects; see data file notices | e.g. Loyalsoldier/clash-rules |
 | Tauri 2 (Rust + JS) | App shell framework (Windows) | MIT / Apache-2.0 (dual) | https://github.com/tauri-apps/tauri |
 | Vue 3, Pinia, Vue Router, Vite, Element Plus, vue-i18n | Frontend libraries (Windows) | MIT (each project's own license) | https://vuejs.org/ etc. |
+| JetBrains Mono (Regular/Medium, latin woff2) | Monospace UI font, bundled in `apps/windows/src/assets/fonts/` (Windows) | SIL OFL 1.1 (`OFL-JetBrainsMono.txt` alongside) | https://github.com/JetBrains/JetBrainsMono |
 | Mihomo Android core (AAR / JNI) | Proxy core + TUN adapter (Android, not released) | GPL-3.0 | https://github.com/MetaCubeX/mihomo |
 | Kotlin, Jetpack Compose, AndroidX | Android UI / runtime (Android, not released) | Apache-2.0 (each project's own license) | https://developer.android.com/ |
 

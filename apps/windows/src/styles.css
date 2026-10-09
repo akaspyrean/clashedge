@@ -1,253 +1,202 @@
-﻿/* src/styles.css - 全局样式与主题变量（浅色/深色）
- * 设计系统：:root 为浅色；html[data-theme="dark"] 为深色。
- * 规范文档：docs/DESIGN_SYSTEM.md（ClashEdge Hybrid Design System v1.0，
- * 品牌性格 Quiet Power；改视觉先读文档 §9 维护流程——只改此处 token，
- * 视图组件禁止写死色值/字号/圆角。）
+/* src/styles.css - 全局样式（Clear Edge v2）
+ * Token 源：design/tokens.json -> npm run tokens -> styles/tokens.css（自动生成，勿手改）。
+ * 所有视图 / 组件只引用 --ce-*（旧变量名别名已删除）。
+ * 规范：docs/redesign/AI_DEV_INSTRUCTIONS.md（优先于 docs/DESIGN_SYSTEM.md v1.0）。
  * Element Plus 深色主题（dark/css-vars.css）依赖 html.dark class，
- * 故 theme.ts/main.ts 同时维护 data-theme 属性（本设计系统）与 dark class（EP）。
+ * 故 theme.ts/main.ts 同时维护 data-theme 属性与 dark class（EP）。
  * 窗口原生底色由 tauri.conf.json 的 backgroundColor 固定（深色），不再由前端同步。 */
 
+/* 顺序：EP dark css-vars -> tokens -> 字体 -> 其余规则 */
 @import "element-plus/theme-chalk/dark/css-vars.css";
+@import "./styles/tokens.css";
+@import "./styles/fonts.css";
 
-/* ---- 全局 token（与主题无关）：间距 / 动效 ----
- * 4pt 网格间距 + 动效纪律（150ms/200ms，唯一缓动 ease，见文档 §5/§7）。 */
+/* ---- Element Plus 主题映射 ----
+ * 彩色「文字/图标」位置统一取 *-fg；「填充」位置（主按钮、开关、选中单选/复选、
+ * 危险按钮）在下方单独指回 --ce-accent-bg / --ce-danger-bg 并配白字，避免同一个
+ * 蓝色同时承担文字与填充两个角色而两头不达标（见设计规范 §3.1）。
+ * 色阶约定：light-3/5/7/8/9 = 主色向底色混合 70/50/30/20/10%；dark-2 = 主色向反色混合 80%。 */
 :root {
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --dur-fast: 150ms;
-  --dur-base: 200ms;
+  --el-color-primary: var(--ce-accent-fg);
+  --el-color-primary-light-3: color-mix(in srgb, var(--ce-accent-fg) 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--ce-accent-fg) 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--ce-accent-fg) 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--ce-accent-fg) 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--ce-accent-fg) 10%, #fff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--ce-accent-fg) 80%, #000);
+
+  --el-color-success: var(--ce-success-fg);
+  --el-color-success-light-3: color-mix(in srgb, var(--ce-success-fg) 70%, #fff);
+  --el-color-success-light-5: color-mix(in srgb, var(--ce-success-fg) 50%, #fff);
+  --el-color-success-light-7: color-mix(in srgb, var(--ce-success-fg) 30%, #fff);
+  --el-color-success-light-8: color-mix(in srgb, var(--ce-success-fg) 20%, #fff);
+  --el-color-success-light-9: color-mix(in srgb, var(--ce-success-fg) 10%, #fff);
+  --el-color-success-dark-2: color-mix(in srgb, var(--ce-success-fg) 80%, #000);
+
+  --el-color-warning: var(--ce-warning-fg);
+  --el-color-warning-light-3: color-mix(in srgb, var(--ce-warning-fg) 70%, #fff);
+  --el-color-warning-light-5: color-mix(in srgb, var(--ce-warning-fg) 50%, #fff);
+  --el-color-warning-light-7: color-mix(in srgb, var(--ce-warning-fg) 30%, #fff);
+  --el-color-warning-light-8: color-mix(in srgb, var(--ce-warning-fg) 20%, #fff);
+  --el-color-warning-light-9: color-mix(in srgb, var(--ce-warning-fg) 10%, #fff);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--ce-warning-fg) 80%, #000);
+
+  --el-color-danger: var(--ce-danger-fg);
+  --el-color-danger-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, #fff);
+  --el-color-danger-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, #fff);
+  --el-color-danger-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, #fff);
+  --el-color-danger-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, #fff);
+  --el-color-danger-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, #fff);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #000);
+
+  --el-color-error: var(--ce-danger-fg);
+  --el-color-error-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, #fff);
+  --el-color-error-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, #fff);
+  --el-color-error-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, #fff);
+  --el-color-error-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, #fff);
+  --el-color-error-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, #fff);
+  --el-color-error-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #000);
+
+  --el-color-info: var(--ce-idle);
+  --el-color-info-light-3: color-mix(in srgb, var(--ce-idle) 70%, #fff);
+  --el-color-info-light-5: color-mix(in srgb, var(--ce-idle) 50%, #fff);
+  --el-color-info-light-7: color-mix(in srgb, var(--ce-idle) 30%, #fff);
+  --el-color-info-light-8: color-mix(in srgb, var(--ce-idle) 20%, #fff);
+  --el-color-info-light-9: color-mix(in srgb, var(--ce-idle) 10%, #fff);
+  --el-color-info-dark-2: color-mix(in srgb, var(--ce-idle) 80%, #000);
 }
 
-/* ---- 浅色主题（设计系统 · Flyme 3 收敛）---- */
-:root {
-  color-scheme: light;
-
-  /* ===== 背景：更中性、去蓝灰倾向（Flyme 3 纯净感）===== */
-  --bg-app: #F4F5F7;
-  --bg-surface: #FFFFFF;
-  --bg-raised: #FAFBFC;
-  --bg-sidebar: #EEF0F3;
-  --bg-soft: #F0F2F5;
-
-  /* ===== 文本 ===== */
-  --text-primary: #1A1D21;
-  --text-secondary: #444B53;
-  --text-tertiary: #6B7480;
-
-  /* ===== 边框：更弱（Flyme 3 靠底色分层而非描边）===== */
-  --border-subtle: #E1E4E8;
-
-  /* ===== 强调色 ===== */
-  --accent: #2A62CC;
-  --accent-soft: #E8F0FF;
-
-  /* ===== 状态色 ===== */
-  --approval: #B45309;
-  --done: #15803D;
-  --error: #B42318;
-  --idle: #475467;
-
-  /* ===== 尺寸/字体：圆角收窄（12→10, 8→6），更工具感 ===== */
-  --r-sm: 6px;
-  --r-md: 10px;
-  --font:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "PingFang SC",
-    "Segoe UI",
-    "Microsoft YaHei",
-    sans-serif;
-
-  /* ---- 派生 token（浅色 · Flyme 3 收敛）---- */
-  --on-error: #FFFFFF;
-  --interactive-hover: var(--bg-soft);
-  --card-border: #E8EBEF;
-  --menu-active-bg: var(--accent-soft);
-
-  /* ---- Element Plus 主题映射（浅色）----
-   * 色阶按 EP 约定派生：light-3/5/7/8/9 = 主色向白混合 70/50/30/20/10%，
-   * dark-2 = 主色向黑混合 80%。 */
-  --el-color-primary: var(--accent);
-  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #fff);
-  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #fff);
-  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #fff);
-  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #fff);
-  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #fff);
-  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #000);
-
-  --el-color-success: var(--done);
-  --el-color-success-light-3: color-mix(in srgb, var(--done) 70%, #fff);
-  --el-color-success-light-5: color-mix(in srgb, var(--done) 50%, #fff);
-  --el-color-success-light-7: color-mix(in srgb, var(--done) 30%, #fff);
-  --el-color-success-light-8: color-mix(in srgb, var(--done) 20%, #fff);
-  --el-color-success-light-9: color-mix(in srgb, var(--done) 10%, #fff);
-  --el-color-success-dark-2: color-mix(in srgb, var(--done) 80%, #000);
-
-  --el-color-warning: var(--approval);
-  --el-color-warning-light-3: color-mix(in srgb, var(--approval) 70%, #fff);
-  --el-color-warning-light-5: color-mix(in srgb, var(--approval) 50%, #fff);
-  --el-color-warning-light-7: color-mix(in srgb, var(--approval) 30%, #fff);
-  --el-color-warning-light-8: color-mix(in srgb, var(--approval) 20%, #fff);
-  --el-color-warning-light-9: color-mix(in srgb, var(--approval) 10%, #fff);
-  --el-color-warning-dark-2: color-mix(in srgb, var(--approval) 80%, #000);
-
-  --el-color-danger: var(--error);
-  --el-color-danger-light-3: color-mix(in srgb, var(--error) 70%, #fff);
-  --el-color-danger-light-5: color-mix(in srgb, var(--error) 50%, #fff);
-  --el-color-danger-light-7: color-mix(in srgb, var(--error) 30%, #fff);
-  --el-color-danger-light-8: color-mix(in srgb, var(--error) 20%, #fff);
-  --el-color-danger-light-9: color-mix(in srgb, var(--error) 10%, #fff);
-  --el-color-danger-dark-2: color-mix(in srgb, var(--error) 80%, #000);
-
-  --el-color-error: var(--error);
-  --el-color-error-light-3: color-mix(in srgb, var(--error) 70%, #fff);
-  --el-color-error-light-5: color-mix(in srgb, var(--error) 50%, #fff);
-  --el-color-error-light-7: color-mix(in srgb, var(--error) 30%, #fff);
-  --el-color-error-light-8: color-mix(in srgb, var(--error) 20%, #fff);
-  --el-color-error-light-9: color-mix(in srgb, var(--error) 10%, #fff);
-  --el-color-error-dark-2: color-mix(in srgb, var(--error) 80%, #000);
-
-  --el-color-info: var(--idle);
-  --el-color-info-light-3: color-mix(in srgb, var(--idle) 70%, #fff);
-  --el-color-info-light-5: color-mix(in srgb, var(--idle) 50%, #fff);
-  --el-color-info-light-7: color-mix(in srgb, var(--idle) 30%, #fff);
-  --el-color-info-light-8: color-mix(in srgb, var(--idle) 20%, #fff);
-  --el-color-info-light-9: color-mix(in srgb, var(--idle) 10%, #fff);
-  --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #000);
-}
-
-/* ---- 深色主题（设计系统 · Flyme 3 收敛）----
- * 海拔分层对齐 Apple HIG：base < sidebar < surface < raised，
- * 相邻层亮度差 ≥ 4%，让卡片靠底色浮起而不是靠描边。 */
 html[data-theme="dark"] {
-  color-scheme: dark;
+  --el-color-primary: var(--ce-accent-fg);
+  --el-color-primary-light-3: color-mix(in srgb, var(--ce-accent-fg) 70%, var(--ce-bg-page));
+  --el-color-primary-light-5: color-mix(in srgb, var(--ce-accent-fg) 50%, var(--ce-bg-page));
+  --el-color-primary-light-7: color-mix(in srgb, var(--ce-accent-fg) 30%, var(--ce-bg-page));
+  --el-color-primary-light-8: color-mix(in srgb, var(--ce-accent-fg) 20%, var(--ce-bg-page));
+  --el-color-primary-light-9: color-mix(in srgb, var(--ce-accent-fg) 10%, var(--ce-bg-page));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--ce-accent-fg) 80%, #fff);
 
-  /* ===== 背景：更纯净的中性灰（去蓝色倾向，Flyme 3 干净感）===== */
-  --bg-app: #0d0f12;
-  --bg-surface: #181b20;
-  --bg-raised: #21252b;
-  --bg-sidebar: #121418;
-  --bg-soft: #252a30;
+  --el-color-success: var(--ce-success-fg);
+  --el-color-success-light-3: color-mix(in srgb, var(--ce-success-fg) 70%, var(--ce-bg-page));
+  --el-color-success-light-5: color-mix(in srgb, var(--ce-success-fg) 50%, var(--ce-bg-page));
+  --el-color-success-light-7: color-mix(in srgb, var(--ce-success-fg) 30%, var(--ce-bg-page));
+  --el-color-success-light-8: color-mix(in srgb, var(--ce-success-fg) 20%, var(--ce-bg-page));
+  --el-color-success-light-9: color-mix(in srgb, var(--ce-success-fg) 10%, var(--ce-bg-page));
+  --el-color-success-dark-2: color-mix(in srgb, var(--ce-success-fg) 80%, #fff);
 
-  /* ===== 文本：中性灰阶，去蓝色倾向 ===== */
-  --text-primary: #f5f6f7;
-  --text-secondary: #b7bdc5;
-  --text-tertiary: #838b95;
+  --el-color-warning: var(--ce-warning-fg);
+  --el-color-warning-light-3: color-mix(in srgb, var(--ce-warning-fg) 70%, var(--ce-bg-page));
+  --el-color-warning-light-5: color-mix(in srgb, var(--ce-warning-fg) 50%, var(--ce-bg-page));
+  --el-color-warning-light-7: color-mix(in srgb, var(--ce-warning-fg) 30%, var(--ce-bg-page));
+  --el-color-warning-light-8: color-mix(in srgb, var(--ce-warning-fg) 20%, var(--ce-bg-page));
+  --el-color-warning-light-9: color-mix(in srgb, var(--ce-warning-fg) 10%, var(--ce-bg-page));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--ce-warning-fg) 80%, #fff);
 
-  /* ===== 边框：更弱 ===== */
-  --border-subtle: #2f343c;
+  --el-color-danger: var(--ce-danger-fg);
+  --el-color-danger-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, var(--ce-bg-page));
+  --el-color-danger-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, var(--ce-bg-page));
+  --el-color-danger-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, var(--ce-bg-page));
+  --el-color-danger-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, var(--ce-bg-page));
+  --el-color-danger-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, var(--ce-bg-page));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #fff);
 
-  /* ===== 强调色 ===== */
-  --accent: #4e8fff;
-  --accent-soft: rgba(78, 143, 255, 0.12);
+  --el-color-error: var(--ce-danger-fg);
+  --el-color-error-light-3: color-mix(in srgb, var(--ce-danger-fg) 70%, var(--ce-bg-page));
+  --el-color-error-light-5: color-mix(in srgb, var(--ce-danger-fg) 50%, var(--ce-bg-page));
+  --el-color-error-light-7: color-mix(in srgb, var(--ce-danger-fg) 30%, var(--ce-bg-page));
+  --el-color-error-light-8: color-mix(in srgb, var(--ce-danger-fg) 20%, var(--ce-bg-page));
+  --el-color-error-light-9: color-mix(in srgb, var(--ce-danger-fg) 10%, var(--ce-bg-page));
+  --el-color-error-dark-2: color-mix(in srgb, var(--ce-danger-fg) 80%, #fff);
 
-  /* ===== 状态色 ===== */
-  --approval: #f2b866;
-  --done: #7edb99;
-  --error: #ff9a93;
-  --idle: #b7bdc5;
-
-  /* ===== 尺寸/字体：圆角收窄 ===== */
-  --r-sm: 6px;
-  --r-md: 10px;
-  --font:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "PingFang SC",
-    "Segoe UI",
-    "Microsoft YaHei",
-    sans-serif;
-
-  /* ---- 派生 token（深色 · Flyme 3 收敛）---- */
-  --on-error: #101214;
-  --interactive-hover: var(--bg-soft);
-  --card-border: #252a31;
-  --menu-active-bg: var(--accent-soft);
-
-  /* ---- Element Plus 主题映射（深色）----
-   * EP 深色约定：light-3/5/7/8/9 = 主色向深色底（--bg-app）混合 70/50/30/20/10%，
-   * dark-2 = 主色向白混合 80%。 */
-  --el-color-primary: var(--accent);
-  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #101214);
-  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #101214);
-  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #101214);
-  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #101214);
-  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #101214);
-  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #fff);
-
-  --el-color-success: var(--done);
-  --el-color-success-light-3: color-mix(in srgb, var(--done) 70%, #101214);
-  --el-color-success-light-5: color-mix(in srgb, var(--done) 50%, #101214);
-  --el-color-success-light-7: color-mix(in srgb, var(--done) 30%, #101214);
-  --el-color-success-light-8: color-mix(in srgb, var(--done) 20%, #101214);
-  --el-color-success-light-9: color-mix(in srgb, var(--done) 10%, #101214);
-  --el-color-success-dark-2: color-mix(in srgb, var(--done) 80%, #fff);
-
-  --el-color-warning: var(--approval);
-  --el-color-warning-light-3: color-mix(in srgb, var(--approval) 70%, #101214);
-  --el-color-warning-light-5: color-mix(in srgb, var(--approval) 50%, #101214);
-  --el-color-warning-light-7: color-mix(in srgb, var(--approval) 30%, #101214);
-  --el-color-warning-light-8: color-mix(in srgb, var(--approval) 20%, #101214);
-  --el-color-warning-light-9: color-mix(in srgb, var(--approval) 10%, #101214);
-  --el-color-warning-dark-2: color-mix(in srgb, var(--approval) 80%, #fff);
-
-  --el-color-danger: var(--error);
-  --el-color-danger-light-3: color-mix(in srgb, var(--error) 70%, #101214);
-  --el-color-danger-light-5: color-mix(in srgb, var(--error) 50%, #101214);
-  --el-color-danger-light-7: color-mix(in srgb, var(--error) 30%, #101214);
-  --el-color-danger-light-8: color-mix(in srgb, var(--error) 20%, #101214);
-  --el-color-danger-light-9: color-mix(in srgb, var(--error) 10%, #101214);
-  --el-color-danger-dark-2: color-mix(in srgb, var(--error) 80%, #fff);
-
-  --el-color-error: var(--error);
-  --el-color-error-light-3: color-mix(in srgb, var(--error) 70%, #101214);
-  --el-color-error-light-5: color-mix(in srgb, var(--error) 50%, #101214);
-  --el-color-error-light-7: color-mix(in srgb, var(--error) 30%, #101214);
-  --el-color-error-light-8: color-mix(in srgb, var(--error) 20%, #101214);
-  --el-color-error-light-9: color-mix(in srgb, var(--error) 10%, #101214);
-  --el-color-error-dark-2: color-mix(in srgb, var(--error) 80%, #fff);
-
-  --el-color-info: var(--idle);
-  --el-color-info-light-3: color-mix(in srgb, var(--idle) 70%, #101214);
-  --el-color-info-light-5: color-mix(in srgb, var(--idle) 50%, #101214);
-  --el-color-info-light-7: color-mix(in srgb, var(--idle) 30%, #101214);
-  --el-color-info-light-8: color-mix(in srgb, var(--idle) 20%, #101214);
-  --el-color-info-light-9: color-mix(in srgb, var(--idle) 10%, #101214);
-  --el-color-info-dark-2: color-mix(in srgb, var(--idle) 80%, #fff);
+  --el-color-info: var(--ce-idle);
+  --el-color-info-light-3: color-mix(in srgb, var(--ce-idle) 70%, var(--ce-bg-page));
+  --el-color-info-light-5: color-mix(in srgb, var(--ce-idle) 50%, var(--ce-bg-page));
+  --el-color-info-light-7: color-mix(in srgb, var(--ce-idle) 30%, var(--ce-bg-page));
+  --el-color-info-light-8: color-mix(in srgb, var(--ce-idle) 20%, var(--ce-bg-page));
+  --el-color-info-light-9: color-mix(in srgb, var(--ce-idle) 10%, var(--ce-bg-page));
+  --el-color-info-dark-2: color-mix(in srgb, var(--ce-idle) 80%, #fff);
 }
 
-/* ---- 深色主题 EP 对比度修正 ----
- * 深色 --accent 为浅蓝 #77A7FF，Element Plus 默认在 accent 底上使用白字，
- * 对比度不足（WCAG < 3:1）。主按钮 / 选中单选按钮文字改用深色保证可读性。 */
-html[data-theme="dark"] .el-button--primary {
-  --el-button-text-color: #101214;
-  --el-button-hover-text-color: #101214;
-  --el-button-active-text-color: #101214;
-  --el-button-disabled-text-color: rgba(16, 18, 20, 0.5);
+/* ---- 填充位置：品牌蓝 / 危险红底 + 白字（对比度 ≥ 4.5:1）---- */
+.el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-text-color: var(--ce-on-accent);
+  --el-button-bg-color: var(--ce-accent-bg);
+  --el-button-border-color: var(--ce-accent-bg);
+  --el-button-hover-text-color: var(--ce-on-accent);
+  --el-button-hover-bg-color: var(--ce-accent-bg-hover);
+  --el-button-hover-border-color: var(--ce-accent-bg-hover);
+  --el-button-active-text-color: var(--ce-on-accent);
+  --el-button-active-bg-color: var(--ce-accent-bg-press);
+  --el-button-active-border-color: var(--ce-accent-bg-press);
+  --el-button-disabled-text-color: var(--ce-text-disabled);
+  --el-button-disabled-bg-color: var(--ce-fill-disabled);
+  --el-button-disabled-border-color: var(--ce-fill-disabled);
 }
 
-html[data-theme="dark"] .el-button--primary.is-plain,
-html[data-theme="dark"] .el-button--primary.is-text,
-html[data-theme="dark"] .el-button--primary.is-link {
-  --el-button-hover-text-color: #101214;
-  --el-button-active-text-color: #101214;
+.el-button--danger:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-text-color: var(--ce-on-accent);
+  --el-button-bg-color: var(--ce-danger-bg);
+  --el-button-border-color: var(--ce-danger-bg);
+  --el-button-hover-text-color: var(--ce-on-accent);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--ce-danger-bg) 88%, #000);
+  --el-button-hover-border-color: color-mix(in srgb, var(--ce-danger-bg) 88%, #000);
+  --el-button-active-text-color: var(--ce-on-accent);
+  --el-button-active-bg-color: color-mix(in srgb, var(--ce-danger-bg) 78%, #000);
+  --el-button-active-border-color: color-mix(in srgb, var(--ce-danger-bg) 78%, #000);
+  --el-button-disabled-text-color: var(--ce-text-disabled);
+  --el-button-disabled-bg-color: var(--ce-fill-disabled);
+  --el-button-disabled-border-color: var(--ce-fill-disabled);
 }
 
-html[data-theme="dark"] .el-radio-button {
-  --el-radio-button-checked-text-color: #101214;
+.el-button:not(.is-disabled):active {
+  transform: scale(0.98);
+}
+
+.el-switch {
+  --el-switch-on-color: var(--ce-accent-bg);
+  --el-switch-off-color: var(--ce-switch-off);
+}
+
+.el-radio-button {
+  --el-radio-button-checked-bg-color: var(--ce-accent-bg);
+  --el-radio-button-checked-text-color: var(--ce-on-accent);
+  --el-radio-button-checked-border-color: var(--ce-accent-bg);
+}
+
+.el-checkbox {
+  --el-checkbox-checked-bg-color: var(--ce-accent-bg);
+  --el-checkbox-checked-input-border-color: var(--ce-accent-bg);
+  --el-checkbox-checked-icon-color: var(--ce-on-accent);
+}
+
+.el-radio {
+  --el-radio-input-border-color-hover: var(--ce-accent-bg);
+}
+
+.el-radio__input.is-checked .el-radio__inner {
+  background: var(--ce-accent-bg);
+  border-color: var(--ce-accent-bg);
+}
+
+/* Toast（ElMessage）：设计规范里的反色 Toast。 */
+.el-message {
+  --el-message-bg-color: var(--ce-toast-bg);
+  --el-message-border-color: transparent;
+  --el-message-text-color: var(--ce-toast-text);
+  --el-message-close-icon-color: var(--ce-toast-text);
+  min-height: 44px;
+  border-radius: var(--ce-radius-md);
+  box-shadow: var(--ce-shadow-e2);
+}
+
+.el-message .el-message__content {
+  color: var(--ce-toast-text);
 }
 
 body {
   margin: 0;
-  font-family: var(--font);
-  background-color: var(--bg-app);
-  color: var(--text-primary);
+  font-family: var(--ce-font-sans);
+  background-color: var(--ce-bg-page);
+  color: var(--ce-text-primary);
   height: 100vh;
   overflow: hidden;
 }
@@ -262,8 +211,8 @@ body {
 }
 
 .app-aside {
-  background-color: var(--bg-sidebar);
-  border-right: 1px solid var(--border-subtle);
+  background-color: var(--ce-bg-sidebar);
+  border-right: 1px solid var(--ce-border);
   display: flex;
   flex-direction: column;
 }
@@ -273,22 +222,22 @@ body {
   border-right: none;
   background: transparent;
   --el-menu-bg-color: transparent;
-  --el-menu-hover-bg-color: var(--interactive-hover);
-  --el-menu-active-color: var(--accent);
-  --el-menu-text-color: var(--text-secondary);
+  --el-menu-hover-bg-color: var(--ce-fill-hover);
+  --el-menu-active-color: var(--ce-accent-fg);
+  --el-menu-text-color: var(--ce-text-secondary);
 }
 
 .app-footer {
   flex: none;
   padding: 12px 20px;
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--ce-text-tertiary);
 }
 
 .app-main {
   padding: 20px 24px;
   overflow: auto;
-  background-color: var(--bg-app);
+  background-color: var(--ce-bg-page);
 }
 
 /* ---- 通用页面 ---- */
@@ -296,33 +245,31 @@ body {
   max-width: 1080px;
 }
 
-/* 页面标题：Flyme 式轻盈层级——中字号中字重，不做视觉重锤。 */
+/* 页面标题：28/36/600（--ce-type-title-1）。 */
 .page-title {
-  margin: 0 0 16px;
-  font-size: 17px;
-  font-weight: 500;
-  letter-spacing: 0.2px;
-  color: var(--text-primary);
+  margin: 0 0 var(--ce-space-5);
+  font: var(--ce-type-title-1);
+  color: var(--ce-text-primary);
 }
 
 /* ---- 精致化精修 ----
  * 统一卡片 / 侧边栏 / 滚动条 / 空态，使各视图层次一致、克制的阴影与描边。
  * 原则：只在现有结构上加细节，不做布局重构。 */
 
-/* Element Plus 组件圆角与设计 token 对齐（按钮/输入框/下拉/开关等统一 8px）。 */
+/* Element Plus 组件圆角与设计 token 对齐：按钮/输入框 md，小控件 sm。 */
 :root,
 html[data-theme="dark"] {
-  --el-border-radius-base: var(--r-sm);
-  --el-border-radius-small: 6px;
-  --el-border-radius-round: 999px;
+  --el-border-radius-base: var(--ce-radius-md);
+  --el-border-radius-small: var(--ce-radius-sm);
+  --el-border-radius-round: var(--ce-radius-full);
 }
 
 /* 卡片：默认无阴影，靠底色与极细描边分层；hover 轻微抬升（可点击卡片场景）。 */
 .el-card {
-  --el-card-bg-color: var(--bg-surface);
-  --el-card-border-color: var(--card-border);
-  --el-card-border-radius: var(--r-md);
-  border-radius: var(--r-md);
+  --el-card-bg-color: var(--ce-bg-surface);
+  --el-card-border-color: var(--ce-border);
+  --el-card-border-radius: var(--ce-radius-lg);
+  border-radius: var(--ce-radius-lg);
   box-shadow: none;
 }
 
@@ -332,37 +279,37 @@ html[data-theme="dark"] {
 .el-card__header {
   font-size: 14px;
   font-weight: 500;
-  padding: var(--space-3) var(--space-5);
+  padding: var(--ce-space-3) var(--ce-space-5);
 }
 
 /* 侧边栏：选中项仅用淡底色 + 强调色文字（单一强调，不做双重指示），
  * 圆角胶囊比整块高亮更轻盈。 */
 .app-menu .el-menu-item {
   position: relative;
-  border-radius: var(--r-sm);
+  border-radius: var(--ce-radius-md);
   margin: 2px 8px;
   height: 40px;
   line-height: 40px;
   transition:
-    background-color var(--dur-fast) ease,
-    color var(--dur-fast) ease;
+    background-color var(--ce-dur-fast) ease,
+    color var(--ce-dur-fast) ease;
 }
 
 .app-menu .el-menu-item.is-active {
-  background: var(--menu-active-bg);
-  color: var(--accent);
+  background: var(--ce-accent-soft);
+  color: var(--ce-accent-fg);
   font-weight: 500;
 }
 
 .app-menu .el-menu-item:hover {
-  background: var(--interactive-hover);
-  color: var(--text-primary);
+  background: var(--ce-fill-hover);
+  color: var(--ce-text-primary);
 }
 
 /* 全局细滚动条：贴合深/浅主题，避免系统默认粗滚动条破坏精致感。 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border-subtle) transparent;
+  scrollbar-color: var(--ce-border) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -371,12 +318,12 @@ html[data-theme="dark"] {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-subtle);
+  background: var(--ce-border);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
+  background: var(--ce-text-tertiary);
 }
 
 ::-webkit-scrollbar-track {
@@ -385,30 +332,30 @@ html[data-theme="dark"] {
 
 /* 表格：表头与行间分隔更柔和，圆角由容器决定（ConnectionsView 已设）。 */
 .el-table {
-  --el-table-header-text-color: var(--text-tertiary);
-  --el-table-text-color: var(--text-primary);
-  --el-table-border-color: var(--border-subtle);
-  --el-table-row-hover-bg-color: var(--interactive-hover);
+  --el-table-header-text-color: var(--ce-text-tertiary);
+  --el-table-text-color: var(--ce-text-primary);
+  --el-table-border-color: var(--ce-border);
+  --el-table-row-hover-bg-color: var(--ce-fill-hover);
 }
 
 /* 空态：图标/文案颜色跟随文本弱化层级，间距更舒展；
  * 插画收敛到 128px，避免大箱子图霸占视觉中心。 */
 .el-empty {
   --el-empty-padding: 32px 0;
-  --el-empty-fill-color-0: var(--bg-soft);
-  --el-empty-fill-color-1: var(--border-subtle);
-  --el-empty-fill-color-2: var(--bg-soft);
-  --el-empty-fill-color-3: var(--border-subtle);
-  --el-empty-fill-color-4: var(--bg-soft);
-  --el-empty-fill-color-5: var(--border-subtle);
-  --el-empty-fill-color-6: var(--bg-soft);
-  --el-empty-fill-color-7: var(--border-subtle);
-  --el-empty-fill-color-8: var(--bg-soft);
-  --el-empty-fill-color-9: var(--border-subtle);
+  --el-empty-fill-color-0: var(--ce-fill-soft);
+  --el-empty-fill-color-1: var(--ce-border);
+  --el-empty-fill-color-2: var(--ce-fill-soft);
+  --el-empty-fill-color-3: var(--ce-border);
+  --el-empty-fill-color-4: var(--ce-fill-soft);
+  --el-empty-fill-color-5: var(--ce-border);
+  --el-empty-fill-color-6: var(--ce-fill-soft);
+  --el-empty-fill-color-7: var(--ce-border);
+  --el-empty-fill-color-8: var(--ce-fill-soft);
+  --el-empty-fill-color-9: var(--ce-border);
 }
 
 .el-empty__description {
-  color: var(--text-tertiary);
+  color: var(--ce-text-tertiary);
 }
 
 .el-empty__image {
@@ -424,52 +371,36 @@ html[data-theme="dark"] {
 
 /* 对话框：更明确的圆角与浅阴影，避免默认直角生硬。 */
 .el-dialog {
-  border-radius: var(--r-md);
-  --el-dialog-bg-color: var(--bg-surface);
+  border-radius: var(--ce-radius-xl);
+  box-shadow: var(--ce-shadow-e3);
+  --el-dialog-bg-color: var(--ce-bg-surface);
 }
 
 /* 页签（Settings）：选中项用强调色 + 中字重，与侧边导航一致。 */
 .el-tabs__item {
-  color: var(--text-secondary);
-  transition: color var(--dur-fast) ease;
+  color: var(--ce-text-secondary);
+  transition: color var(--ce-dur-fast) ease;
 }
 
 .el-tabs__item.is-active {
-  color: var(--accent);
+  color: var(--ce-accent-fg);
   font-weight: 500;
 }
 
 /* 描述列表（About）：底色随 surface，分隔更含蓄。 */
 .el-descriptions {
-  --el-descriptions-item-bordered-label-background: var(--bg-soft);
+  --el-descriptions-item-bordered-label-background: var(--ce-fill-soft);
 }
 
-/* ---- 统一状态语言（小圆点 + 文字）----
- * Dashboard / Logs 共用：同一套「已连接/已运行」语义色，
- * 避免各页各自定义造成视觉漂移。视图内如需扩展使用 .status-pill 基础类。 */
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-secondary);
+/* 卡片：surface 底 + 1px 描边 + lg 圆角 + 内边距 20；卡片里不再嵌套卡片，内部分组用分割线。 */
+.ce-card {
+  background: var(--ce-bg-surface);
+  border: 1px solid var(--ce-border);
+  border-radius: var(--ce-radius-lg);
+  padding: var(--ce-space-5);
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-
-.status-pill.running {
-  color: var(--done);
-}
-
-.status-pill.running .status-dot {
-  background: var(--done);
-}
+/* 状态胶囊样式在 components/StatusPill.vue（scoped）：色点形状 + 颜色 + 文字三重编码。 */
 
 /* ---- 无障碍基线 ----
  * 键盘焦点：统一的清晰焦点环（只在键盘导航时出现，鼠标点击不显示）。
@@ -480,7 +411,7 @@ html[data-theme="dark"] {
 .el-select__wrapper:focus-visible,
 .el-tabs__item:focus-visible,
 .el-menu-item:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ce-accent-fg);
   outline-offset: 2px;
 }
 

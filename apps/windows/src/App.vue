@@ -11,13 +11,8 @@ import {
   FullScreen,
   CopyDocument,
   Close,
-  Odometer,
-  SetUp,
-  Document,
-  Link,
-  Tickets,
-  Setting,
 } from "@element-plus/icons-vue";
+import { House, Globe, Layers, ListFilter, ArrowDownUp, FileText, SlidersHorizontal } from "lucide-vue-next";
 import { ElMessage } from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import en from "element-plus/es/locale/lang/en";
@@ -122,12 +117,13 @@ watch(
 );
 
 const menuItems = [
-  { path: "/dashboard", key: "nav.dashboard", icon: Odometer },
-  { path: "/proxies", key: "nav.proxies", icon: SetUp },
-  { path: "/profiles", key: "nav.profiles", icon: Document },
-  { path: "/connections", key: "nav.connections", icon: Link },
-  { path: "/logs", key: "nav.logs", icon: Tickets },
-  { path: "/settings", key: "nav.settings", icon: Setting },
+  { path: "/dashboard", key: "nav.dashboard", icon: House },
+  { path: "/proxies", key: "nav.proxies", icon: Globe },
+  { path: "/profiles", key: "nav.profiles", icon: Layers },
+  { path: "/rules", key: "nav.rules", icon: ListFilter },
+  { path: "/connections", key: "nav.connections", icon: ArrowDownUp },
+  { path: "/logs", key: "nav.logs", icon: FileText },
+  { path: "/settings", key: "nav.settings", icon: SlidersHorizontal },
 ];
 
 // ---- 自绘标题栏 ----
@@ -237,7 +233,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
               :index="item.path"
               :title="$t(item.key)"
             >
-              <el-icon><component :is="item.icon" /></el-icon>
+              <el-icon><component :is="item.icon" :size="20" :stroke-width="1.75" /></el-icon>
               <span class="menu-label">{{ $t(item.key) }}</span>
             </el-menu-item>
           </el-menu>
@@ -261,7 +257,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background-color: var(--bg-app);
+  background-color: var(--ce-bg-page);
 }
 
 .titlebar {
@@ -269,8 +265,8 @@ function onNarrowChange(e: MediaQueryListEvent) {
   height: 36px;
   display: flex;
   align-items: stretch;
-  background-color: var(--bg-surface);
-  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--ce-bg-surface);
+  border-bottom: 1px solid var(--ce-border);
   user-select: none;
   flex-shrink: 0;
 }
@@ -288,7 +284,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  color: var(--text-secondary);
+  color: var(--ce-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -306,7 +302,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   margin: 0;
   padding: 0;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--ce-text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -317,18 +313,18 @@ function onNarrowChange(e: MediaQueryListEvent) {
 }
 
 .tb-btn:hover {
-  background-color: var(--interactive-hover);
-  color: var(--text-primary);
+  background-color: var(--ce-fill-hover);
+  color: var(--ce-text-primary);
 }
 
 .tb-close:hover {
-  background-color: var(--error);
-  color: var(--on-error);
+  background-color: var(--ce-danger-fg);
+  color: var(--ce-on-accent);
 }
 
 /* 键盘可达性：标题栏按钮聚焦时显示清晰焦点环。 */
 .tb-btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ce-accent-fg);
   outline-offset: -2px;
 }
 
@@ -361,10 +357,10 @@ function onNarrowChange(e: MediaQueryListEvent) {
   top: -48px;
   z-index: 3000;
   padding: 8px 14px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--accent);
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  border-radius: var(--ce-radius-md);
+  border: 1px solid var(--ce-accent-fg);
+  background: var(--ce-bg-surface);
+  color: var(--ce-text-primary);
   font-size: 13px;
 }
 

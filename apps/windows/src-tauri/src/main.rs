@@ -356,6 +356,8 @@ pub fn run() {
             crate::commands::proxy::test_proxy_latency,
             crate::commands::proxy::get_proxy_groups,
             crate::commands::proxy::select_proxy_group,
+            // Rules commands
+            crate::commands::rules::get_rules,
             // Logs commands
             crate::commands::logs::start_log_stream,
             crate::commands::logs::stop_log_stream,

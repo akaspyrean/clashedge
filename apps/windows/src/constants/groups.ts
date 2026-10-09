@@ -34,3 +34,14 @@ export const GROUP_ID_TO_NAME: Readonly<
 export function resolveGroupId(name: string): string {
   return GROUP_NAME_TO_ID[name] ?? name;
 }
+
+/** 规则模式下代理组的规范排序（自上而下）：扶梯出行 → 人工智能 → 影音视听 → 人工优选 → 自动优选。 */
+const GROUP_ORDER: readonly string[] = ["proxy", "ai", "media", "manual", "auto"];
+
+/** 排除 GLOBAL，其余按规范顺序排序（自定义组排最后）；返回新数组，不改入参。 */
+export function sortRuleGroups<T extends { name: string }>(groups: readonly T[]): T[] {
+  const rank = new Map(GROUP_ORDER.map((id, i) => [id, i]));
+  return groups
+    .filter((g) => resolveGroupId(g.name) !== "global")
+    .sort((a, b) => (rank.get(resolveGroupId(a.name)) ?? 99) - (rank.get(resolveGroupId(b.name)) ?? 99));
+}
