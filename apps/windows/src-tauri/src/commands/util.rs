@@ -18,7 +18,7 @@ pub async fn open_logs_dir(app: tauri::AppHandle) -> Result<()> {
 
 #[command]
 pub fn get_app_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    crate::update::current_version().to_string()
 }
 
 /// 是否由自启动拉起（命令行带 --clash-edge-autostart）。
@@ -138,7 +138,7 @@ pub async fn export_diagnostics(app: tauri::AppHandle) -> Result<String> {
 
     let mut out = String::new();
     let _ = writeln!(out, "ClashEdge diagnostics");
-    let _ = writeln!(out, "app version : {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(out, "app version : {}", crate::update::current_version());
     let _ = writeln!(
         out,
         "os / arch   : {} / {}",
