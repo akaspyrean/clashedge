@@ -39,11 +39,11 @@ const MIN_HOP_REMAINING: Duration = Duration::from_millis(100);
 /// 拉取请求 User-Agent。
 /// 订阅服务端常按 UA 决定返回格式：不含 `clash` / `mihomo` 字样时往往回退成
 /// Base64 分享链接列表（审计 B7）。这里声明 Mihomo 兼容客户端，优先拿到 Clash YAML；
-/// 即便回退成链接列表，`util::uri_list` 也能解析。版本号取自 Cargo 包版本。
+/// 即便回退成链接列表，`util::uri_list` 也能解析。版本号取自发布 tag（dev 构建为 "dev"）。
 fn user_agent() -> String {
     format!(
         "ClashEdge/{} (clash.meta; mihomo)",
-        env!("CARGO_PKG_VERSION")
+        crate::update::current_version()
     )
 }
 

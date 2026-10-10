@@ -116,9 +116,11 @@ pub struct PendingUpdate {
     pub sha256: String,
 }
 
-/// 当前应用版本（Cargo 包版本）
+/// 当前应用版本。唯一来源是发布 tag：CI 发布构建时注入
+/// `CLASHEDGE_RELEASE_VERSION`（编译期常量），本地 dev 构建为 "dev"。
+/// Cargo.toml 的 version 仅为 cargo 元数据，不参与任何版本决策。
 pub fn current_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    option_env!("CLASHEDGE_RELEASE_VERSION").unwrap_or("dev")
 }
 
 /// 解析 "x.y.z" 为 (x, y, z)；解析失败返回 None
@@ -599,6 +601,18 @@ mod tests {
         assert_eq!(parse_version("v1.2.3"), Some((1, 2, 3)));
         assert_eq!(parse_version("1.2"), Some((1, 2, 0)));
         assert_eq!(parse_version(""), None);
+    }
+
+    /// 版本唯一来源是发布 tag（CI 注入 CLASHEDGE_RELEASE_VERSION）；
+    /// 本地 dev 构建自报 "dev"，不可解析为语义版本 → 永不提示更新。
+    #[test]
+    fn dev_build_never_reports_updates() {
+        assert_eq!(parse_version("dev"), None);
+        assert!(!is_newer("v999.999.999", "dev"));
+        // 当前构建的版本字符串总能被 parse（发布产物为 x.y.z）
+        if current_version() != "dev" {
+            assert!(parse_version(current_version()).is_some());
+        }
     }
 
     fn stage_fixture(tag: &str, zip_bytes: &[u8], tamper_manifest_sha: bool) -> std::path::PathBuf {
