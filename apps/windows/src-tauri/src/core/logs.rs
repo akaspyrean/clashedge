@@ -40,7 +40,9 @@ pub fn spawn_log_stream(
         } else {
             format!("http://{}", controller)
         };
-        let url = format!("{}/logs", base);
+        // level=debug：SSE 请求全量日志（mihomo 侧不再按 log-level 预筛），
+        // 前端已有级别筛选芯片负责二次过滤。空闲期也有 debug 输出，页面不再长时间空白。
+        let url = format!("{}/logs?level=debug", base);
         // 控制器在回环地址上，忽略环境/系统代理（审计 B6）。
         let client = reqwest::Client::builder()
             .no_proxy()
