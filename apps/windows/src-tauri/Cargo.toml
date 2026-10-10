@@ -1,5 +1,8 @@
 [package]
 name = "clash-edge"
+# 注意：此 version 仅为 cargo 元数据，不控制发布版本。ClashEdge 的发布版本
+# 唯一来源是手动推送的 git tag；CI 在发布构建时把 tag 版本注入
+# CLASHEDGE_RELEASE_VERSION（见 update/mod.rs::current_version），本地 dev 构建自报 "dev"。
 version = "1.1.0"
 description = "ClashEdge - Lightweight Clash Client for Windows"
 authors = ["akaspyrean"]
