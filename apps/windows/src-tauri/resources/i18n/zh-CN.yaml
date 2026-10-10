@@ -15,8 +15,9 @@ nav:
   settings: "设置"
 
 a11y:
-  skip_to_content: "跳到主要内容"
+  skip_to_content: "跳转到主要内容"
   main_navigation: "主导航"
+  secondary_navigation: "次级功能"
 
 degraded:
   title: "配置文件 config.yaml 已损坏，当前使用默认配置运行（降级模式）"
@@ -36,7 +37,7 @@ titlebar:
 dashboard:
   title: "首页"
   status_idle: "核心运行中 · 尚未接管流量"
-  version_port: "mihomo {version} · 混合端口 {port}"
+  version_port: "{version} · 混合端口 {port}"
   tun_hint: "需要管理员权限"
   traffic_title: "实时流量"
   traffic_chart_label: "近 60 秒下载与上传速率曲线"
@@ -252,6 +253,8 @@ profiles:
 proxies:
   search_placeholder: "搜索节点"
   groups_label: "策略组"
+  section_pick: "选择节点"
+  section_route: "分流规则"
   type_manual: "手动"
   type_auto: "测速"
   node_count: "{n} 个节点"

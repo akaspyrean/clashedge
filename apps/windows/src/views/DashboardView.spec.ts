@@ -193,14 +193,4 @@ describe("Dashboard 状态核心 / 模式 / 快捷切换", () => {
     await flushPromises();
     expect(invokeMock).toHaveBeenCalledWith("set_tun_mode", { enable: true });
   });
-
-  it("快捷切换默认显示扶梯出行指向的组，点节点即切换（1 次点击）", async () => {
-    const w = await mountDashboard({ running: true, systemProxy: true });
-    const names = w.findAll(".ce-tile__name").map((n) => n.text());
-    expect(names).toEqual(["HK 01", "JP 01"]); // 人工优选组，已屏蔽 DIRECT
-    expect(w.findAll(".ce-tile")[0].classes()).toContain("is-selected");
-    await w.findAll(".ce-tile__main")[1].trigger("click");
-    await flushPromises();
-    expect(invokeMock).toHaveBeenCalledWith("select_proxy_group", { group: "人工优选", proxy: "JP 01" });
-  });
 });

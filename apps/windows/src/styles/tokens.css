@@ -23,9 +23,9 @@
   --ce-space-1: 4px;
   --ce-space-2: 8px;
   --ce-space-3: 12px;
-  --ce-space-4: 16px;
-  --ce-space-5: 20px;
-  --ce-space-6: 24px;
+  --ce-space-4: 12px;
+  --ce-space-5: 16px;
+  --ce-space-6: 16px;
   --ce-space-8: 32px;
   --ce-space-10: 40px;
   --ce-space-12: 48px;
@@ -38,13 +38,13 @@
   --ce-dur-fast: 140ms;
   --ce-dur-base: 220ms;
   --ce-dur-slow: 320ms;
-  --ce-control-h: 36px;
+  --ce-control-h: 32px;
   --ce-control-h-sm: 28px;
-  --ce-control-h-lg: 44px;
-  --ce-row-h: 44px;
+  --ce-control-h-lg: 40px;
+  --ce-row-h: 40px;
   --ce-icon: 20px;
   --ce-icon-stroke: 1.75;
-  --ce-sidebar-w: 232px;
+  --ce-sidebar-w: 184px;
   --ce-sidebar-w-collapsed: 64px;
 
   --ce-bg-page: #F5F6F8;
