@@ -16,15 +16,14 @@ name: Release
 # signing and manifest generation therefore happen in `publish`, on the ZIP that
 # `build` produced.
 on:
-  push:
-    tags: ["v*"]
-  # Retry / re-release from the Actions UI: type an EXISTING v* tag.
-  # Tags are never created by this workflow — the release version has a
-  # single source: a tag pushed manually by a maintainer (see prepare).
+  # Primary release flow: run this workflow from the Actions UI and type
+  # a v* tag (e.g. v0.2.0). The `prepare` job creates the tag at main HEAD
+  # if it does not exist yet. This manual input is the ONLY way the release
+  # version is controlled — no source file needs to be bumped.
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v* tag to release (push the tag manually first)"
+        description: "Tag to cut and release (e.g. v0.2.0); created at main HEAD if missing"
         required: true
 
 permissions:
@@ -43,10 +42,9 @@ env:
   ZIP_NAME: ClashEdge-portable-win64.zip
 
 jobs:
-  # Resolves the release tag (from the manual input or the pushed tag) and
-  # derives the release version from it (tag minus the leading v).
-  # The tag is the SINGLE source of the release version — it is never created
-  # here; a dispatch input must reference a tag a maintainer pushed manually.
+  # Resolves the release tag from the dispatch input, creates it at main
+  # HEAD if it does not exist yet, and derives the version from it.
+  # The dispatch input is the SINGLE control for the release version.
   # Downstream jobs check out this tag and reference needs.prepare.outputs.*.
   prepare:
     runs-on: ubuntu-latest
@@ -60,31 +58,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Resolve release tag (must already exist)
+      - name: Resolve release tag (create at main HEAD on dispatch)
         id: resolve
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${{ github.ref_name }}"
-          fi
+          tag="${{ inputs.tag }}"
           case "$tag" in
             v[0-9]*) ;;
             *) echo "Tag '$tag' must match v*"; exit 1 ;;
           esac
-          if ! git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag '$tag' does not exist on origin. Tags are created manually (git push origin $tag); this workflow never creates them."
-            exit 1
-          fi
-          git fetch --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null || true
           version="${tag#v}"
           case "$version" in
             [0-9]*.[0-9]*.[0-9]*) ;;
             *) echo "Tag '$tag' must be vx.y.z"; exit 1 ;;
           esac
+          if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; releasing its commit."
+            git fetch --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null || true
+          else
+            echo "Creating tag $tag at main HEAD."
+            git checkout main
+            git tag "$tag"
+            git push origin "$tag"
+          fi
           sha=$(git rev-parse "$tag^{commit}")
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
