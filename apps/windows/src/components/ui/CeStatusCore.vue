@@ -1,4 +1,4 @@
-<!-- src/components/ui/CeStatusCore.vue - 主连接按钮 + 状态文字（直径 96）。
+<!-- src/components/ui/CeStatusCore.vue - 主连接按钮 + 状态文字（直径 72）。
      状态：stopped / starting / running / error；starting 时禁用并 aria-busy。
      默认插槽放状态文字下方的补充信息（版本、端口、操作按钮）。 -->
 <script setup lang="ts">
@@ -38,8 +38,8 @@ const ariaLabel = computed(() => {
       :disabled="state === 'starting'"
       @click="emit('toggle')"
     >
-      <TriangleAlert v-if="state === 'error'" :size="36" :stroke-width="1.75" aria-hidden="true" />
-      <Power v-else :size="36" :stroke-width="1.75" aria-hidden="true" />
+      <TriangleAlert v-if="state === 'error'" :size="24" :stroke-width="1.75" aria-hidden="true" />
+      <Power v-else :size="24" :stroke-width="1.75" aria-hidden="true" />
     </button>
     <div class="ce-core__text">
       <span class="ce-core__status" role="status">{{ statusText }}</span>
@@ -52,15 +52,15 @@ const ariaLabel = computed(() => {
 .ce-core {
   display: flex;
   align-items: center;
-  gap: var(--ce-space-6);
+  gap: var(--ce-space-5);
 }
 
 .ce-core__button {
   display: grid;
   place-items: center;
   flex: none;
-  width: 96px;
-  height: 96px;
+  width: 72px;
+  height: 72px;
   padding: 0;
   border: 1px solid var(--ce-border);
   border-radius: 50%;
@@ -70,8 +70,33 @@ const ariaLabel = computed(() => {
   transition:
     transform var(--ce-dur-fast) var(--ce-ease-spring),
     box-shadow var(--ce-dur-base) var(--ce-ease-standard),
-    background-color var(--ce-dur-base) var(--ce-ease-standard);
+    background-color var(--ce-dur-base) var(--ce-ease-standard),
+    color var(--ce-dur-base) var(--ce-ease-standard),
+    border-color var(--ce-dur-base) var(--ce-ease-standard);
 }
+
+/* ---- hover：四态各自反馈 ---- */
+
+/* stopped：底色轻微加深 + 文字提亮 */
+.ce-core__button:hover:not(:disabled):not(.is-running):not(.is-error) {
+  background: var(--ce-fill-hover);
+  color: var(--ce-text-primary);
+  border-color: var(--ce-text-tertiary);
+}
+
+/* running：品牌色加深 + 外环收紧 */
+.ce-core__button.is-running:hover {
+  background: var(--ce-accent-bg-hover);
+  box-shadow: 0 0 0 6px var(--ce-accent-soft);
+}
+
+/* error：边框加粗 + 背景加重 */
+.ce-core__button.is-error:hover {
+  border-width: 2px;
+  background: color-mix(in srgb, var(--ce-danger-soft) 70%, var(--ce-bg-surface));
+}
+
+/* starting 禁用，无 hover */
 
 .ce-core__button:active:not(:disabled) {
   transform: scale(0.97);
@@ -86,14 +111,14 @@ const ariaLabel = computed(() => {
   border-color: transparent;
   background: var(--ce-accent-bg);
   color: var(--ce-on-accent);
-  box-shadow: 0 0 0 8px var(--ce-accent-soft);
+  box-shadow: 0 0 0 6px var(--ce-accent-soft);
 }
 
 .ce-core__button.is-starting {
   border-color: transparent;
   background: var(--ce-pending-soft);
   color: var(--ce-pending-fg);
-  box-shadow: 0 0 0 6px color-mix(in srgb, var(--ce-pending-solid) 30%, transparent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--ce-pending-solid) 30%, transparent);
   cursor: progress;
 }
 

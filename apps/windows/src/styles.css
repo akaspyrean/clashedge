@@ -227,13 +227,6 @@ body {
   --el-menu-text-color: var(--ce-text-secondary);
 }
 
-.app-footer {
-  flex: none;
-  padding: 12px 20px;
-  font-size: 12px;
-  color: var(--ce-text-tertiary);
-}
-
 .app-main {
   padding: 20px 24px;
   overflow: auto;

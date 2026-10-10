@@ -84,24 +84,25 @@ describe("ProxiesView: 主从双栏", () => {
     return w;
   }
 
-  it("组名 / 组数 / 顺序与现状一致，且每行标注手动或测速", async () => {
+  /** 左栏新顺序：叶子组（人工优选/自动优选）在前，路由组（扶梯出行等）在后 */
+  it("组名按叶子→路由分段排列；叶子组标注手动或测速", async () => {
     const w = await mountView();
     const names = w.findAll(".group-name").map((n) => n.text());
-    expect(names).toEqual(["扶梯出行", "人工优选", "自动优选"]);
+    expect(names).toEqual(["人工优选", "自动优选", "扶梯出行"]);
     const types = w.findAll(".group-type").map((n) => n.text());
-    expect(types).toEqual(["proxies.type_manual", "proxies.type_manual", "proxies.type_auto"]);
+    expect(types).toEqual(["proxies.type_manual", "proxies.type_auto"]);
   });
 
-  it("点击左栏组即切换右栏节点；叶子组屏蔽 DIRECT", async () => {
+  it("默认选中人工优选组（叶子组优先）；叶子组屏蔽 DIRECT", async () => {
     const w = await mountView();
-    await w.findAll(".group-row")[1].trigger("click");
-    expect(w.findAll(".ce-tile__name").map((n) => n.text())).toEqual(["Node1", "Node2"]);
+    // 默认就是人工优选（第一个叶子组），无需点击
     expect(w.find(".detail-title").text()).toBe("人工优选");
+    expect(w.findAll(".ce-tile__name").map((n) => n.text())).toEqual(["Node1", "Node2"]);
   });
 
   it("点节点格调用 select_proxy_group", async () => {
     const w = await mountView();
-    await w.findAll(".group-row")[1].trigger("click");
+    // 默认已选中人工优选组，直接点第二个节点
     await w.findAll(".ce-tile__main")[1].trigger("click");
     await flushPromises();
     expect(invokeMock).toHaveBeenCalledWith("select_proxy_group", { group: "人工优选", proxy: "Node2" });
@@ -109,7 +110,10 @@ describe("ProxiesView: 主从双栏", () => {
 
   it("自动优选组节点格只读并提示由测速自动选择", async () => {
     const w = await mountView();
-    await w.findAll(".group-row")[2].trigger("click");
+    // 自动优选是叶子组段的第 2 个按钮
+    const rows = w.findAll(".group-row");
+    const autoRow = rows.find((r) => r.text().includes("自动优选"));
+    await autoRow!.trigger("click");
     expect(w.find(".note").text()).toBe("proxies.auto_readonly");
     await w.findAll(".ce-tile__main")[1].trigger("click");
     await flushPromises();
@@ -118,7 +122,7 @@ describe("ProxiesView: 主从双栏", () => {
 
   it("搜索框按名称过滤节点，无结果时给出说明", async () => {
     const w = await mountView();
-    await w.findAll(".group-row")[1].trigger("click");
+    // 默认选中人工优选组，直接搜索
     await w.find(".search-box input").setValue("node2");
     expect(w.findAll(".ce-tile__name").map((n) => n.text())).toEqual(["Node2"]);
     await w.find(".search-box input").setValue("zzz");
@@ -126,15 +130,13 @@ describe("ProxiesView: 主从双栏", () => {
     expect(w.find(".note").text()).toBe("proxies.no_match");
   });
 
-  it("按延迟排序：已测升序在前，未测 / 失败在后", async () => {
+  it("节点格已按延迟排序（已测升序在前）", async () => {
     const w = await mountView();
-    await w.findAll(".group-row")[1].trigger("click");
     const store = useProxyStore();
     store.nodeDelays["Node1"] = 300;
     store.nodeDelays["Node2"] = 50;
     await flushPromises();
-    expect(w.findAll(".ce-tile__name").map((n) => n.text())).toEqual(["Node1", "Node2"]);
-    await w.find(".detail-head .el-button").trigger("click");
+    // 始终按延迟排序：Node2 (50ms) 在 Node1 (300ms) 前
     expect(w.findAll(".ce-tile__name").map((n) => n.text())).toEqual(["Node2", "Node1"]);
   });
 
