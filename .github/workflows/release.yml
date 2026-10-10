@@ -18,13 +18,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Manual release from the Actions UI: type a v* tag; the `prepare` job creates
-  # it at main HEAD (if missing) and the rest of the flow releases that commit.
-  # No local git, no source edits required to cut a release.
+  # Retry / re-release from the Actions UI: type an EXISTING v* tag.
+  # Tags are never created by this workflow — the release version has a
+  # single source: a tag pushed manually by a maintainer (see prepare).
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to cut and release (e.g. v1.1.0); created at main HEAD if missing"
+        description: "Existing v* tag to release (push the tag manually first)"
         required: true
 
 permissions:
@@ -44,8 +44,10 @@ env:
 
 jobs:
   # Resolves the release tag (from the manual input or the pushed tag) and
-  # creates it at main HEAD on manual dispatch if it does not exist yet.
-  # Downstream jobs check out this tag and reference needs.prepare.outputs.tag.
+  # derives the release version from it (tag minus the leading v).
+  # The tag is the SINGLE source of the release version — it is never created
+  # here; a dispatch input must reference a tag a maintainer pushed manually.
+  # Downstream jobs check out this tag and reference needs.prepare.outputs.*.
   prepare:
     runs-on: ubuntu-latest
     permissions:
@@ -53,11 +55,12 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Resolve release tag (create on manual dispatch)
+      - name: Resolve release tag (must already exist)
         id: resolve
         shell: bash
         env:
@@ -72,20 +75,20 @@ jobs:
             v[0-9]*) ;;
             *) echo "Tag '$tag' must match v*"; exit 1 ;;
           esac
-          if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists; releasing its commit."
-            git fetch --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null || true
-          else
-            if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-              echo "Tag $tag missing on a push event — nothing to do"; exit 1
-            fi
-            echo "Creating tag $tag at main HEAD."
-            git tag "$tag"
-            git push origin "$tag"
+          if ! git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag '$tag' does not exist on origin. Tags are created manually (git push origin $tag); this workflow never creates them."
+            exit 1
           fi
+          git fetch --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null || true
+          version="${tag#v}"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "Tag '$tag' must be vx.y.z"; exit 1 ;;
+          esac
           sha=$(git rev-parse "$tag^{commit}")
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # CI and Release share the same quality gate (scripts/ci/quality.ps1):
   # fmt/clippy/test/audit/build + launcher compile & recovery tests.
@@ -138,7 +141,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      version: ${{ steps.meta.outputs.version }}
+      version: ${{ needs.prepare.outputs.version }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,23 +161,6 @@ jobs:
       # No rust-cache here: a cache written by an earlier branch/PR run must not
       # be able to inject build outputs into a release artifact.
 
-      # A tag whose version diverges from Cargo.toml (the single source of the
-      # app version) would make the ZIP, manifest and updater paths contradict
-      # each other — fail before any external side effect.
-      - name: Guard — tag version must match Cargo.toml
-        shell: pwsh
-        run: |
-          $tag = "${{ needs.prepare.outputs.tag }}"
-          $raw = Get-Content .\apps\windows\src-tauri\Cargo.toml -Encoding UTF8 -Raw
-          $m = [regex]::Match($raw, '^version = "([^"]+)"', 'Multiline')
-          if (-not $m.Success) { throw "Cannot extract version from Cargo.toml" }
-          $version = $m.Groups[1].Value
-          if ($tag -ne "v$version") {
-            throw "Tag '$tag' does not match Cargo.toml version '$version' — bump the version or fix the tag."
-          }
-          Add-Content $env:GITHUB_OUTPUT "version=$version"
-        id: meta
-
       # The client needs only the PUBLIC verification key at build time.
       # A release without it cannot update itself, so fail early.
       - name: Require update public key
@@ -192,10 +178,13 @@ jobs:
 
       # Inject the embedded update-verification public key into the client
       # build (update/mod.rs reads it at compile time).
+      # CLASHEDGE_RELEASE_VERSION stamps the app version from the tag into the
+      # binary (update/mod.rs::current_version); local dev builds report "dev".
       - name: Tauri release build (--no-bundle)
         working-directory: apps/windows
         env:
           CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
+          CLASHEDGE_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
       # Download and hash-verify pinned third-party assets (assets.lock.json):
