@@ -11,8 +11,6 @@ import {
   Globe,
   Layers,
   ListFilter,
-  ArrowDownUp,
-  FileText,
   SlidersHorizontal,
   Minus,
   Maximize,
@@ -127,8 +125,6 @@ const menuItems = [
   { path: "/proxies", key: "nav.proxies", icon: Globe },
   { path: "/profiles", key: "nav.profiles", icon: Layers },
   { path: "/rules", key: "nav.rules", icon: ListFilter },
-  { path: "/connections", key: "nav.connections", icon: ArrowDownUp },
-  { path: "/logs", key: "nav.logs", icon: FileText },
   { path: "/settings", key: "nav.settings", icon: SlidersHorizontal },
 ];
 
@@ -228,7 +224,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
       </header>
 
       <el-container class="app-shell">
-        <el-aside :width="isNarrow ? '64px' : '216px'" class="app-aside" :class="{ narrow: isNarrow }">
+        <el-aside :width="isNarrow ? '64px' : '184px'" class="app-aside" :class="{ narrow: isNarrow }">
           <nav :aria-label="$t('a11y.main_navigation')">
           <el-menu :default-active="route.path" router class="app-menu">
             <el-menu-item
@@ -242,9 +238,11 @@ function onNarrowChange(e: MediaQueryListEvent) {
             </el-menu-item>
           </el-menu>
           </nav>
-          <div v-if="appStore.version && !isNarrow" class="app-footer">
-            v{{ appStore.version }}
-          </div>
+          <!-- 次级功能：连接 / 日志，非核心任务入口 -->
+          <nav class="secondary-nav" :aria-label="$t('a11y.secondary_navigation')">
+            <router-link to="/connections" class="secondary-link">{{ $t("nav.connections") }}</router-link>
+            <router-link to="/logs" class="secondary-link">{{ $t("nav.logs") }}</router-link>
+          </nav>
         </el-aside>
         <el-main id="main-content" ref="mainEl" class="app-main" tabindex="-1">
           <DegradedBanner />
@@ -352,6 +350,35 @@ function onNarrowChange(e: MediaQueryListEvent) {
 
 .titlebar-title {
   margin: 0;
+}
+
+/* 次级导航：连接/日志的小字链接 */
+.secondary-nav {
+  margin-top: auto;
+  padding: 0 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.secondary-link {
+  font-size: 12px;
+  line-height: 28px;
+  color: var(--ce-text-tertiary);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.secondary-link:hover {
+  color: var(--ce-text-secondary);
+}
+
+.secondary-link.router-link-active {
+  color: var(--ce-accent-fg);
+}
+
+.app-aside.narrow .secondary-nav {
+  display: none;
 }
 
 /* 跳转到主内容：平时移出视口，键盘聚焦时出现。 */

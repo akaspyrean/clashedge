@@ -17,6 +17,7 @@ nav:
 a11y:
   skip_to_content: "Skip to main content"
   main_navigation: "Main navigation"
+  secondary_navigation: "Secondary features"
 
 degraded:
   title: "config.yaml is corrupt; running with defaults (degraded mode)"
@@ -36,7 +37,7 @@ titlebar:
 dashboard:
   title: "Home"
   status_idle: "Core running · not carrying traffic yet"
-  version_port: "mihomo {version} · mixed port {port}"
+  version_port: "{version} · mixed port {port}"
   tun_hint: "Requires administrator rights"
   traffic_title: "Live traffic"
   traffic_chart_label: "Download and upload rate over the last 60 seconds"
@@ -252,6 +253,8 @@ profiles:
 proxies:
   search_placeholder: "Search nodes"
   groups_label: "Policy groups"
+  section_pick: "Pick a node"
+  section_route: "Routing rules"
   type_manual: "Manual"
   type_auto: "Auto"
   node_count: "{n} nodes"
