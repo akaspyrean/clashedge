@@ -54,7 +54,14 @@ const hexRe = /^#([0-9A-Fa-f]{6})$/;
 const ktColors = (obj) =>
   Object.entries(obj)
     .filter(([, v]) => hexRe.test(v))
-    .map(([k, v]) => `        val ${camel(k)} = Color(0xFF${v.slice(1).toUpperCase()})`)
+    .map(([k, v]) => `        override val ${camel(k)} = Color(0xFF${v.slice(1).toUpperCase()})`)
+    .join("\n");
+// Shared supertype for Light/Dark: without it, `if (dark) Dark else Light`
+// degrades to Any in Kotlin and every member access fails to resolve.
+const ktPalette = (obj) =>
+  Object.entries(obj)
+    .filter(([, v]) => hexRe.test(v))
+    .map(([k]) => `        val ${camel(k)}: Color`)
     .join("\n");
 const ktRadii = Object.entries(tokens.global)
   .filter(([k, v]) => k.startsWith("radius-") && /^\d+px$/.test(v))
@@ -72,11 +79,15 @@ import androidx.compose.ui.unit.dp
 object CeTokens {
 ${ktRadii}
 
-    object Light {
+    interface Palette {
+${ktPalette(tokens.light)}
+    }
+
+    object Light : Palette {
 ${ktColors(tokens.light)}
     }
 
-    object Dark {
+    object Dark : Palette {
 ${ktColors(tokens.dark)}
     }
 }
