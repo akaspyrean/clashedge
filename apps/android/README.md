@@ -8,10 +8,10 @@ Android is **experimental / planned work**. It is **not part of the release
 chain** and must not be advertised as a shipping platform until every
 prerequisite below is done.
 
-Current state (as of 2026-08-28):
+Current state (as of 2026-10-12):
 
-- **No gradle wrapper**: `gradlew` / `gradlew.bat` are not checked in, so the
-  build documented below is not reproducible from a clean checkout.
+- **Gradle wrapper checked in** (pinned 8.7): `assembleRelease` /
+  `assembleDebug` build from a clean checkout after staging the rule assets.
 - **No real Mihomo integration**: the Mihomo Android core (AAR / JNI) is a
   placeholder — `mihomo/MihomoCoreImpl.kt` is a no-op stub and the dependency
   coordinate in `gradle/libs.versions.toml` is still commented out. The app
@@ -24,9 +24,9 @@ Current state (as of 2026-08-28):
 
 Prerequisites before Android can enter the release scope:
 
-1. Reproducible build: check in a pinned gradle wrapper (`gradlew`,
-   `gradlew.bat`, `gradle-wrapper.jar` / `gradle-wrapper.properties`) and
-   verify a clean-checkout build.
+1. Reproducible build — **DONE**: the pinned gradle wrapper (`gradlew`,
+   `gradlew.bat`, `gradle-wrapper.jar`, `gradle-wrapper.properties`) is
+   checked in and verified against a clean toolchain (JDK 17, compileSdk 34).
 2. Real Mihomo integration: pin the AAR/JNI artifact, replace the
    `MihomoCoreImpl` placeholder with real JNI calls, and verify the tunnel
    actually passes traffic.
@@ -60,16 +60,22 @@ state to `STOPPED`/`ERROR` — the UI can never show a fake "connected".
 
 ## Build
 
-> The gradle wrapper is **not checked in yet** — `gradlew.bat` below cannot
-> run until prerequisite 1 (above) is done. Generate it locally with
-> `gradle wrapper` after installing a Gradle distribution.
+> Version control matches Windows (`src-tauri/src/update/mod.rs::current_version`):
+> the release tag is the single version source — no source file is bumped. The
+> version is injected at build time via `CLASHEDGE_RELEASE_VERSION`; without it
+> the build reports `dev`. `versionCode` derives deterministically from
+> `x.y.z` as `x*1_000_000 + y*1_000 + z` (`dev` builds use 1).
 
 ```powershell
 # 1) Stage the pinned rule set into assets (runs scripts/assets/prepare.ps1 first)
 .\scripts\android\sync-rules.ps1
 
-# 2) Build a debug APK (from apps/android; requires the wrapper, see above)
+# 2) Build a debug APK (from apps/android)
 .\gradlew.bat :app:assembleDebug
+
+# 3) Release-stamped build (e.g. tag v0.1.0 -> inject 0.1.0)
+$env:CLASHEDGE_RELEASE_VERSION = '0.1.0'
+.\gradlew.bat :app:assembleRelease
 ```
 
 Prerequisites: JDK 17, Android SDK (compileSdk 34), and a configured

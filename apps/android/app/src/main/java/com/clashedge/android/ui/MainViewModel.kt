@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val app get() = application as ClashEdgeApp
+    private val app get() = getApplication<ClashEdgeApp>()
 
     val state: StateFlow<ConnectionState> = app.coordinator.state
     val groups: StateFlow<List<ProxyGroup>> = app.coordinator.groups
