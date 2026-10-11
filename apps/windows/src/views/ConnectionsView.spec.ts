@@ -128,7 +128,13 @@ describe("ConnectionsView (v-if/v-else 三态)", () => {
     mockList([makeConn("1"), makeConn("2")]);
     const wrapper = mount(ConnectionsView, mountOptions);
     await flushPromises();
-    expect(wrapper.findAll(".stat")).toHaveLength(4);
+    // 3 个 stat：下载、上传、合并的会话摘要
+    expect(wrapper.findAll(".stat")).toHaveLength(3);
+    // 验证每个 stat 的标签 key（$t mock 返回 key 本身）
+    const stats = wrapper.findAll(".stat");
+    expect(stats[0].text()).toContain("connections.download_rate");
+    expect(stats[1].text()).toContain("connections.upload_rate");
+    expect(stats[2].text()).toContain("connections.session_summary");
     expect(wrapper.find(".ce-chart").exists()).toBe(true);
     wrapper.unmount();
   });
