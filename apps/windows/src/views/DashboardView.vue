@@ -10,6 +10,7 @@ import CeSparkline from "@/components/ui/CeSparkline.vue";
 import CeStatusCore, { type CoreState } from "@/components/ui/CeStatusCore.vue";
 import { useAction } from "@/composables/useAction";
 import { usePolling } from "@/composables/usePolling";
+import { useTunElevation } from "@/composables/useTunElevation";
 import { useConfigStore } from "@/stores/config";
 import { pollIntervalFor, useConnectionsStore } from "@/stores/connections";
 import { useCoreStore } from "@/stores/core";
@@ -66,11 +67,13 @@ const onModeChange = (mode: string) => modeAction.run(() => config.setProxyMode(
 /** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色）。 */
 const onSystemProxyChange = (val: boolean | string | number) =>
   systemProxy.run(() => config.setSystemProxy(Boolean(val)));
-/** TUN 开关：与设置 › TUN 同一个 action，提权流程不变；开/关即时提示结果。 */
+/** TUN 开关：与设置 › TUN 同一个 action；非管理员开启走 UAC 提权重启（确认后自动开启）。 */
+const tunElevation = useTunElevation();
 const onTunChange = (val: boolean | string | number) => {
   const on = Boolean(val);
   return tun.run(() => config.setTunMode(on), {
     success: on ? t("dashboard.tun_enabled") : t("dashboard.tun_disabled"),
+    onError: on ? tunElevation.handleError : undefined,
   });
 };
 

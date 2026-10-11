@@ -19,6 +19,8 @@ export interface DelayResult {
 export const proxyApi = {
   setSystemProxy: (enable: boolean) => invoke<void>("set_system_proxy", { enable }),
   setTunMode: (enable: boolean) => invoke<void>("set_tun_mode", { enable }),
+  /** 以管理员身份重启应用以开启 TUN（UAC 弹窗；授权后旧实例退出，通常不会 resolve）。 */
+  relaunchForTun: () => invoke<void>("relaunch_for_tun"),
   setProxyMode: (mode: string) => invoke<void>("set_proxy_mode", { mode }),
   testLatency: (group: string, url?: string) =>
     invoke<DelayResult[]>("test_proxy_latency", { group, url }),

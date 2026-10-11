@@ -22,6 +22,17 @@ pub async fn set_tun_mode(app: AppHandle, enable: bool) -> Result<()> {
     state.controller.apply_tun(&app, enable).await
 }
 
+/// 以管理员身份重启应用以开启 TUN：UAC 弹窗授权成功后旧实例退出，
+/// 新实例带 `--clash-edge-enable-tun` 启动并在内核就绪后自动开启 TUN
+///（等待旧实例退出由 `util::elevation::wait_for_previous_instance` 完成）。
+/// 仅在 `set_tun_mode` 权限预检失败、前端二次确认后调用。
+#[command]
+pub fn relaunch_for_tun(app: AppHandle) -> Result<()> {
+    crate::util::elevation::relaunch_elevated(true)?;
+    app.exit(0);
+    Ok(())
+}
+
 #[command]
 pub async fn set_proxy_mode(app: AppHandle, mode: String) -> Result<()> {
     let state = app.state::<crate::AppState>();
