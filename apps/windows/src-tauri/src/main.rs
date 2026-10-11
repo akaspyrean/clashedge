@@ -243,6 +243,19 @@ pub fn run() {
                             .disable_system_proxy_intent(&app_handle, "core failed to start")
                             .await;
                     }
+
+                    // 提权重启（UAC → --clash-edge-enable-tun）：内核就绪后自动开启
+                    // TUN（持久化 + PATCH 运行中内核 + 回读确认，并推 tun-mode-changed
+                    // 让前端开关就地翻转）。内核没起来时不硬开——apply 会走重启
+                    // 回退也救不回来，只记日志，用户可手动再开。
+                    if started
+                        && std::env::args().any(|a| a == "--clash-edge-enable-tun")
+                    {
+                        info!("Enabling TUN after elevation relaunch");
+                        if let Err(e) = state.controller.apply_tun(&app_handle, true).await {
+                            error!("Failed to auto-enable TUN after elevation relaunch: {}", e);
+                        }
+                    }
                 });
             }
 
@@ -352,6 +365,7 @@ pub fn run() {
             // Proxy commands
             crate::commands::proxy::set_system_proxy,
             crate::commands::proxy::set_tun_mode,
+            crate::commands::proxy::relaunch_for_tun,
             crate::commands::proxy::set_proxy_mode,
             crate::commands::proxy::test_proxy_latency,
             crate::commands::proxy::get_proxy_groups,
@@ -686,6 +700,9 @@ pub(crate) fn schedule_webview_destroy(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    // 提权重启（UAC）的新实例：先等旧实例进程退出再初始化，
+    // 否则会被单实例锁挡下（第二实例直接退出）。无该参数时为 no-op。
+    crate::util::elevation::wait_for_previous_instance();
     // 启动器在应用更新前调用 `ClashEdge.exe --verify-staged <dir>` 复验暂存更新
     // 的签名链；该模式只做校验并以退出码返回，不启动 Tauri。
     if let Some(code) = crate::update::cli_verify_staged() {

@@ -309,8 +309,8 @@ const rows = computed(() =>
   display: flex;
   align-items: center;
   gap: var(--ce-space-4);
-  color: var(--ce-text-secondary);
-  font: var(--ce-type-callout);
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
 }
 
 .ce-chart__legend {
@@ -326,13 +326,13 @@ const rows = computed(() =>
   border: 0;
   border-radius: var(--ce-radius-sm);
   background: transparent;
-  color: var(--ce-accent-fg);
-  font: var(--ce-type-callout);
-  font-weight: 500;
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
   cursor: pointer;
 }
 
 .ce-chart__toggle:hover {
+  color: var(--ce-text-secondary);
   background: var(--ce-accent-soft);
 }
 

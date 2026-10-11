@@ -12,6 +12,7 @@ import { useAppStore } from "@/stores/app";
 import { useCoreStore } from "@/stores/core";
 import { useUpdateStore } from "@/stores/update";
 import { friendlyError } from "@/errors";
+import { formatAppVersion } from "@/utils/format";
 
 const { t } = useI18n();
 const appStore = useAppStore();
@@ -67,7 +68,7 @@ onUnmounted(() => unlisten?.());
 <template>
   <PrefList>
     <PrefRow :title="t('about.version')">
-      <span class="about-value">{{ appStore.version || "—" }}</span>
+      <span class="about-value">{{ formatAppVersion(appStore.version) || "—" }}</span>
     </PrefRow>
     <PrefRow :title="t('about.core_version')">
       <span class="about-value">{{ coreStore.status.version ?? "—" }}</span>

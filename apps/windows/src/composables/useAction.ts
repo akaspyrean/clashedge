@@ -13,6 +13,8 @@ export interface ActionOptions {
   errorPrefix?: string;
   /** 失败时静默（不弹提示），仍返回 undefined。 */
   silent?: boolean;
+  /** 失败时先于默认提示调用；返回 true 表示已处理，不再弹默认失败提示。支持 async。 */
+  onError?: (e: unknown) => boolean | Promise<boolean>;
 }
 
 export function useAction(shared?: Ref<boolean>) {
@@ -31,7 +33,8 @@ export function useAction(shared?: Ref<boolean>) {
       if (opts.success) notify.ok(typeof opts.success === "string" ? opts.success : undefined);
       return { ok: true, value };
     } catch (e) {
-      if (!opts.silent) notify.fail(e, opts.errorPrefix);
+      const handled = opts.onError ? await opts.onError(e) : false;
+      if (!handled && !opts.silent) notify.fail(e, opts.errorPrefix);
       return { ok: false };
     } finally {
       busy.value = false;
