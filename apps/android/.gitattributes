@@ -1,0 +1,5 @@
+# Keep the checked-in gradle wrapper platform-correct:
+# the sh launcher stays LF, .bat stays CRLF, the wrapper jar is binary.
+gradlew text eol=lf
+*.bat text eol=crlf
+gradle/wrapper/*.jar binary

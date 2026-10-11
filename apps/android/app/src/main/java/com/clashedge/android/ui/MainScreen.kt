@@ -1,6 +1,13 @@
 package com.clashedge.android.ui
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -12,6 +19,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.clashedge.android.R
@@ -73,13 +81,16 @@ fun MainScreen(
     }
 }
 
+// Icons.Filled.* are extension properties: they only resolve via import,
+// never through a fully-qualified path. "settings" uses Build because the
+// core icon set (material-icons-core) does not ship a Settings glyph.
 @Composable
-internal fun iconFor(key: String): androidx.compose.ui.graphics.vector.ImageVector =
+internal fun iconFor(key: String): ImageVector =
     when (key) {
-        "proxies" -> androidx.compose.material.icons.Icons.Filled.List
-        "profiles" -> androidx.compose.material.icons.Icons.Filled.Person
-        "logs" -> androidx.compose.material.icons.Icons.Filled.Info
-        "settings" -> androidx.compose.material.icons.Icons.Filled.Settings
-        "more" -> androidx.compose.material.icons.Icons.Filled.Menu
-        else -> androidx.compose.material.icons.Icons.Filled.Home
+        "proxies" -> Icons.Filled.List
+        "profiles" -> Icons.Filled.Person
+        "logs" -> Icons.Filled.Info
+        "settings" -> Icons.Filled.Build
+        "more" -> Icons.Filled.Menu
+        else -> Icons.Filled.Home
     }

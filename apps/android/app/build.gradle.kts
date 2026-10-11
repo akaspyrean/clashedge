@@ -1,9 +1,19 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// 版本号控制与 Windows 一致（src-tauri/src/update/mod.rs::current_version）：
+// release tag 是唯一版本来源，CI 通过 CLASHEDGE_RELEASE_VERSION 注入；
+// 本地开发构建回退为 "dev"。
+val releaseVersion: String = System.getenv("CLASHEDGE_RELEASE_VERSION") ?: "dev"
+
+// versionCode 由语义化版本确定性推导（dev 固定为 1）。
+val semver = Regex("""^(\d+)\.(\d+)\.(\d+)$""")
+val releaseVersionCode: Int = semver.find(releaseVersion)?.destructured?.let { (major, minor, patch) ->
+    major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
+} ?: 1
 
 android {
     namespace = "com.clashedge.android"
@@ -13,8 +23,8 @@ android {
         applicationId = "com.clashedge.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersion
 
         vectorDrawables {
             useSupportLibrary = true
@@ -44,6 +54,12 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // Kotlin 1.9.x has no org.jetbrains.kotlin.plugin.compose (2.0+ only):
+    // the compiler extension is pinned via composeOptions instead.
+    composeOptions {
+        kotlinCompilerExtensionVersion = libs.versions.composeCompiler.get()
     }
 
     packaging {
