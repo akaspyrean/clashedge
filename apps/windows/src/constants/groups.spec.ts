@@ -8,15 +8,15 @@ describe("sortRuleGroups", () => {
       "扶梯出行",
       "人工智能",
       "影音视听",
-      "人工优选",
       "自动优选",
+      "人工优选",
     ]);
   });
 
-  it("puts custom groups last and does not mutate its input", () => {
-    const input = [{ name: "自定义" }, { name: "扶梯出行" }];
-    expect(sortRuleGroups(input).map((g) => g.name)).toEqual(["扶梯出行", "自定义"]);
-    expect(input.map((g) => g.name)).toEqual(["自定义", "扶梯出行"]);
+  it("drops GLOBAL and unmapped custom/region groups, does not mutate its input", () => {
+    const input = [{ name: "自定义" }, { name: "美国优选" }, { name: "扶梯出行" }];
+    expect(sortRuleGroups(input).map((g) => g.name)).toEqual(["扶梯出行"]);
+    expect(input.map((g) => g.name)).toEqual(["自定义", "美国优选", "扶梯出行"]);
     expect(resolveGroupId("自定义")).toBe("自定义");
   });
 });

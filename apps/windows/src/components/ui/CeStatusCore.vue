@@ -52,7 +52,9 @@ const ariaLabel = computed(() => {
 .ce-core {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--ce-space-5);
+  width: 100%;
 }
 
 .ce-core__button {
@@ -118,7 +120,7 @@ const ariaLabel = computed(() => {
   border-color: transparent;
   background: var(--ce-pending-soft);
   color: var(--ce-pending-fg);
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--ce-pending-solid) 30%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--ce-pending-solid) 30%, transparent);
   cursor: progress;
 }
 
@@ -131,12 +133,14 @@ const ariaLabel = computed(() => {
 .ce-core__text {
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: var(--ce-space-1);
   min-width: 0;
+  text-align: right;
 }
 
 .ce-core__status {
-  font: var(--ce-type-title-2);
+  font: var(--ce-type-title-3);
   color: var(--ce-text-primary);
 }
 

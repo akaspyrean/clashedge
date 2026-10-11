@@ -11,6 +11,8 @@ import {
   Globe,
   Layers,
   ListFilter,
+  Cable,
+  ScrollText,
   SlidersHorizontal,
   Minus,
   Maximize,
@@ -125,6 +127,8 @@ const menuItems = [
   { path: "/proxies", key: "nav.proxies", icon: Globe },
   { path: "/profiles", key: "nav.profiles", icon: Layers },
   { path: "/rules", key: "nav.rules", icon: ListFilter },
+  { path: "/connections", key: "nav.connections", icon: Cable },
+  { path: "/logs", key: "nav.logs", icon: ScrollText },
   { path: "/settings", key: "nav.settings", icon: SlidersHorizontal },
 ];
 
@@ -238,11 +242,6 @@ function onNarrowChange(e: MediaQueryListEvent) {
             </el-menu-item>
           </el-menu>
           </nav>
-          <!-- 次级功能：连接 / 日志，非核心任务入口 -->
-          <nav class="secondary-nav" :aria-label="$t('a11y.secondary_navigation')">
-            <router-link to="/connections" class="secondary-link">{{ $t("nav.connections") }}</router-link>
-            <router-link to="/logs" class="secondary-link">{{ $t("nav.logs") }}</router-link>
-          </nav>
         </el-aside>
         <el-main id="main-content" ref="mainEl" class="app-main" tabindex="-1">
           <DegradedBanner />
@@ -283,7 +282,8 @@ function onNarrowChange(e: MediaQueryListEvent) {
 }
 
 .titlebar-title {
-  font-size: 12px;
+  margin: 0;
+  font: var(--ce-type-caption);
   font-weight: 600;
   letter-spacing: 0.3px;
   color: var(--ce-text-secondary);
@@ -310,8 +310,8 @@ function onNarrowChange(e: MediaQueryListEvent) {
   justify-content: center;
   cursor: pointer;
   transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
+    background-color var(--ce-dur-fast) var(--ce-ease-standard),
+    color var(--ce-dur-fast) var(--ce-ease-standard);
 }
 
 .tb-btn:hover {
@@ -330,7 +330,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   outline-offset: -2px;
 }
 
-/* 响应式：窗口 < 860px 时侧栏收为 icon-only，
+/* 响应式：窗口 < 750px（matchMedia）时侧栏收为 icon-only，
    文字语义保留在 el-menu-item 的 title 提示上。 */
 .app-aside.narrow :deep(.menu-label) {
   display: none;
@@ -352,34 +352,7 @@ function onNarrowChange(e: MediaQueryListEvent) {
   margin: 0;
 }
 
-/* 次级导航：连接/日志的小字链接 */
-.secondary-nav {
-  margin-top: auto;
-  padding: 0 20px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.secondary-link {
-  font-size: 12px;
-  line-height: 28px;
-  color: var(--ce-text-tertiary);
-  text-decoration: none;
-  transition: color 0.15s ease;
-}
-
-.secondary-link:hover {
-  color: var(--ce-text-secondary);
-}
-
-.secondary-link.router-link-active {
-  color: var(--ce-accent-fg);
-}
-
-.app-aside.narrow .secondary-nav {
-  display: none;
-}
+/* 次级导航（连接/日志）已并入主导航 menuItems，统一 el-menu 样式。 */
 
 /* 跳转到主内容：平时移出视口，键盘聚焦时出现。 */
 .skip-link {

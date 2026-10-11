@@ -29,6 +29,10 @@ export const updateApi = {
   check(): Promise<UpdateStatus> {
     return invoke("check_update");
   },
+  /** 当前构建是否内置更新验签公钥（false = 更新链不可用，前端禁用检查按钮）。 */
+  chainReady(): Promise<boolean> {
+    return invoke("update_chain_ready");
+  },
   download(): Promise<PendingUpdate> {
     return invoke("download_update");
   },

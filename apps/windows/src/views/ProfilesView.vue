@@ -102,7 +102,6 @@ async function onDelete(name: string) {
   <div class="page">
 
     <div class="toolbar">
-      <h2 class="page-title">{{ $t("profiles.title") }}</h2>
       <el-button @click="newOpen = true">{{ $t("profiles.new") }}</el-button>
       <el-dropdown trigger="click">
         <el-button aria-haspopup="menu">
@@ -160,10 +159,6 @@ async function onDelete(name: string) {
   align-items: center;
   gap: var(--ce-space-3);
   margin-bottom: var(--ce-space-5);
-}
-
-.toolbar .page-title {
-  margin: 0 auto 0 0;
 }
 
 .toolbar-caret {

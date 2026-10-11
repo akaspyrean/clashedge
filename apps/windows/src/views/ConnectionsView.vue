@@ -12,7 +12,7 @@ import { useAction } from "@/composables/useAction";
 import { useConfirm } from "@/composables/useConfirm";
 import { usePolling } from "@/composables/usePolling";
 import { pollIntervalFor, useConnectionsStore } from "@/stores/connections";
-import { formatBytes, formatRate } from "@/utils/format";
+import { formatBytes, splitRate } from "@/utils/format";
 
 const MAX_DISPLAY = 500;
 
@@ -23,6 +23,8 @@ const confirm = useConfirm();
 
 const query = ref("");
 const connectionCount = computed(() => store.count);
+const downRate = computed(() => splitRate(store.rateDown[store.rateDown.length - 1] ?? 0));
+const upRate = computed(() => splitRate(store.rateUp[store.rateUp.length - 1] ?? 0));
 
 const rows = computed(() => {
   const q = query.value.trim().toLowerCase();
@@ -35,8 +37,6 @@ const rows = computed(() => {
   if (!q) return all;
   return all.filter((c) => [c.host, c.rule, c.chain, c.kind].some((s) => s.toLowerCase().includes(q)));
 });
-
-const latest = (series: number[]) => series[series.length - 1] ?? 0;
 
 /** start 为 Unix 毫秒时间戳 → 显示连接已持续的时长（mm:ss / hh:mm:ss）。 */
 function formatStart(start: number): string {
@@ -70,17 +70,21 @@ async function onCloseAll() {
 
 <template>
   <div class="page connections-page">
-    <h2 class="page-title">{{ $t("connections.title") }}</h2>
-
     <section class="ce-card overview" :aria-label="$t('connections.overview')">
       <div class="stats">
         <div class="stat">
           <span class="stat-label">↓ {{ $t("connections.download_rate") }}</span>
-          <span class="stat-value">{{ formatRate(latest(store.rateDown)) }}</span>
+          <span class="stat-figures">
+            <span class="stat-value">{{ downRate[0] }}</span>
+            <span class="stat-unit">{{ downRate[1] }}</span>
+          </span>
         </div>
         <div class="stat">
           <span class="stat-label">↑ {{ $t("connections.upload_rate") }}</span>
-          <span class="stat-value">{{ formatRate(latest(store.rateUp)) }}</span>
+          <span class="stat-figures">
+            <span class="stat-value">{{ upRate[0] }}</span>
+            <span class="stat-unit">{{ upRate[1] }}</span>
+          </span>
         </div>
         <div class="stat">
           <span class="stat-label">{{ $t("connections.active") }}</span>
@@ -95,10 +99,6 @@ async function onCloseAll() {
     </section>
 
     <div class="list-head">
-      <h3 class="list-title">
-        {{ $t("connections.active") }}
-        <span v-if="connectionCount > 0" class="conn-count">{{ connectionCount }}</span>
-      </h3>
       <label class="search-box">
         <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
         <input
@@ -163,13 +163,22 @@ async function onCloseAll() {
 
 .stats {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--ce-space-3) var(--ce-space-8);
+  flex-wrap: nowrap;
+  gap: var(--ce-space-8);
+  align-items: baseline;
+}
+
+@media (max-width: 749px) {
+  .stats {
+    flex-wrap: wrap;
+    gap: var(--ce-space-3) var(--ce-space-6);
+  }
 }
 
 .stat {
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  gap: var(--ce-space-2);
 }
 
 .stat-label {
@@ -177,10 +186,22 @@ async function onCloseAll() {
   font: var(--ce-type-caption);
 }
 
+.stat-figures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ce-space-1);
+}
+
 .stat-value {
-  font: var(--ce-type-title-2);
+  font: var(--ce-type-caption);
   font-variant-numeric: tabular-nums;
   color: var(--ce-text-primary);
+  white-space: nowrap;
+}
+
+.stat-unit {
+  font: var(--ce-type-caption);
+  color: var(--ce-text-secondary);
 }
 
 .list-head {
@@ -191,23 +212,12 @@ async function onCloseAll() {
   margin-bottom: var(--ce-space-3);
 }
 
-.list-title {
-  margin: 0 auto 0 0;
-  font: var(--ce-type-title-3);
-}
-
-.conn-count {
-  margin-left: var(--ce-space-1);
-  color: var(--ce-text-tertiary);
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-}
-
 .search-box {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: var(--ce-space-2);
-  width: 260px;
+  min-width: 0;
   height: var(--ce-control-h);
   padding: 0 var(--ce-space-3);
   border: 1px solid transparent;
@@ -258,7 +268,7 @@ async function onCloseAll() {
 }
 
 .head {
-  min-height: 36px;
+  min-height: var(--ce-control-h);
   border-bottom: 1px solid var(--ce-divider);
   color: var(--ce-text-tertiary);
   font: var(--ce-type-caption);

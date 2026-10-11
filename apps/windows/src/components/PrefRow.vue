@@ -37,16 +37,17 @@ const hintId = `pref-${uid}-hint`;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
-  min-height: 44px;
+  gap: var(--ce-space-4);
+  padding: var(--ce-space-3) 0;
+  min-height: var(--ce-row-h);
 }
 
-/* 设置搜索命中：整行淡底高亮（由 SettingsView 添加 class）。 */
+/* 设置搜索命中：整行淡底高亮（由 SettingsView 添加 class）。
+ * 负边距与卡片内边距（.ce-card padding = space-5）等宽，高亮铺满整卡宽度。 */
 .pref-row.pref-hit {
-  margin: 0 calc(var(--ce-space-3) * -1);
-  padding-right: var(--ce-space-3);
-  padding-left: var(--ce-space-3);
+  margin: 0 calc(var(--ce-space-5) * -1);
+  padding-right: var(--ce-space-5);
+  padding-left: var(--ce-space-5);
   border-radius: var(--ce-radius-md);
   background: var(--ce-accent-soft);
 }
@@ -56,14 +57,13 @@ const hintId = `pref-${uid}-hint`;
 }
 
 .pref-title {
-  font-size: 14px;
-  font-weight: 500;
+  font: var(--ce-type-body-strong);
   color: var(--ce-text-primary);
 }
 
 .pref-hint {
-  margin-top: 2px;
-  font-size: 12px;
+  margin-top: var(--ce-space-1);
+  font: var(--ce-type-caption);
   color: var(--ce-text-tertiary);
 }
 
@@ -72,7 +72,7 @@ const hintId = `pref-${uid}-hint`;
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--ce-space-2);
 }
 
 .pref-control-wide {

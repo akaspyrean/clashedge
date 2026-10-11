@@ -153,6 +153,71 @@ pub fn ensure_rule_files(data_dir: &Path) {
 }
 
 // ---------------------------------------------------------------------------
+// geodata兜底（GeoIP.dat / GeoSite.dat / Country.mmdb）
+// ---------------------------------------------------------------------------
+
+/// geodata 缺失时 mihomo 会现场联网下载 GeoSite.dat，网络慢 / 不通会拖过启动
+/// 超时，核心起不来（开发构建的全新数据目录实测踩中）。
+/// 启动前补齐缺失文件：便携包 `App/DefaultData`（与规则集同源布局）→ 开发构建
+/// 从 exe 目录向上找仓库 `build/assets/staging/geodata`。已存在的文件绝不覆盖
+/// （可能比随包副本新，例如已通过「地理数据」更新过）。
+pub fn ensure_geodata(data_dir: &Path) {
+    const FILES: &[&str] = &["GeoIP.dat", "GeoSite.dat", "Country.mmdb"];
+    let missing: Vec<&str> = FILES
+        .iter()
+        .copied()
+        .filter(|f| !data_dir.join(f).exists())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+
+    // 候选 1：便携包 App/DefaultData。
+    let portable = crate::util::paths::portable_root().map(|r| r.join("App").join("DefaultData"));
+    // 候选 2：开发构建——从 exe 目录逐级向上找仓库里的 staging geodata。
+    let dev = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+        .and_then(|start| {
+            let mut dir = start;
+            for _ in 0..8 {
+                let cand = dir
+                    .join("build")
+                    .join("assets")
+                    .join("staging")
+                    .join("geodata");
+                if cand.is_dir() {
+                    return Some(cand);
+                }
+                match dir.parent() {
+                    Some(p) => dir = p.to_path_buf(),
+                    None => break,
+                }
+            }
+            None
+        });
+
+    for name in missing {
+        let src = [portable.as_ref(), dev.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|d| d.join(name))
+            .find(|s| s.exists());
+        let Some(src) = src else {
+            warn!(
+                "Geodata '{}' missing and no seed source found; mihomo will try to download it",
+                name
+            );
+            continue;
+        };
+        match std::fs::copy(&src, data_dir.join(name)) {
+            Ok(_) => info!("Seeded geodata {} from {:?}", name, src),
+            Err(e) => warn!("Failed to seed geodata {} from {:?}: {}", name, src, e),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // core-session.json（孤儿回收凭据）
 // ---------------------------------------------------------------------------
 
@@ -488,6 +553,19 @@ mod tests {
                 "{}",
                 n
             );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ensure_geodata_never_overwrites_existing_files() {
+        let d = scratch("geodata");
+        for n in ["GeoIP.dat", "GeoSite.dat", "Country.mmdb"] {
+            std::fs::write(d.join(n), "keep").unwrap();
+        }
+        ensure_geodata(&d);
+        for n in ["GeoIP.dat", "GeoSite.dat", "Country.mmdb"] {
+            assert_eq!(std::fs::read_to_string(d.join(n)).unwrap(), "keep", "{}", n);
         }
         let _ = std::fs::remove_dir_all(&d);
     }
