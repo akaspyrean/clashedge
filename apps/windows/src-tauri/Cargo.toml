@@ -52,10 +52,14 @@ winreg = "0.11"
 # 已作为传递依赖存在于 Cargo.lock（tauri/tokio 体系），无需新增下载。
 # Win32_Networking_WinInet：写入系统代理注册表后通知 WinINet 立即刷新。
 # Win32_Security / Win32_System_Threading / Win32_Foundation：
-#   is_elevated() 检测进程是否具备管理员权限（开启 TUN 前的权限预检提示）。
+#   is_elevated() 检测进程是否具备管理员权限（开启 TUN 前的权限预检提示）；
+#   wait_for_previous_instance() 用 OpenProcess/GetExitCodeProcess 等旧实例退出。
+# Win32_UI_Shell / Win32_UI_WindowsAndMessaging / Win32_System_Registry：
+#   relaunch_elevated() 走 ShellExecuteExW("runas") 弹 UAC 以管理员身份重启
+#   （SHELLEXECUTEINFOW 含 hkeyClass 字段，类型定义被 Registry feature 门控）。
 # Win32_NetworkManagement_IpHelper / Win32_Networking_WinSock：GetExtendedTcpTable
 #   查询监听端口的占用进程（端口冲突报错 + 回收本应用孤儿 mihomo）。
-windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet", "Win32_Security", "Win32_System_Threading", "Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet", "Win32_Security", "Win32_System_Threading", "Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry"] }
 directories = "5"
 once_cell = "1.19"
 parking_lot = "0.12"

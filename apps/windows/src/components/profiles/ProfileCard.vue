@@ -1,13 +1,14 @@
-<!-- 订阅卡片：名称 + 状态标签 / 订阅地址 / 用量进度条 / 一个主操作 + 「⋯」菜单。
+<!-- 订阅卡片：名称 + 状态标签 + 操作按钮同行（按钮靠右）/ 订阅地址（单行、脱敏）/ 用量进度条。
      主操作：未使用 → 使用；使用中的订阅 → 更新；使用中的本地配置 → 原始编辑。
      其余动作（重命名、原始编辑、User-Agent、导出、删除，以及未使用订阅的更新）收进菜单。
+     订阅地址经 maskUrl 脱敏（只露 host），单行省略随卡片宽度自适应。
      只发事件，不碰 store——业务由 ProfilesView 编排。 -->
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { MoreHorizontal } from "lucide-vue-next";
 import type { ProfileInfo } from "@/api/profiles";
-import { formatBytes, parseUserinfo } from "@/utils/format";
+import { formatBytes, maskUrl, parseUserinfo } from "@/utils/format";
 
 const props = defineProps<{
   profile: ProfileInfo;
@@ -78,9 +79,46 @@ function onPrimary() {
     <header class="head">
       <h3 class="name" :title="profile.name">{{ profile.name }}</h3>
       <span v-for="tag in tags" :key="tag.text" class="tag" :class="`tag-${tag.tone}`">{{ tag.text }}</span>
+      <div class="actions">
+        <el-button
+          size="small"
+          :loading="primary.kind === 'refresh' && busy"
+          :aria-label="`${primary.label}: ${profile.name}`"
+          @click="onPrimary"
+        >
+          {{ primary.label }}
+        </el-button>
+        <el-dropdown trigger="click">
+          <el-button
+            size="small"
+            class="card-more-btn"
+            :title="t('profiles.more')"
+            :aria-label="`${t('profiles.more')}: ${profile.name}`"
+            aria-haspopup="menu"
+          >
+            <MoreHorizontal :size="16" :stroke-width="1.75" aria-hidden="true" />
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-if="profile.url && primary.kind !== 'refresh'" @click="emit('refresh')">
+                {{ t("profiles.update") }}
+              </el-dropdown-item>
+              <el-dropdown-item @click="emit('rename')">{{ t("profiles.rename") }}</el-dropdown-item>
+              <el-dropdown-item v-if="primary.kind !== 'edit'" @click="emit('edit')">{{ t("profiles.raw_edit") }}</el-dropdown-item>
+              <el-dropdown-item v-if="profile.url" @click="emit('ua')">{{ t("profiles.subscribe_ua") }}</el-dropdown-item>
+              <el-dropdown-item @click="emit('export')">{{ t("profiles.export") }}</el-dropdown-item>
+              <el-dropdown-item divided class="danger-item" @click="emit('delete')">
+                {{ t("profiles.delete") }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
     </header>
 
-    <p class="url" :title="profile.url ?? undefined">{{ profile.url ?? t("profiles.local_file") }}</p>
+    <p class="url" :title="profile.url ? maskUrl(profile.url) : undefined">
+      {{ profile.url ? maskUrl(profile.url) : t("profiles.local_file") }}
+    </p>
 
     <div v-if="info" class="usage">
       <div
@@ -102,42 +140,6 @@ function onPrimary() {
         </span>
       </div>
     </div>
-
-    <footer class="actions">
-      <el-button
-        size="small"
-        :loading="primary.kind === 'refresh' && busy"
-        :aria-label="`${primary.label}: ${profile.name}`"
-        @click="onPrimary"
-      >
-        {{ primary.label }}
-      </el-button>
-      <el-dropdown trigger="click">
-        <el-button
-          size="small"
-          class="card-more-btn"
-          :title="t('profiles.more')"
-          :aria-label="`${t('profiles.more')}: ${profile.name}`"
-          aria-haspopup="menu"
-        >
-          <MoreHorizontal :size="16" :stroke-width="1.75" aria-hidden="true" />
-        </el-button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item v-if="profile.url && primary.kind !== 'refresh'" @click="emit('refresh')">
-              {{ t("profiles.update") }}
-            </el-dropdown-item>
-            <el-dropdown-item @click="emit('rename')">{{ t("profiles.rename") }}</el-dropdown-item>
-            <el-dropdown-item v-if="primary.kind !== 'edit'" @click="emit('edit')">{{ t("profiles.raw_edit") }}</el-dropdown-item>
-            <el-dropdown-item v-if="profile.url" @click="emit('ua')">{{ t("profiles.subscribe_ua") }}</el-dropdown-item>
-            <el-dropdown-item @click="emit('export')">{{ t("profiles.export") }}</el-dropdown-item>
-            <el-dropdown-item divided class="danger-item" @click="emit('delete')">
-              {{ t("profiles.delete") }}
-            </el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
-    </footer>
   </article>
 </template>
 
@@ -151,6 +153,7 @@ function onPrimary() {
 
 .head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--ce-space-2);
   min-width: 0;
@@ -196,12 +199,10 @@ function onPrimary() {
 
 .url {
   margin: 0;
-  /* 最多两行、任意位置折行：窄卡片下也能完整露出订阅地址，超出才省略 */
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  /* 单行省略：随卡片宽度自适应；地址经 maskUrl 脱敏，只露 host */
+  white-space: nowrap;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
   font: var(--ce-type-mono);
   color: var(--ce-text-tertiary);
 }
@@ -259,14 +260,12 @@ function onPrimary() {
   color: var(--ce-danger-fg);
 }
 
+/* 操作按钮与标题同行、靠右；窄卡片放不下时整组换行，仍然右对齐。 */
 .actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--ce-space-1);
-  margin-top: auto;
-  padding-top: var(--ce-space-3);
-  border-top: 1px solid var(--ce-divider);
+  margin-left: auto;
 }
 
 .actions .el-button + .el-button {
