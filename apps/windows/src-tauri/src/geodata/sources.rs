@@ -2,7 +2,9 @@
 //! GeoX/GeoIP/GeoSite URL configuration
 //!
 //! This module centralizes the URLs used for downloading GeoIP and GeoSite data files.
-//! The URLs are configured to fetch from Mihomo/MetaCubeX release assets.
+//! The default source is the built-in data repository (akaspyrean/external, the same
+//! repo that ships the signed rules manifest); MetaCubeX release assets are kept only
+//! as a last-resort fallback.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,16 +33,25 @@ pub struct GeoSources {
 impl GeoSources {
     /// Create a new GeoSources instance with default URLs
     ///
-    /// Defaults to the standard MetaCubeX/Mihomo release URLs for GeoIP and GeoSite.
+    /// Defaults to the built-in data repository (akaspyrean/external `geodata/`,
+    /// raw + jsDelivr mirror), with MetaCubeX release assets as last-resort fallbacks.
     pub fn new() -> Self {
         Self {
             geoip: vec![
+                "https://raw.githubusercontent.com/akaspyrean/external/main/geodata/GeoIP.dat"
+                    .to_string(),
+                "https://cdn.jsdelivr.net/gh/akaspyrean/external@main/geodata/GeoIP.dat"
+                    .to_string(),
                 "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"
                     .to_string(),
                 "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
                     .to_string(),
             ],
             geosite: vec![
+                "https://raw.githubusercontent.com/akaspyrean/external/main/geodata/GeoSite.dat"
+                    .to_string(),
+                "https://cdn.jsdelivr.net/gh/akaspyrean/external@main/geodata/GeoSite.dat"
+                    .to_string(),
                 "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
                     .to_string(),
                 "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"

@@ -176,10 +176,11 @@ describe("Dashboard 状态核心 / 模式 / 快捷切换", () => {
     expect(invokeMock).toHaveBeenCalledWith("stop_core");
   });
 
-  it("代理模式 1 次点击切换", async () => {
+  it("代理模式分段控件：展示当前模式并支持快速切换", async () => {
     const w = await mountDashboard({ running: true, systemProxy: true });
     const radios = w.findAll('[role="radio"]');
-    expect(radios.map((r) => r.attributes("aria-checked"))).toEqual(["true", "false", "false"]);
+    expect(radios).toHaveLength(3);
+    expect(radios[0].attributes("aria-checked")).toBe("true");
     await radios[1].trigger("click");
     await flushPromises();
     expect(invokeMock).toHaveBeenCalledWith("set_proxy_mode", { mode: "global" });

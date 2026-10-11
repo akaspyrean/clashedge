@@ -167,13 +167,14 @@ function onPrimary() {
   color: var(--ce-text-primary);
 }
 
+/* 与 StatusPill 同族：22px 胶囊 + soft 底 + fg 字。 */
 .tag {
   flex: none;
   display: inline-flex;
   align-items: center;
   height: 22px;
-  padding: 0 var(--ce-space-2);
-  border-radius: var(--ce-radius-sm);
+  padding: 0 var(--ce-space-3);
+  border-radius: var(--ce-radius-full);
   font: var(--ce-type-caption);
   white-space: nowrap;
 }
@@ -195,9 +196,12 @@ function onPrimary() {
 
 .url {
   margin: 0;
+  /* 最多两行、任意位置折行：窄卡片下也能完整露出订阅地址，超出才省略 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font: var(--ce-type-mono);
   color: var(--ce-text-tertiary);
 }

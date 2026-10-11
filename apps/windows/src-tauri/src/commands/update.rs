@@ -38,6 +38,13 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<serde_json::Value> {
     serde_json::to_value(status).map_err(|e| Error::Other(e.to_string()))
 }
 
+/// 当前构建是否内置更新验签公钥（开发构建通常为空 → 更新链整体不可用，
+/// 前端据此禁用「检查新版本」而非弹出失败提示）。
+#[command]
+pub fn update_chain_ready() -> bool {
+    !crate::update::UPDATE_PUBLIC_KEY.trim().is_empty()
+}
+
 #[command]
 pub async fn download_update(app: tauri::AppHandle) -> Result<crate::update::PendingUpdate> {
     // 只信任本会话刚验签过的 manifest；没有或已过 TTL 则要求先执行检查

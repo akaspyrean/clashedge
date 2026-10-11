@@ -1,4 +1,4 @@
-<!-- 设置 · 关于：版本信息、应用更新（签名清单 → 下载校验暂存 → 启动器安装）、诊断包。 -->
+<!-- 设置 · 关于：版本信息、应用更新（签名清单 → 下载校验暂存 → 启动器安装，仅内置公钥的构建显示）。 -->
 <script setup lang="ts">
 import { onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
@@ -20,7 +20,6 @@ const update = useUpdateStore();
 const confirm = useConfirm();
 const notify = useNotify();
 
-const diagnostics = useAction();
 const discarding = useAction();
 
 /** 检查更新。silent=true（由后台事件触发）时不弹成功 / 失败提示。 */
@@ -55,30 +54,26 @@ async function onRestartApply() {
   }
 }
 
-async function onExportDiagnostics() {
-  const r = await diagnostics.run(() => appStore.exportDiagnostics());
-  if (r.ok) notify.ok(`${t("about.diagnostics_done")}${r.value}`);
-}
-
 // 启动后的静默检查发现新版本：刷新本页更新状态（后端已缓存验签材料）。
 let unlisten: UnlistenFn | undefined;
 onMounted(async () => {
   void update.loadStaged();
+  void update.loadChainReady();
   unlisten = await listen("update-available", () => void onCheck(true));
 });
 onUnmounted(() => unlisten?.());
 </script>
 
 <template>
-  <el-descriptions :column="1" border>
-    <el-descriptions-item :label="t('about.version')">{{ appStore.version || "—" }}</el-descriptions-item>
-    <el-descriptions-item :label="t('about.core_version')">
-      {{ coreStore.status.version ?? "—" }}
-    </el-descriptions-item>
-  </el-descriptions>
-
-  <PrefList class="about-actions">
-    <PrefRow :title="t('about.check_update')">
+  <PrefList>
+    <PrefRow :title="t('about.version')">
+      <span class="about-value">{{ appStore.version || "—" }}</span>
+    </PrefRow>
+    <PrefRow :title="t('about.core_version')">
+      <span class="about-value">{{ coreStore.status.version ?? "—" }}</span>
+    </PrefRow>
+    <!-- 仅内置了更新公钥的构建显示；开发构建整行隐藏 -->
+    <PrefRow v-if="update.chainReady" :title="t('about.check_update')" :hint="t('about.check_update_hint')">
       <template #info>
         <div v-if="update.availableVersion" class="pref-hint" role="status">
           {{ t("about.new_version", { version: update.availableVersion }) }}
@@ -106,23 +101,19 @@ onUnmounted(() => unlisten?.());
         {{ t("about.discard_staged") }}
       </el-button>
     </PrefRow>
-
-    <PrefRow :title="t('about.export_diagnostics')">
-      <el-button :loading="diagnostics.busy.value" @click="onExportDiagnostics">
-        {{ t("about.export_diagnostics") }}
-      </el-button>
-    </PrefRow>
   </PrefList>
 </template>
 
 <style scoped>
-.about-actions {
-  margin-top: 16px;
+.about-value {
+  font: var(--ce-type-body);
+  color: var(--ce-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .pref-hint {
-  margin-top: 2px;
-  font-size: 12px;
+  margin-top: var(--ce-space-1);
+  font: var(--ce-type-caption);
   color: var(--ce-text-tertiary);
 }
 </style>

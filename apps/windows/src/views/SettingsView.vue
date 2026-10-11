@@ -2,8 +2,7 @@
      本文件是外壳：加载配置、统一的「保存」、设置搜索（高亮命中并滚动到位）。
      每个分组的内容仍是独立组件（components/settings/*），各自管理状态与动作，
      所有设置项都在，只是由 5 个 Tab 改成了同一页的分组卡片；宽屏分两列。
-     配置降级（config.yaml 损坏）的提示与确认在应用顶部横幅（DegradedBanner），不在本页。 -->
-<script setup lang="ts">
+     配置降级（config.yaml 损坏）的提示与确认在应用顶部横幅（DegradedBanner），不在本页。 --><script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { Search } from "lucide-vue-next";
 import AboutTab from "@/components/settings/AboutTab.vue";
@@ -26,13 +25,13 @@ onMounted(async () => {
   await appStore.loadAutostart();
 });
 
-// 分组：顺序即页面顺序；宽屏左列 常规 + 代理，右列 TUN + 高级 + 关于。
+// 分组：顺序即页面顺序；宽屏左列高频三组（常规/代理/TUN），右列低频（高级/关于）。
 const left = [
   { id: "general", title: "settings.tabs.general", comp: GeneralTab },
   { id: "proxy", title: "settings.tabs.proxy", comp: ProxyTab },
+  { id: "tun", title: "settings.tabs.tun", comp: TunTab },
 ];
 const right = [
-  { id: "tun", title: "settings.tabs.tun", comp: TunTab },
   { id: "advanced", title: "settings.tabs.advanced", comp: AdvancedTab },
   { id: "about", title: "settings.tabs.about", comp: AboutTab },
 ];
@@ -67,7 +66,6 @@ watch(query, applySearch);
 <template>
   <div v-if="configStore.config" ref="pageEl" class="page settings-page">
     <div class="toolbar">
-      <h2 class="page-title">{{ $t("settings.title") }}</h2>
       <span v-if="searched" class="found" role="status">
         {{ hitCount > 0 ? $t("settings.search_count", { n: hitCount }) : $t("settings.search_none") }}
       </span>
@@ -109,21 +107,19 @@ watch(query, applySearch);
   margin-bottom: var(--ce-space-5);
 }
 
-.toolbar .page-title {
-  margin: 0 auto 0 0;
-}
-
 .found {
   color: var(--ce-text-tertiary);
   font: var(--ce-type-callout);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .search-box {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: var(--ce-space-2);
-  width: 260px;
+  min-width: 0;
   height: var(--ce-control-h);
   padding: 0 var(--ce-space-3);
   border: 1px solid transparent;

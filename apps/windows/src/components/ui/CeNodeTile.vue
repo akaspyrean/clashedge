@@ -61,7 +61,7 @@ function onSelect() {
   position: relative;
   min-width: 200px;
   min-height: 72px;
-  padding: var(--ce-space-3) 14px;
+  padding: var(--ce-space-3) var(--ce-space-4);
   border: 1px solid var(--ce-border);
   border-radius: calc(var(--ce-radius-lg) - 2px);
   background: var(--ce-bg-surface);
@@ -123,7 +123,8 @@ function onSelect() {
 
 .ce-tile.is-selected .ce-tile__name {
   color: var(--ce-accent-fg);
-  padding-right: var(--ce-space-5);
+  /* 让位给右上角 16px 勾选徽标（right 12 + 16 + 间隙 4） */
+  padding-right: 32px;
 }
 
 .ce-tile__proto {
@@ -134,15 +135,15 @@ function onSelect() {
 
 .ce-tile__lat {
   position: absolute;
-  right: 14px;
+  right: var(--ce-space-4);
   bottom: var(--ce-space-3);
   z-index: 1;
 }
 
 .ce-tile__check {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: var(--ce-space-3);
+  right: var(--ce-space-3);
   display: grid;
   place-items: center;
   width: 16px;

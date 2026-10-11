@@ -1,6 +1,6 @@
 <!-- src/views/DashboardView.vue - 首页：状态核心 + 实时流量
      设计约束：首页是「入口」，只做启停与状态；所有动作复用现有 store action。
-     - 状态核心：启动/停止（主连接按钮）、重启、重载、代理模式、系统代理、TUN
+     - 状态核心：启动/停止（主连接按钮）、重启、重载；代理模式/系统代理/TUN 三个快速开关
      - 实时流量：速率由 connections store 的累计值求差得出（沿用轮询策略，不另起轮询） -->
 <script setup lang="ts">
 import { computed, ref } from "vue";
@@ -55,9 +55,10 @@ const onToggleCore = () =>
 const onRestart = () => coreAction.run(() => core.restart());
 const onReload = () => coreAction.run(() => core.reload());
 
-const modeAction = useAction();
 const systemProxy = useAction();
 const tun = useAction();
+/** 代理模式分段：与代理页工具栏同一个 setProxyMode 动作，可就地快速切换。 */
+const modeAction = useAction();
 const modeOptions = computed(() =>
   ["rule", "global", "direct"].map((m) => ({ value: m, label: t(`tray.mode_${m}`) })),
 );
@@ -65,9 +66,13 @@ const onModeChange = (mode: string) => modeAction.run(() => config.setProxyMode(
 /** 系统代理开关：走统一编排层（持久化意图 + 写注册表 + 托盘图标变色）。 */
 const onSystemProxyChange = (val: boolean | string | number) =>
   systemProxy.run(() => config.setSystemProxy(Boolean(val)));
-/** TUN 开关：与设置 › TUN 同一个 action，提权流程不变。 */
-const onTunChange = (val: boolean | string | number) =>
-  tun.run(() => config.setTunMode(Boolean(val)), { success: true });
+/** TUN 开关：与设置 › TUN 同一个 action，提权流程不变；开/关即时提示结果。 */
+const onTunChange = (val: boolean | string | number) => {
+  const on = Boolean(val);
+  return tun.run(() => config.setTunMode(on), {
+    success: on ? t("dashboard.tun_enabled") : t("dashboard.tun_disabled"),
+  });
+};
 
 // ---- 实时流量 ----
 const downRate = computed(() => splitRate(connections.rateDown[connections.rateDown.length - 1] ?? 0));
@@ -83,24 +88,22 @@ const sessionLine = computed(() =>
 
 <template>
   <div class="page">
-    <h2 class="page-title">{{ $t("dashboard.title") }}</h2>
-
     <div class="dash-grid">
       <!-- 状态核心 -->
       <section class="ce-card core-card" :aria-label="$t('dashboard.core_status')">
         <CeStatusCore :state="coreState" :label="coreLabel" @toggle="onToggleCore">
           <span class="core-meta">{{ versionLine }}</span>
           <span class="core-links">
-            <el-button text :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
-            <el-button text :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
+            <el-button size="small" :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
+            <el-button size="small" plain :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
           </span>
         </CeStatusCore>
 
         <div class="core-divider" aria-hidden="true"></div>
 
         <div class="core-controls">
-          <div class="control-block">
-            <span class="control-label">{{ $t("dashboard.proxy_mode") }}</span>
+          <div class="set-row">
+            <span class="set-label">{{ $t("dashboard.proxy_mode") }}</span>
             <CeSegmented
               :model-value="config.proxyMode"
               :options="modeOptions"
@@ -109,9 +112,7 @@ const sessionLine = computed(() =>
             />
           </div>
           <div class="set-row">
-            <div class="set-info">
-              <div class="set-label">{{ $t("dashboard.system_proxy") }}</div>
-            </div>
+            <span class="set-label">{{ $t("dashboard.system_proxy") }}</span>
             <el-switch
               :model-value="config.systemProxy"
               :aria-label="$t('dashboard.system_proxy')"
@@ -120,10 +121,7 @@ const sessionLine = computed(() =>
             />
           </div>
           <div class="set-row">
-            <div class="set-info">
-              <div class="set-label">{{ $t("dashboard.tun_mode") }}</div>
-              <div class="set-hint">{{ $t("dashboard.tun_hint") }}</div>
-            </div>
+            <span class="set-label">{{ $t("dashboard.tun_mode") }}</span>
             <el-switch
               :model-value="config.tunEnabled"
               :aria-label="$t('dashboard.tun_mode')"
@@ -136,25 +134,28 @@ const sessionLine = computed(() =>
 
       <!-- 实时流量 -->
       <section class="ce-card traffic-card" :aria-label="$t('dashboard.traffic_title')">
-        <h3 class="card-title">{{ $t("dashboard.traffic_title") }}</h3>
         <div class="rates">
           <div class="rate">
             <span class="rate-label">↓ {{ $t("ui.chart.down") }}</span>
-            <span class="rate-value">{{ downRate[0] }}</span>
-            <span class="rate-unit">{{ downRate[1] }}</span>
+            <span class="rate-figures">
+              <span class="rate-value">{{ downRate[0] }}</span>
+              <span class="rate-unit">{{ downRate[1] }}</span>
+            </span>
           </div>
           <div class="rate">
             <span class="rate-label">↑ {{ $t("ui.chart.up") }}</span>
-            <span class="rate-value">{{ upRate[0] }}</span>
-            <span class="rate-unit">{{ upRate[1] }}</span>
+            <span class="rate-figures">
+              <span class="rate-value">{{ upRate[0] }}</span>
+              <span class="rate-unit">{{ upRate[1] }}</span>
+            </span>
           </div>
+          <p class="session-line">{{ sessionLine }}</p>
         </div>
         <CeSparkline
           :down="connections.rateDown"
           :up="connections.rateUp"
           :label="$t('dashboard.traffic_chart_label')"
         />
-        <p class="session-line">{{ sessionLine }}</p>
       </section>
     </div>
   </div>
@@ -172,12 +173,6 @@ const sessionLine = computed(() =>
   .dash-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-}
-
-.card-title {
-  margin: 0;
-  font: var(--ce-type-title-3);
-  color: var(--ce-text-primary);
 }
 
 /* ---- 状态核心 ---- */
@@ -200,8 +195,8 @@ const sessionLine = computed(() =>
 
 .core-links {
   display: flex;
-  gap: var(--ce-space-1);
-  margin-left: calc(var(--ce-space-3) * -1);
+  gap: var(--ce-space-2);
+  margin-top: var(--ce-space-1);
 }
 
 .core-divider {
@@ -210,46 +205,38 @@ const sessionLine = computed(() =>
   background: var(--ce-divider);
 }
 
+/* 底部三控件栅格：模式分段占首列（较宽），系统代理/TUN 次之；窄屏自动换行。 */
 .core-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--ce-space-5);
+  display: grid;
+  flex-basis: 100%;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--ce-space-4) var(--ce-space-5);
   align-items: center;
 }
 
-.control-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ce-space-1);
-}
-
-.control-label {
-  font: var(--ce-type-caption);
-  color: var(--ce-text-tertiary);
+@media (max-width: 749px) {
+  .core-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .set-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--ce-space-3);
   min-width: 0;
 }
 
-.set-info {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ce-space-1);
-  min-width: 0;
+/* 代理模式只读展示当前模式（切换入口在代理页工具栏）。 */
+.mode-value {
+  font: var(--ce-type-body-strong);
+  color: var(--ce-accent-fg);
 }
 
 .set-label {
   font: var(--ce-type-body-strong);
   color: var(--ce-text-primary);
-}
-
-.set-hint {
-  font: var(--ce-type-callout);
-  color: var(--ce-text-tertiary);
 }
 
 /* ---- 实时流量 ---- */
@@ -262,13 +249,15 @@ const sessionLine = computed(() =>
 
 .rates {
   display: flex;
-  gap: var(--ce-space-5);
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ce-space-3) var(--ce-space-8);
 }
 
 .rate {
   display: flex;
-  flex-direction: column;
-  gap: var(--ce-space-1);
+  align-items: baseline;
+  gap: var(--ce-space-2);
 }
 
 .rate-label {
@@ -276,22 +265,29 @@ const sessionLine = computed(() =>
   color: var(--ce-text-tertiary);
 }
 
+.rate-figures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ce-space-1);
+}
+
 .rate-value {
-  font: 700 28px/36px var(--ce-font-sans);
+  font: var(--ce-type-caption);
   color: var(--ce-text-primary);
   font-variant-numeric: tabular-nums;
 }
 
 .rate-unit {
-  font: var(--ce-type-callout);
+  font: var(--ce-type-caption);
   color: var(--ce-text-secondary);
-  margin-left: var(--ce-space-1);
 }
 
 .session-line {
   margin: 0;
-  font: var(--ce-type-callout);
+  margin-left: auto;
+  font: var(--ce-type-caption);
   color: var(--ce-text-tertiary);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 </style>

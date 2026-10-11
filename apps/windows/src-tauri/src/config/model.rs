@@ -117,7 +117,9 @@ pub struct GeneralConfig {
     #[serde(default = "default_geodata_mode")]
     pub geodata_mode: serde_yaml::Value,
 
-    #[serde(default)]
+    /// GeoData / 签名规则清单自动更新（启动后 90s 单次检查，>24h 才执行；
+    /// 更新流先拉签名规则清单再补 GeoData）。默认开启。
+    #[serde(default = "default_geo_auto_update")]
     pub geo_auto_update: bool,
 
     /// 启动时是否自动刷新过期订阅（超过 24h 未更新的订阅）。
@@ -158,7 +160,7 @@ fn default_mixed_port() -> u16 {
     7890
 }
 fn default_log_level() -> String {
-    "info".to_string()
+    "error".to_string()
 }
 pub(crate) fn default_geodata_mode() -> serde_yaml::Value {
     serde_yaml::Value::String("manual".to_string())
@@ -169,8 +171,11 @@ fn default_find_process_mode() -> String {
 fn default_auto_update_subscription() -> bool {
     true
 }
-fn default_auto_check_update() -> bool {
+fn default_geo_auto_update() -> bool {
     true
+}
+fn default_auto_check_update() -> bool {
+    false
 }
 fn default_proxy_mode() -> String {
     "rule".to_string()
@@ -186,9 +191,9 @@ impl Default for GeneralConfig {
             log_level: default_log_level(),
             ipv6: false,
             geodata_mode: default_geodata_mode(),
-            geo_auto_update: false,
+            geo_auto_update: default_geo_auto_update(),
             auto_update_subscription: true,
-            auto_check_update: true,
+            auto_check_update: default_auto_check_update(),
             sniffer: false,
             find_process_mode: default_find_process_mode(),
             proxy_mode: default_proxy_mode(),
@@ -545,9 +550,14 @@ pub fn migrate_builtin_rule_providers(providers: &mut HashMap<String, serde_yaml
     changed
 }
 
-/// 内置代理组：默认基线的 proxy-groups 段。
+/// 内置代理组：默认基线的 proxy-groups 段（规格固定六组）。
+/// - 扶梯出行：[自动优选, 人工优选, DIRECT]（默认自动，流量走低延迟节点）
+/// - 人工智能 / 影音视听：[人工优选, 自动优选, DIRECT]（默认手动）
+/// - 人工优选（select）：全部有效节点，纯手动选择（无任何自动成员）
+/// - 自动优选（url-test）：全部有效节点，自动选延迟最低者
+///
 /// 叶子组初始为空（无订阅时无可用节点），订阅导入后由
-/// `build_runtime_config` 注入真实节点名。
+/// `build_runtime_config` 注入真实节点名。DIRECT 为路由组兜底项。
 /// GLOBAL 为全局模式专用组：`mode: global` 时所有流量走它，只含 DIRECT/REJECT
 /// 与两个叶子组；代理页面按模式联动（rule 隐藏 / global 独占显示 / direct 无组），
 /// 由前端 `ProxiesView` 实现，托盘保留以便切换。
@@ -564,13 +574,13 @@ pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
   proxies: [DIRECT, REJECT, 人工优选, 自动优选]
 - name: 扶梯出行
   type: select
-  proxies: [人工优选, 自动优选]
+  proxies: [自动优选, 人工优选, DIRECT]
 - name: 人工智能
   type: select
-  proxies: [人工优选, 自动优选]
+  proxies: [人工优选, 自动优选, DIRECT]
 - name: 影音视听
   type: select
-  proxies: [人工优选, 自动优选]
+  proxies: [人工优选, 自动优选, DIRECT]
 - name: 人工优选
   type: select
   proxies: []
@@ -589,6 +599,36 @@ pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
   proxies: []
 "#;
     serde_yaml::from_str(YAML).unwrap_or_default()
+}
+
+/// 内置代理组迁移：把持久化配置里的六个内置组重置为当前基线定义。
+/// 内置组骨架（成员序 / 类型 / 测速参数）由应用所有，UI 不开放组成员编辑；
+/// 旧版本持久化的过时骨架（如 扶梯出行=[人工优选, 自动优选]）会使默认选中项
+/// 偏离规格（扶梯出行应默认自动优选），一律以当前 `default_proxy_groups` 覆盖。
+/// 同名自定义组不受影响；缺失的内置组补回列表尾部。返回是否发生了迁移。
+pub fn migrate_builtin_proxy_groups(groups: &mut Vec<serde_yaml::Value>) -> bool {
+    let mut changed = false;
+    for d in default_proxy_groups() {
+        let Some(name) = d.get("name").and_then(|n| n.as_str()).map(str::to_string) else {
+            continue;
+        };
+        match groups
+            .iter_mut()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+        {
+            Some(slot) => {
+                if *slot != d {
+                    *slot = d;
+                    changed = true;
+                }
+            }
+            None => {
+                groups.push(d);
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// 内置路由规则：内置基线的分流规则段。
@@ -613,6 +653,55 @@ pub fn default_rules() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 旧版持久化骨架迁移：扶梯出行回到 [自动优选, 人工优选, DIRECT]（默认自动），
+    /// 缺失的内置组补回，同名自定义组不受影响，且迁移幂等。
+    #[test]
+    fn migrate_builtin_proxy_groups_restores_current_baseline() {
+        let mut groups: Vec<serde_yaml::Value> = serde_yaml::from_str(
+            r#"
+- name: 扶梯出行
+  type: select
+  proxies: [人工优选, 自动优选]
+- name: 自定义组
+  type: select
+  proxies: [节点A]
+"#,
+        )
+        .expect("parse fixture");
+
+        assert!(migrate_builtin_proxy_groups(&mut groups));
+
+        let get = |name: &str| -> Vec<String> {
+            groups
+                .iter()
+                .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
+                .map(|g| {
+                    g.get("proxies")
+                        .and_then(|p| p.as_sequence())
+                        .map(|s| {
+                            s.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        };
+
+        // 扶梯出行：成员序按规格，默认首项=自动优选
+        assert_eq!(get("扶梯出行"), vec!["自动优选", "人工优选", "DIRECT"]);
+        // 缺失的内置组补回（含 人工智能 / 影音视听 / GLOBAL / 人工优选 / 自动优选）
+        assert_eq!(get("人工智能"), vec!["人工优选", "自动优选", "DIRECT"]);
+        assert_eq!(get("影音视听"), vec!["人工优选", "自动优选", "DIRECT"]);
+        assert!(groups
+            .iter()
+            .any(|g| g.get("name").and_then(|n| n.as_str()) == Some("GLOBAL")));
+        // 同名自定义组不被触碰
+        assert_eq!(get("自定义组"), vec!["节点A"]);
+        // 幂等：再跑一遍不再变化
+        assert!(!migrate_builtin_proxy_groups(&mut groups));
+    }
 
     /// 旧版 config.yaml：external-controller / secret 位于顶层。
     /// 往返后必须保留原始值，且仍写回顶层（mihomo 可识别），

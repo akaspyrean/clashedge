@@ -15,7 +15,7 @@ defineProps<{
 
 <style scoped>
 .status-banner {
-  margin-bottom: 12px;
+  margin-bottom: var(--ce-space-3);
   overflow-wrap: anywhere;
 }
 </style>

@@ -150,6 +150,7 @@ impl CoreManager {
         // 3. 用当前配置（含激活 Profile）生成运行时配置。
         //    写盘失败（磁盘只读/空间不足等）绝不能停留在 Starting。
         spawn::ensure_rule_files(&data_dir);
+        spawn::ensure_geodata(&data_dir);
         let config = self.config();
         let (runtime_config, hash) = match spawn::write_runtime_config(&data_dir, &config) {
             Ok(v) => v,
