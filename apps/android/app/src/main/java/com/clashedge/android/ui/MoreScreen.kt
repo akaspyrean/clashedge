@@ -25,9 +25,9 @@ fun MoreScreen(
 ) {
     // tab 索引与 MainScreen 的 when(tab) 对应：3=订阅 4=日志 5=设置
     val entries = listOf(
-        R.string.nav_profiles to "profiles" to 3,
-        R.string.nav_logs to "logs" to 4,
-        R.string.nav_settings to "settings" to 5,
+        Triple(R.string.nav_profiles, "profiles", 3),
+        Triple(R.string.nav_logs, "logs", 4),
+        Triple(R.string.nav_settings, "settings", 5),
     )
     Column(
         modifier = modifier
