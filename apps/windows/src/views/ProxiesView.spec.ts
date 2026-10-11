@@ -20,12 +20,26 @@ const groups: ProxyGroup[] = [
   { name: "自动优选", type: "URLTest", now: "Node1", all: ["Node1", "Node2"] },
 ];
 
+/** 首次启动自动选最低延迟的一次性标记（默认阻断，只在专门用例里放行）。 */
+const MANUAL_DEFAULT_KEY = "ce:manual-default:v1";
+
+/** 模拟测速结果：Node2 最快，Node1 较慢。 */
+const NODE_DELAYS: Record<string, number | null> = { Node1: 300, Node2: 50 };
+
+beforeEach(() => {
+  localStorage.setItem(MANUAL_DEFAULT_KEY, "1");
+});
+
 /** 后端返回 rule 模式 + 运行中 + 上述代理组。 */
 function mockBackend(mode = "rule") {
-  invokeMock.mockImplementation((cmd: string) => {
+  invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "get_config") return Promise.resolve({ mode, "system-proxy": false });
     if (cmd === "get_status") return Promise.resolve({ running: true, status: "running", version: null });
     if (cmd === "get_proxy_groups") return Promise.resolve(groups);
+    if (cmd === "test_proxy_latency") {
+      const g = String(args?.group ?? "");
+      return Promise.resolve([{ group: g, delay: g in NODE_DELAYS ? NODE_DELAYS[g] : null }]);
+    }
     return Promise.resolve(undefined);
   });
 }
@@ -84,18 +98,16 @@ describe("ProxiesView: 主从双栏", () => {
     return w;
   }
 
-  /** 左栏新顺序：叶子组（人工优选/自动优选）在前，路由组（扶梯出行等）在后 */
-  it("组名按叶子→路由分段排列；叶子组标注手动或测速", async () => {
+  /** 左栏单一平铺：扶梯出行 → 自动优选 → 人工优选（GLOBAL 被规则模式过滤） */
+  it("组名单一平铺排序（扶梯出行→自动优选→人工优选）", async () => {
     const w = await mountView();
     const names = w.findAll(".group-name").map((n) => n.text());
-    expect(names).toEqual(["人工优选", "自动优选", "扶梯出行"]);
-    const types = w.findAll(".group-type").map((n) => n.text());
-    expect(types).toEqual(["proxies.type_manual", "proxies.type_auto"]);
+    expect(names).toEqual(["扶梯出行", "自动优选", "人工优选"]);
   });
 
-  it("默认选中人工优选组（叶子组优先）；叶子组屏蔽 DIRECT", async () => {
+  it("默认选中人工优选组（手工组优先落地）；叶子组屏蔽 DIRECT", async () => {
     const w = await mountView();
-    // 默认就是人工优选（第一个叶子组），无需点击
+    // 默认就是人工优选（可交互的真实节点格），无需点击
     expect(w.find(".detail-title").text()).toBe("人工优选");
     expect(w.findAll(".ce-tile__name").map((n) => n.text())).toEqual(["Node1", "Node2"]);
   });
@@ -110,7 +122,7 @@ describe("ProxiesView: 主从双栏", () => {
 
   it("自动优选组节点格只读并提示由测速自动选择", async () => {
     const w = await mountView();
-    // 自动优选是叶子组段的第 2 个按钮
+    // 自动优选是平铺列表的第 2 个按钮
     const rows = w.findAll(".group-row");
     const autoRow = rows.find((r) => r.text().includes("自动优选"));
     await autoRow!.trigger("click");
@@ -149,5 +161,28 @@ describe("ProxiesView: 主从双栏", () => {
   it("global 模式只显示 GLOBAL", async () => {
     const w = await mountView("global");
     expect(w.findAll(".group-name").map((n) => n.text())).toEqual(["GLOBAL"]);
+  });
+});
+
+describe("ProxiesView: 首次启动自动选最低延迟", () => {
+  it("首次运行完成全量测速后把人工优选选到延迟最低节点并打一次性标记", async () => {
+    localStorage.removeItem(MANUAL_DEFAULT_KEY);
+    setActivePinia(createPinia());
+    invokeMock.mockReset();
+    mockBackend("rule");
+    const { useConfigStore } = await import("@/stores/config");
+    await useConfigStore().load();
+    await useProxyStore().loadGroups();
+    const { useCoreStore } = await import("@/stores/core");
+    useCoreStore().status = { running: true, status: "running", version: null };
+    mount(ProxiesView, mountOptions);
+    await flushPromises();
+    for (let i = 0; i < 15; i++) await flushPromises();
+    // Node2(50ms) < Node1(300ms) → 人工优选从默认 Node1 切到 Node2
+    expect(invokeMock).toHaveBeenCalledWith("select_proxy_group", {
+      group: "人工优选",
+      proxy: "Node2",
+    });
+    expect(localStorage.getItem(MANUAL_DEFAULT_KEY)).toBe("1");
   });
 });

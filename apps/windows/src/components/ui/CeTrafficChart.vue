@@ -264,7 +264,7 @@ const rows = computed(() =>
   flex-direction: column;
   gap: var(--ce-space-1);
   min-width: 160px;
-  padding: 10px var(--ce-space-3);
+  padding: var(--ce-space-2) var(--ce-space-3);
   border-radius: var(--ce-radius-md);
   background: var(--ce-bg-elevated);
   box-shadow: var(--ce-shadow-e2);
@@ -357,7 +357,7 @@ const rows = computed(() =>
 
 .ce-chart__table th,
 .ce-chart__table td {
-  padding: 6px var(--ce-space-3);
+  padding: var(--ce-space-2) var(--ce-space-3);
   text-align: left;
   border-bottom: 1px solid var(--ce-divider);
   font-weight: 400;

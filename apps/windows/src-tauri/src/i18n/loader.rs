@@ -27,8 +27,11 @@ static RESOURCES: Lazy<HashMap<&'static str, HashMap<String, String>>> = Lazy::n
 /// 将嵌套 YAML 扁平化为 "a.b.c" 键到字符串值的映射
 fn flatten_yaml(yaml: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(yaml) {
-        flatten_value(&value, "", &mut out);
+    match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(value) => flatten_value(&value, "", &mut out),
+        // 解析失败（如同层重复键）会导致整张消息表为空、界面显示原始键名；
+        // 打日志便于定位，并由下方测试在 CI 阶段拦截。
+        Err(err) => eprintln!("[i18n] failed to parse embedded yaml: {err}"),
     }
     out
 }
@@ -126,4 +129,41 @@ pub fn supported_locales() -> &'static [&'static str] {
 /// 获取默认语言
 pub fn default_locale() -> &'static str {
     DEFAULT_LOCALE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 内嵌 YAML 必须能解析且非空：同层重复键会让 serde_yaml 报错，
+    /// 进而整张消息表为空、界面全部显示原始键名。
+    #[test]
+    fn embedded_yaml_parses_and_non_empty() {
+        for (locale, yaml) in [
+            ("zh-CN", include_str!("../../resources/i18n/zh-CN.yaml")),
+            ("en-US", include_str!("../../resources/i18n/en-US.yaml")),
+        ] {
+            serde_yaml::from_str::<serde_yaml::Value>(yaml)
+                .unwrap_or_else(|e| panic!("{locale} yaml invalid: {e}"));
+            let table = flatten_yaml(yaml);
+            assert!(
+                table.len() > 100,
+                "{locale} message table suspiciously small: {}",
+                table.len()
+            );
+            // 抽查若干本轮改动过的键
+            for key in [
+                "general.fpm_off",
+                "general.gdm_manual",
+                "general.gdm_use-external",
+                "general.auto_update_subscription_hint",
+                "tun.auto_route_hint",
+            ] {
+                assert!(
+                    table.contains_key(key),
+                    "{locale} missing key {key}"
+                );
+            }
+        }
+    }
 }

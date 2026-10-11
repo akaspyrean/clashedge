@@ -115,6 +115,11 @@ pub(crate) fn merge_rules(config: Config) -> Config {
         info!("Builtin rule-providers migrated to local files (signed updater)");
     }
 
+    // 内置代理组：旧版持久化骨架迁移为当前基线（成员序按规格，扶梯出行默认自动优选）
+    if crate::config::model::migrate_builtin_proxy_groups(&mut config.proxy_groups) {
+        info!("Builtin proxy-groups migrated to current baseline");
+    }
+
     // 确保默认配置文件存在
     if config.general.profile.is_empty() {
         config.general.profile = "DIRECT".to_string();
@@ -134,7 +139,8 @@ pub(crate) fn merge_rules(config: Config) -> Config {
 /// 1. AppConfig 控制运行时关键设置（端口 / 控制器 / 模式 / TUN / DNS），订阅不得覆盖；
 /// 2. AppConfig.extra 兜底键作为基线透传（用户自行导入的自定义键）；
 /// 3. 激活 Profile 只提供节点：应用始终采用内置组骨架（GLOBAL + 5 组）与内置规则链，
-///    订阅节点名强制注入叶子组（人工优选只含真实节点 / 自动优选含 DIRECT 兜底）；订阅自带的 proxy-groups/rules 不采用；
+///    订阅节点名强制注入叶子组（人工优选=全部节点纯手动 / 自动优选=全部节点 url-test，
+///    两者均只含真实节点；人工优选零节点时补 DIRECT 兜底）；订阅自带的 proxy-groups/rules 不采用；
 /// 4. rule-providers：AppConfig 内置 5 组为底，订阅同名覆盖；
 /// 5. 订阅顶层键采用严格白名单（仅 `proxies`），其余键（hosts / sniffer /
 ///    proxy-providers / script / listeners 等）一律不透传——防止订阅改写
@@ -283,14 +289,12 @@ pub fn build_runtime_config(
 
     // 5) proxies / proxy-groups / rules：
     //    应用始终采用内置组骨架（GLOBAL + 5 组）与内置规则链。订阅只提供节点。
-    //    有区域信息时按区域动态分组：
+    //    有区域信息时动态生成区域组（美国优选/香港优选/...），
+    //    仅追加到 GLOBAL 选项尾部（全局模式专用，不影响规则模式五组）：
     //    - 自动优选（url-test）：全部节点测速选最低延迟（不变）
-    //    - 人工优选（select）：如含美国节点 -> [美国优选(url-test), 美国节点...],
-    //      默认=美国优选=最低延迟美国节点, 用户可手选任意美国节点;
-    //      无美国节点时降级为 [自动优选, 全部节点...].
-    //    - 美国优选 + 各非美国区域组（香港优选/日本优选/...）动态生成,
-    //      追加到 GLOBAL 与 扶梯出行 选项尾部.
-    //    无区域信息（旧 profile/无 GeoIP.dat/DoH 失败）-> 退化为当前行为.
+    //    - 人工优选（select）：全部有效节点扁平注入，纯手动选择
+    //      （不掺自动组/区域组，符合「人工优选纯手动」规格）
+    //    无区域信息（旧 profile/无 GeoIP.dat/DoH 失败）-> 无动态区域组。
     let mut groups = app.proxy_groups.clone();
     let effective_proxies = profile_proxies.or_else(|| {
         app.extra
@@ -306,8 +310,7 @@ pub fn build_runtime_config(
             .collect();
         if !node_names.is_empty() {
             let us_nodes = partition_by_region(&node_names, region_map, "US");
-            let (region_groups, us_group_name) =
-                build_region_groups(&node_names, region_map, &us_nodes);
+            let (region_groups, _) = build_region_groups(&node_names, region_map, &us_nodes);
 
             for group in groups.iter_mut() {
                 let Some(gmap) = group.as_mapping_mut() else {
@@ -329,26 +332,16 @@ pub fn build_runtime_config(
                         }
                     }
                 } else if gname == "人工优选" {
+                    // 全部有效节点扁平注入：纯手动选择，不含自动组/区域组引用。
                     if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
                         plist.clear();
-                        if !us_nodes.is_empty() {
-                            plist.push(serde_yaml::Value::from(
-                                us_group_name
-                                    .clone()
-                                    .unwrap_or_else(|| "美国优选".to_string()),
-                            ));
-                            for n in &us_nodes {
-                                plist.push(serde_yaml::Value::from(n.clone()));
-                            }
-                        } else {
-                            plist.push(serde_yaml::Value::from("自动优选"));
-                            for n in &node_names {
-                                plist.push(serde_yaml::Value::from(n.clone()));
-                            }
+                        for n in &node_names {
+                            plist.push(serde_yaml::Value::from(n.clone()));
                         }
                     }
-                } else if (gname == "GLOBAL" || gname == "扶梯出行") && !region_groups.is_empty()
-                {
+                } else if gname == "GLOBAL" && !region_groups.is_empty() {
+                    // 区域组仅追加到 GLOBAL 尾部：规则模式五组（扶梯出行等）
+                    // 成员固定为 [自动优选/人工优选 + DIRECT]，不接受区域组混入。
                     if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
                         for rg in &region_groups {
                             let gname_rg = rg.get("name").and_then(|n| n.as_str()).unwrap_or("");
@@ -668,9 +661,10 @@ proxies:
         // 内置规则/组存在
         assert!(map.get("proxy-groups").is_some());
         assert!(map.get("rules").is_some());
-        // 订阅节点注入叶子组：人工优选只含真实节点（无 DIRECT），
-        // 自动优选（url-test）也只含真实节点——DIRECT 不是代理节点，
-        // 注入它会让 url-test 把直连当作零延迟最优节点永久霸占自动组。
+        // 订阅节点注入叶子组：人工优选=全部有效节点扁平列表（纯手动，
+        // 不掺自动优选引用），自动优选（url-test）也只含真实节点——
+        // DIRECT 不是代理节点，注入它会让 url-test 把直连当作
+        // 零延迟最优节点永久霸占自动组。
         let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
         let manual = groups
             .iter()
@@ -684,7 +678,7 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(manual_names, vec!["自动优选", "Node1", "Node2"]);
+        assert_eq!(manual_names, vec!["Node1", "Node2"]);
         let auto = groups
             .iter()
             .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选"))
@@ -760,8 +754,9 @@ proxies:
         assert_eq!(names, vec!["DIRECT"]);
     }
 
-    /// 区域分组：有美国节点时人工优选=[美国优选, 美国节点...]，
-    /// 美国优选组生成（url-test 仅美国节点），GLOBAL/扶梯出行追加区域组引用。
+    /// 区域分组：有美国节点时人工优选=全部节点扁平注入（纯手动），
+    /// 美国优选组生成（url-test 仅美国节点），GLOBAL 尾部追加区域组引用；
+    /// 扶梯出行成员固定 [自动优选, 人工优选, DIRECT]，不混入区域组。
     #[test]
     fn build_runtime_config_region_us_nodes_build_manual_and_region_groups() {
         let app = Config::default();
@@ -795,7 +790,7 @@ proxies:
                 .unwrap_or_else(|| panic!("group {} missing", name))
         };
 
-        // 人工优选：[美国优选, US1]，默认选美国优选（自动最低延迟美国节点）
+        // 人工优选：全部有效节点扁平注入 [US1, HK1]，纯手动选择
         let manual = find("人工优选");
         let manual_names: Vec<&str> = manual
             .get("proxies")
@@ -805,7 +800,7 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(manual_names, vec!["美国优选", "US1"]);
+        assert_eq!(manual_names, vec!["US1", "HK1"]);
 
         // 美国优选：url-test 仅美国节点
         let us_group = find("美国优选");
@@ -847,7 +842,7 @@ proxies:
             .collect();
         assert_eq!(auto_names, vec!["US1", "HK1"]);
 
-        // GLOBAL / 扶梯出行 追加区域组引用（尾部，不动默认选中）
+        // GLOBAL 追加区域组引用（尾部，不动默认选中）
         let global = find("GLOBAL");
         let global_names: Vec<&str> = global
             .get("proxies")
@@ -861,6 +856,7 @@ proxies:
         assert!(global_names.contains(&"香港优选"));
         assert_eq!(global_names.first(), Some(&"DIRECT"));
 
+        // 扶梯出行：成员固定 [自动优选, 人工优选, DIRECT]，不混入区域组
         let futi = find("扶梯出行");
         let futi_names: Vec<&str> = futi
             .get("proxies")
@@ -870,15 +866,13 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(futi_names.first(), Some(&"人工优选"));
-        assert!(futi_names.contains(&"美国优选"));
-        assert!(futi_names.contains(&"香港优选"));
+        assert_eq!(futi_names, vec!["自动优选", "人工优选", "DIRECT"]);
     }
 
-    /// 区域分组：无美国节点但有其他区域时，人工优选降级为 [自动优选, 全部节点...]，
-    /// 其他区域组正常生成。
+    /// 区域分组：无美国节点但有其他区域时，人工优选仍为全部节点扁平注入，
+    /// 其他区域组正常生成（仅 GLOBAL 引用）。
     #[test]
-    fn build_runtime_config_region_no_us_falls_back_to_auto_first() {
+    fn build_runtime_config_region_no_us_manual_stays_flat() {
         let app = Config::default();
         let profile = r#"
 proxies:
@@ -915,7 +909,7 @@ proxies:
             "US group must not exist without US nodes"
         );
 
-        // 人工优选降级：[自动优选, HK1, JP1]
+        // 人工优选：全部节点扁平注入 [HK1, JP1]
         let manual = find("人工优选").unwrap();
         let manual_names: Vec<&str> = manual
             .get("proxies")
@@ -925,15 +919,15 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(manual_names, vec!["自动优选", "HK1", "JP1"]);
+        assert_eq!(manual_names, vec!["HK1", "JP1"]);
 
         // 其他区域组生成
         assert!(find("香港优选").is_some());
         assert!(find("日本优选").is_some());
     }
 
-    /// 区域分组：region_map 为 None（旧 profile）→ 完全退化为当前行为，
-    /// 人工优选=[自动优选, 全部节点]，无动态区域组。
+    /// 区域分组：region_map 为 None（旧 profile）→ 无动态区域组，
+    /// 人工优选=[全部节点]（扁平纯手动），组骨架固定六组。
     #[test]
     fn build_runtime_config_region_none_falls_back_to_flat_behavior() {
         let app = Config::default();
@@ -979,7 +973,7 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(manual_names, vec!["自动优选", "N1"]);
+        assert_eq!(manual_names, vec!["N1"]);
     }
 
     /// 区域分组：节点名与区域组名冲突（如节点恰好叫"香港优选"）→ 组名加 (region) 后缀。
@@ -1120,7 +1114,8 @@ rules:
             ]
         );
         // 订阅节点强制注入叶子组（即使订阅自带 proxy-groups/rules）：
-        // 人工优选与自动优选都只含真实节点——url-test 不得含 DIRECT
+        // 人工优选=全部节点扁平纯手动，自动优选=全部节点 url-test——
+        // url-test 不得含 DIRECT
         let manual = groups
             .iter()
             .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("人工优选"))
@@ -1133,7 +1128,7 @@ rules:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(manual_names, vec!["自动优选", "Fast"]);
+        assert_eq!(manual_names, vec!["Fast"]);
         let auto = groups
             .iter()
             .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选"))
@@ -1315,7 +1310,7 @@ proxies:
             .iter()
             .filter_map(|p| p.as_str())
             .collect();
-        assert_eq!(names, vec!["自动优选", "Imported"]);
+        assert_eq!(names, vec!["Imported"]);
     }
 
     /// 激活 Profile 带空 `proxies:` 列表时不得遮蔽导入节点（Some([]) 曾使

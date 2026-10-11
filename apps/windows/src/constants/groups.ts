@@ -35,13 +35,15 @@ export function resolveGroupId(name: string): string {
   return GROUP_NAME_TO_ID[name] ?? name;
 }
 
-/** 规则模式下代理组的规范排序（自上而下）：扶梯出行 → 人工智能 → 影音视听 → 人工优选 → 自动优选。 */
-const GROUP_ORDER: readonly string[] = ["proxy", "ai", "media", "manual", "auto"];
+/** 规则模式左栏的规范平铺排序（自上而下）：扶梯出行 → 人工智能 → 影音视听 → 自动优选 → 人工优选。 */
+const GROUP_ORDER: readonly string[] = ["proxy", "ai", "media", "auto", "manual"];
 
-/** 排除 GLOBAL，其余按规范顺序排序（自定义组排最后）；返回新数组，不改入参。 */
+/** 规则模式左栏只展示内置五组（扶梯出行/人工智能/影音视听/自动优选/人工优选），单一平铺列表：
+ *  GLOBAL 按模式联动隐藏，动态区域组（美国优选等）与订阅自定义组不进入列表
+ *  （区域组仅在全局模式作为 GLOBAL 的选项出现）。按规范顺序排序；返回新数组，不改入参。 */
 export function sortRuleGroups<T extends { name: string }>(groups: readonly T[]): T[] {
   const rank = new Map(GROUP_ORDER.map((id, i) => [id, i]));
   return groups
-    .filter((g) => resolveGroupId(g.name) !== "global")
-    .sort((a, b) => (rank.get(resolveGroupId(a.name)) ?? 99) - (rank.get(resolveGroupId(b.name)) ?? 99));
+    .filter((g) => rank.has(resolveGroupId(g.name)))
+    .sort((a, b) => (rank.get(resolveGroupId(a.name)) ?? 0) - (rank.get(resolveGroupId(b.name)) ?? 0));
 }

@@ -9,6 +9,8 @@ export const useUpdateStore = defineStore("update", {
     staged: null as PendingUpdate | null,
     checking: false,
     downloading: false,
+    /** 构建是否内置更新验签公钥；false = 更新链不可用（开发构建）。 */
+    chainReady: true,
   }),
   getters: {
     availableVersion: (s) => (s.status?.status === "available" ? s.status.version : ""),
@@ -17,6 +19,10 @@ export const useUpdateStore = defineStore("update", {
   actions: {
     async loadStaged() {
       this.staged = await updateApi.staged().catch(() => null);
+    },
+    /** 查询更新链是否可用（公钥是否内置）。 */
+    async loadChainReady() {
+      this.chainReady = await updateApi.chainReady().catch(() => false);
     },
     /** 检查更新；失败抛出，由调用方决定是否提示（静默检查可忽略）。 */
     async check() {

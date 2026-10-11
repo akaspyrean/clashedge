@@ -8,8 +8,9 @@
 //! 流程：
 //! 1. 先尝试签名规则清单（`geodata::rules`，同时覆盖规则集与清单中列出的 geodata）；
 //!    清单不可用只记 warn，不阻断后续；
-//! 2. 逐个 URL 下载 GeoIP / GeoSite（自定义源优先，内置 MetaCubeX 兜底；任何一个 URL
-//!    无论连接失败还是**响应体中途读取失败**，都会继续尝试下一个镜像）；
+//! 2. 逐个 URL 下载 GeoIP / GeoSite（自定义源优先，内置 external 仓库源（raw + jsDelivr，
+//!    MetaCubeX 兜底）；任何一个 URL 无论连接失败还是**响应体中途读取失败**，
+//!    都会继续尝试下一个镜像）；
 //! 3. 全部下载并通过结构校验后，两个文件**事务式一起替换**，任一步失败整体回滚；
 //! 4. 替换成功强制重载核心使新数据生效。
 
@@ -333,7 +334,7 @@ fn file_status(path: Option<PathBuf>, primary_url: Option<&str>) -> serde_json::
 
 /// 从应用配置构建实际生效的下载源：
 /// 高级设置里的自定义 URL（advanced.geoip-url / geosite-url）作为首选，
-/// 默认 MetaCubeX URL 列表作为兜底（自定义失败时仍能下载成功）。
+/// 默认 external 仓库 URL 列表（MetaCubeX 兜底）作为保底（自定义失败时仍能下载成功）。
 fn geodata_sources(app_handle: &tauri::AppHandle) -> GeoSources {
     let defaults = GeoSources::new();
     let advanced = app_handle

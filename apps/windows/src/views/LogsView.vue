@@ -2,13 +2,12 @@
      后端 core::logs 连接控制器 SSE 长连接，逐行转发为 log-line 事件；
      本页挂载时启动流、卸载时停止，保证不残留后台连接。
      - 级别筛选芯片（带计数；形状：DEBUG 无 / INFO 圆 / WARN 菱形 / ERROR 横杠）+ 正则搜索
-     - 暂停 / 清空…（确认）；向上滚动即暂停跟随，出现「回到最新」
+     - 暂停 / 清空日志（确认）；向上滚动即暂停跟随，出现「回到最新」
      - 导出需要「保存文件」能力（尚无对应后端命令），本页暂不含 -->
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArrowDown, Pause, Play, Search } from "lucide-vue-next";
-import StatusPill from "@/components/StatusPill.vue";
 import { useConfirm } from "@/composables/useConfirm";
 import { useLogStream } from "@/composables/useLogStream";
 import { useCoreStore } from "@/stores/core";
@@ -18,13 +17,11 @@ const core = useCoreStore();
 const confirm = useConfirm();
 const {
   entries,
-  connected,
   connecting,
   errorMsg,
   listEl,
   paused,
   atBottom,
-  statusKey,
   connect,
   clear,
   pause,
@@ -87,9 +84,6 @@ async function onClear() {
 <template>
   <div class="page">
     <div class="toolbar">
-      <h2 class="page-title">{{ $t("logs.title") }}</h2>
-      <StatusPill :active="connected" :label="$t(statusKey)" />
-      <span class="toolbar-spacer"></span>
       <label class="search-box">
         <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
         <input
@@ -99,15 +93,15 @@ async function onClear() {
           :aria-label="$t('logs.search_placeholder')"
         />
       </label>
+      <el-button text class="clear-btn" :disabled="entries.length === 0" @click="onClear">
+        {{ $t("logs.clear") }}
+      </el-button>
       <el-button :disabled="!core.status.running" :loading="connecting" @click="connect">
         {{ $t("logs.reconnect") }}
       </el-button>
       <el-button class="pause-btn" :aria-pressed="paused" @click="paused ? resume() : pause()">
         <component :is="paused ? Play : Pause" :size="16" :stroke-width="1.75" aria-hidden="true" />
         {{ paused ? $t("logs.resume") : $t("logs.pause") }}
-      </el-button>
-      <el-button text class="clear-btn" :disabled="entries.length === 0" @click="onClear">
-        {{ $t("logs.clear") }}…
       </el-button>
     </div>
 
@@ -163,30 +157,20 @@ async function onClear() {
 </template>
 
 <style scoped>
-/* 状态指示样式见 components/StatusPill.vue，
- * 与首页共用同一套语义色。 */
-
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--ce-space-3);
-  margin-bottom: var(--ce-space-3);
-}
-
-.toolbar .page-title {
-  margin: 0;
-}
-
-.toolbar-spacer {
-  flex: 1;
+  margin-bottom: var(--ce-space-5);
 }
 
 .search-box {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: var(--ce-space-2);
-  width: 260px;
+  min-width: 0;
   height: var(--ce-control-h);
   padding: 0 var(--ce-space-3);
   border: 1px solid transparent;
@@ -231,7 +215,7 @@ async function onClear() {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--ce-space-2);
   height: var(--ce-control-h-sm);
   padding: 0 var(--ce-space-3);
   border: 1px solid var(--ce-border);

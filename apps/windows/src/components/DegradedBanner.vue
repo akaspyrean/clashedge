@@ -39,7 +39,7 @@ async function onConfirm() {
 .degraded-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--ce-space-2);
   align-items: flex-start;
 }
 </style>

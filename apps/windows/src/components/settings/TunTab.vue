@@ -20,8 +20,12 @@ const interfaceName = computed({
   },
 });
 
-const onTun = (v: boolean | string | number) =>
-  tun.run(() => configStore.setTunMode(Boolean(v)), { success: true });
+const onTun = (v: boolean | string | number) => {
+  const on = Boolean(v);
+  return tun.run(() => configStore.setTunMode(on), {
+    success: on ? t("dashboard.tun_enabled") : t("dashboard.tun_disabled"),
+  });
+};
 </script>
 
 <template>
@@ -31,21 +35,22 @@ const onTun = (v: boolean | string | number) =>
         <el-switch :model-value="cfg.tun.enable" :aria-label="label" :loading="tun.busy.value" @change="onTun" />
       </template>
     </PrefRow>
-    <PrefRow :title="t('tun.stack')">
+    <PrefRow :title="t('tun.stack')" wide>
       <template #default="{ label }">
-        <el-select v-model="cfg.tun.stack" :aria-label="label" style="width: 160px">
+        <!-- 宽度随行自适应（上限 360px）：中英最长选项都能完整显示，窄屏自动收缩 -->
+        <el-select v-model="cfg.tun.stack" :aria-label="label" style="width: 100%; max-width: 360px">
           <el-option value="mixed" :label="t('tun.stack_mixed')" />
           <el-option value="system" :label="t('tun.stack_system')" />
           <el-option value="gvisor" :label="t('tun.stack_gvisor')" />
         </el-select>
       </template>
     </PrefRow>
-    <PrefRow :title="t('tun.auto_route')">
+    <PrefRow :title="t('tun.auto_route')" :hint="t('tun.auto_route_hint')">
       <template #default="{ label }">
         <el-switch v-model="cfg.tun['auto-route']" :aria-label="label" />
       </template>
     </PrefRow>
-    <PrefRow :title="t('tun.auto_detect_interface')">
+    <PrefRow :title="t('tun.auto_detect_interface')" :hint="t('tun.auto_detect_interface_hint')">
       <template #default="{ label }">
         <el-switch v-model="cfg.tun['auto-detect-interface']" :aria-label="label" />
       </template>
@@ -61,7 +66,7 @@ const onTun = (v: boolean | string | number) =>
           v-model="interfaceName"
           :aria-label="label"
           style="width: 220px"
-          :placeholder="t('tun.interface_name')"
+          :placeholder="t('tun.interface_name_placeholder')"
           clearable
         />
       </template>
