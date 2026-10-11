@@ -555,6 +555,7 @@ pub fn migrate_builtin_rule_providers(providers: &mut HashMap<String, serde_yaml
 /// - 人工智能 / 影音视听：[人工优选, 自动优选, DIRECT]（默认手动）
 /// - 人工优选（select）：全部有效节点，纯手动选择（无任何自动成员）
 /// - 自动优选（url-test）：全部有效节点，自动选延迟最低者
+///
 /// 叶子组初始为空（无订阅时无可用节点），订阅导入后由
 /// `build_runtime_config` 注入真实节点名。DIRECT 为路由组兜底项。
 /// GLOBAL 为全局模式专用组：`mode: global` 时所有流量走它，只含 DIRECT/REJECT

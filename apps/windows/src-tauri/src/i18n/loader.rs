@@ -159,10 +159,7 @@ mod tests {
                 "general.auto_update_subscription_hint",
                 "tun.auto_route_hint",
             ] {
-                assert!(
-                    table.contains_key(key),
-                    "{locale} missing key {key}"
-                );
+                assert!(table.contains_key(key), "{locale} missing key {key}");
             }
         }
     }
