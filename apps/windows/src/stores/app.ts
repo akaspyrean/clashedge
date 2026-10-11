@@ -31,8 +31,6 @@ export const useAppStore = defineStore("app", {
       this.autostart = enable;
     },
     openDataDir: () => utilApi.openDataDir(),
-    /** 导出脱敏诊断包，返回文件路径。 */
-    exportDiagnostics: () => utilApi.exportDiagnostics(),
     async loadAutostart() {
       try {
         this.autostart = await utilApi.getAutostart();

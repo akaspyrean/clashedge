@@ -89,8 +89,9 @@ function onKeydown(e: KeyboardEvent, i: number) {
 }
 
 .ce-segmented__item {
-  height: 30px;
-  padding: 0 var(--ce-space-4);
+  /* 26 + 上下 padding 3×2 = 32 = --ce-control-h：与同排 el-button 等高对齐 */
+  height: 26px;
+  padding: 0 var(--ce-space-3);
   border: 0;
   border-radius: var(--ce-radius-full);
   background: transparent;

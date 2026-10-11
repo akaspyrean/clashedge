@@ -75,7 +75,6 @@ function policyClass(proxy: string): string {
 <template>
   <div class="page">
     <div class="toolbar">
-      <h2 class="page-title">{{ $t("rules.title") }}</h2>
       <span v-if="rules.length" class="count">{{ $t("rules.count", { n: rules.length }) }}</span>
       <label class="search-box">
         <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -137,10 +136,6 @@ function policyClass(proxy: string): string {
   align-items: center;
   gap: var(--ce-space-3);
   margin-bottom: var(--ce-space-5);
-}
-
-.toolbar .page-title {
-  margin: 0;
 }
 
 .count {

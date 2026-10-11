@@ -23,7 +23,7 @@ export const useConfigStore = defineStore("config", {
   getters: {
     mixedPort: (s) => s.config?.["mixed-port"] ?? 7890,
     allowLan: (s) => s.config?.["allow-lan"] ?? false,
-    logLevel: (s) => s.config?.["log-level"] ?? "info",
+    logLevel: (s) => s.config?.["log-level"] ?? "error",
     proxyMode: (s) => s.config?.mode ?? "rule",
     systemProxy: (s) => s.config?.["system-proxy"] ?? false,
     locale: (s) => s.config?.locale ?? "zh-CN",

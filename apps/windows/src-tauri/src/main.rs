@@ -392,9 +392,9 @@ pub fn run() {
             crate::commands::util::get_supported_locales,
             crate::commands::util::set_locale,
             crate::commands::util::get_i18n_messages,
-            crate::commands::util::export_diagnostics,
             // Portable Updater commands
             crate::commands::update::check_update,
+            crate::commands::update::update_chain_ready,
             crate::commands::update::download_update,
             crate::commands::update::get_staged_update,
             crate::commands::update::discard_staged_update,

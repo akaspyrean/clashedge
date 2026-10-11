@@ -24,7 +24,7 @@ const resolved = computed<StatusTone>(() => props.tone ?? (props.active ? "ok" :
   align-items: center;
   gap: var(--ce-space-2);
   height: 22px;
-  padding: 0 10px 0 var(--ce-space-2);
+  padding: 0 var(--ce-space-3) 0 var(--ce-space-2);
   border-radius: var(--ce-radius-full);
   font: var(--ce-type-caption);
   white-space: nowrap;

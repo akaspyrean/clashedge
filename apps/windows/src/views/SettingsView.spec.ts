@@ -86,7 +86,7 @@ describe("SettingsView: 行式布局冒烟", () => {
     );
   });
 
-  it("常规页渲染偏好行（语言/主题/系统代理），不再使用 el-form", async () => {
+  it("整页渲染偏好行（语言/主题/系统代理），不再使用 el-form", async () => {
     const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const wrapper = mount(SettingsView, mountOptions);
     await flushPromises();
