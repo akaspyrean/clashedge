@@ -206,15 +206,71 @@ pub(super) async fn normalize_subscription_body(
     Ok((doc, norm.warnings))
 }
 
-/// 脱敏订阅 URL，返回 host（含可选端口），不泄露 token/key。
+/// 脱敏订阅 URL（**前端展示级**，与日志级 `redact_url` 区分）：
+/// 保留 `scheme://host[:port]`、非敏感路径结构与 query 键名，只遮蔽疑似凭证，
+/// 防止订阅地址泄露的同时让卡片能显示更多信息（随卡片宽度单行省略）。
 ///
-/// - `https://user:pass@host:port/path?token=secret#frag` → `https://host:port/…`
-/// - `https://host/path?token=secret` → `https://host/…`
-/// - `https://host:port` → `https://host:port`
-/// - 解析失败 → 返回 None（不泄露原始字符串）
+/// - userinfo（`user:pass@`）与 fragment 一律删除；
+/// - path 末段若形似 token（≥8 字符、仅 `[A-Za-z0-9_-]` 且含数字）→ 换成 `••••••••`；
+///   带扩展名的文件名（`/sub/me.yaml`）与普通路径词（`/subscribe`）保留；
+/// - query 保留键名、值一律换成 `••••••••`（token 常在 `?token=`）；
+/// - 解析失败 → None（不泄露原始字符串）。
 pub(super) fn redact_subscribe_url(url: &str) -> Option<String> {
-    reqwest::Url::parse(url).ok()?;
-    Some(redact_url(url))
+    /// 遮蔽占位（固定长度，不泄露原值长度）
+    const MASK: &str = "••••••••";
+    let u = reqwest::Url::parse(url).ok()?;
+
+    let mut out = String::new();
+    out.push_str(u.scheme());
+    out.push_str("://");
+    out.push_str(u.host_str()?);
+    if let Some(port) = u.port() {
+        out.push(':');
+        out.push_str(&port.to_string());
+    }
+
+    // path：保留结构，仅末段疑似 token 时遮蔽。
+    // 已遮蔽值再被 Url::parse 规范化为 %E2%80%A2…（• 的百分号编码），
+    // 识别该形态并归一回字面 ••••••••，保证幂等。
+    const MASK_ENC: &str =
+        "%E2%80%A2%E2%80%A2%E2%80%A2%E2%80%A2%E2%80%A2%E2%80%A2%E2%80%A2%E2%80%A2";
+    let path = u.path();
+    if !path.is_empty() && path != "/" {
+        let mut segs: Vec<String> = path
+            .trim_start_matches('/')
+            .split('/')
+            .map(|s| s.to_string())
+            .collect();
+        if let Some(last) = segs.last_mut() {
+            if is_token_like(last) || last.as_str() == MASK_ENC {
+                *last = MASK.to_string();
+            }
+        }
+        out.push('/');
+        out.push_str(&segs.join("/"));
+    }
+
+    // query：键名保留、值全遮（重复键各自成对）
+    if u.query().is_some() {
+        let qs: Vec<String> = u
+            .query_pairs()
+            .map(|(k, _)| format!("{k}={MASK}"))
+            .collect();
+        out.push('?');
+        out.push_str(&qs.join("&"));
+    }
+    Some(out)
+}
+
+/// 形似 token 的路径段：长度 ≥8、仅含字母/数字/下划线/连字符（无 `.`——
+/// 带扩展名的文件名不算），且至少含一个数字（排除 `subscribe` 这类纯小写
+/// 路径词；纯字母 token 罕见，作为已知取舍在注释中声明）。
+fn is_token_like(seg: &str) -> bool {
+    seg.len() >= 8
+        && seg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && seg.chars().any(|c| c.is_ascii_digit())
 }
 
 // P1 审计修复：流式大小限制 + 事务式替换
@@ -502,6 +558,39 @@ mod tests {
         assert_eq!(redact_url("https://host/path"), "https://host/…");
         // 解析失败不泄露原始串
         assert_eq!(redact_url("not a url \n bad"), "***");
+    }
+
+    /// 展示级脱敏：保留路径结构与 query 键名，只遮疑似 token 段与 query 值。
+    #[test]
+    fn redact_subscribe_url_keeps_structure_and_masks_secrets() {
+        // query 值全遮、键名保留；末段 "subscribe"（纯字母路径词）保留
+        assert_eq!(
+            redact_subscribe_url("https://example.com/api/v1/client/subscribe?token=secret&id=1")
+                .unwrap(),
+            "https://example.com/api/v1/client/subscribe?token=••••••••&id=••••••••"
+        );
+        // 末段形似 token（≥8 且含数字）→ 遮蔽
+        assert_eq!(
+            redact_subscribe_url("https://host/sub/Ab12CdEf34Gh").unwrap(),
+            "https://host/sub/••••••••"
+        );
+        // 带扩展名的文件名保留
+        assert_eq!(
+            redact_subscribe_url("https://host/profiles/me.yaml").unwrap(),
+            "https://host/profiles/me.yaml"
+        );
+        // userinfo / fragment 删除；端口保留；短路径段保留
+        assert_eq!(
+            redact_subscribe_url("https://user:pass@sub.example.com:8443/api/sub?token=abc#frag")
+                .unwrap(),
+            "https://sub.example.com:8443/api/sub?token=••••••••"
+        );
+        assert_eq!(redact_subscribe_url("http://host/").unwrap(), "http://host");
+        // 幂等：已脱敏结果再过一遍不变
+        let once = redact_subscribe_url("https://host/sub/Ab12CdEf34Gh").unwrap();
+        assert_eq!(redact_subscribe_url(&once).unwrap(), once);
+        // 解析失败不泄露原始串
+        assert!(redact_subscribe_url("not a url \n bad").is_none());
     }
 
     #[test]

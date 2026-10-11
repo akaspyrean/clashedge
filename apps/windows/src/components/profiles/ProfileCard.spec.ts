@@ -48,7 +48,8 @@ describe("ProfileCard", () => {
     expect(edit.emitted("edit")).toHaveLength(1);
   });
 
-  it("shows url in mono, or a local-file label for local profiles", () => {
+  it("shows the url masked in mono, or a local-file label for local profiles", () => {
+    // "x" 非 token 段（短）→ 原样保留；token 段与 query 值由 maskUrl 遮蔽
     expect(mountApp(ProfileCard, { props: { profile: sub } }).find(".url").text()).toBe("https://example.com/x");
     expect(mountApp(ProfileCard, { props: { profile: { ...sub, url: null } } }).find(".url").text()).toBe("profiles.local_file");
   });

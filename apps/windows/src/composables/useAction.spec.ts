@@ -62,4 +62,27 @@ describe("useAction", () => {
     await a.run(async () => Promise.reject(new Error("x")), { silent: true });
     expect(toast.error).not.toHaveBeenCalled();
   });
+
+  it("onError intercepts failures before the default toast", async () => {
+    toast.error.mockClear();
+    const a = setup();
+    const handled = vi.fn(() => true);
+    const r = await a.run(
+      async () => {
+        throw new Error("开启 TUN 需要管理员权限");
+      },
+      { onError: handled },
+    );
+    expect(r).toEqual({ ok: false });
+    expect(handled).toHaveBeenCalledTimes(1);
+    expect(toast.error).not.toHaveBeenCalled();
+    // 返回 false（未处理）时仍走默认失败 toast
+    await a.run(
+      async () => {
+        throw new Error("boom");
+      },
+      { onError: () => false },
+    );
+    expect(toast.error).toHaveBeenCalledTimes(1);
+  });
 });

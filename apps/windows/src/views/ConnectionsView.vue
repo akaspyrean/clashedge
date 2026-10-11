@@ -1,5 +1,5 @@
 <!-- src/views/ConnectionsView.vue - 连接：顶部实时速率 + 60 秒流量图，下方活动连接表。
-     - 顶部卡片：下载 / 上传速率、活动连接数、本次会话流量 + CeTrafficChart
+     - 顶部卡片：左「↓下载 / ↑上传」速率，右一行「本次会话 ↓x · ↑y · N 个活动连接」+ CeTrafficChart
      - 连接表：主机 · 规则 → 链路 · 类型 · ↓ · ↑ · 时长；筛选框；「全部断开…」走 useConfirm
      - 轮询沿用 usePolling + store 的自适应间隔；后端已裁剪到 500 条，仍保留截断提示
      - 暂无「已关闭」数据来源，故只做「活动」；单条断开 / 进程名后端未提供，本页不含 -->
@@ -86,13 +86,16 @@ async function onCloseAll() {
             <span class="stat-unit">{{ upRate[1] }}</span>
           </span>
         </div>
-        <div class="stat">
-          <span class="stat-label">{{ $t("connections.active") }}</span>
-          <span class="stat-value">{{ connectionCount }}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">{{ $t("connections.session") }}</span>
-          <span class="stat-value">↓ {{ formatBytes(store.downloadTotal) }} · ↑ {{ formatBytes(store.uploadTotal) }}</span>
+        <div class="stat session">
+          <span class="stat-label">
+            {{
+              $t("connections.session_summary", {
+                down: formatBytes(store.downloadTotal),
+                up: formatBytes(store.uploadTotal),
+                n: connectionCount,
+              })
+            }}
+          </span>
         </div>
       </div>
       <CeTrafficChart :down="store.rateDown" :up="store.rateUp" />
@@ -168,10 +171,19 @@ async function onCloseAll() {
   align-items: baseline;
 }
 
+.stats .session {
+  margin-left: auto;
+}
+
 @media (max-width: 749px) {
   .stats {
     flex-wrap: wrap;
     gap: var(--ce-space-3) var(--ce-space-6);
+  }
+
+  .stats .session {
+    margin-left: 0;
+    flex-basis: 100%;
   }
 }
 
@@ -184,6 +196,7 @@ async function onCloseAll() {
 .stat-label {
   color: var(--ce-text-tertiary);
   font: var(--ce-type-caption);
+  white-space: nowrap;
 }
 
 .stat-figures {

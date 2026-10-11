@@ -187,6 +187,9 @@ tun:
   strict_route: "严格路由（防 DNS 泄漏）"
   dns_hijack: "DNS 劫持"
   dns_hijack_placeholder: "例如: 198.18.0.2:53"
+  elevation_title: "需要管理员权限"
+  elevation_body: "开启 TUN 需要管理员权限。是否以管理员身份重启 ClashEdge？重启后将自动开启 TUN。"
+  elevation_confirm: "重启并开启"
 
 dns:
   title: "DNS 设置"
@@ -300,10 +303,9 @@ rules:
 connections:
   title: "连接"
   overview: "流量概览"
-  download_rate: "下载速率"
-  upload_rate: "上传速率"
-  active: "活动连接"
-  session: "本次会话流量"
+  download_rate: "下载"
+  upload_rate: "上传"
+  session_summary: "本次会话 ↓ {down} · ↑ {up} · {n} 个活动连接"
   filter_placeholder: "筛选主机、规则、链路"
   rule_chain: "规则 → 链路"
   kind: "类型"

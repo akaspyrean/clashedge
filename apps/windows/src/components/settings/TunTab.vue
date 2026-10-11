@@ -6,12 +6,14 @@ import type { ClashConfig } from "@/api/config";
 import PrefList from "@/components/PrefList.vue";
 import PrefRow from "@/components/PrefRow.vue";
 import { useAction } from "@/composables/useAction";
+import { useTunElevation } from "@/composables/useTunElevation";
 import { useConfigStore } from "@/stores/config";
 
 const { t } = useI18n();
 const configStore = useConfigStore();
 const cfg = computed(() => configStore.config as ClashConfig);
 const tun = useAction();
+const elevation = useTunElevation();
 
 const interfaceName = computed({
   get: () => cfg.value.tun["interface-name"] ?? "",
@@ -24,6 +26,8 @@ const onTun = (v: boolean | string | number) => {
   const on = Boolean(v);
   return tun.run(() => configStore.setTunMode(on), {
     success: on ? t("dashboard.tun_enabled") : t("dashboard.tun_disabled"),
+    // 非管理员开启 → 权限预检错误 → 弹「以管理员身份重启」确认，同意则走 UAC 提权
+    onError: on ? elevation.handleError : undefined,
   });
 };
 </script>

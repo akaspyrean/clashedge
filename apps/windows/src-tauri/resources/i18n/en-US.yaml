@@ -187,6 +187,9 @@ tun:
   strict_route: "Strict route (prevents DNS leaks)"
   dns_hijack: "DNS Hijack"
   dns_hijack_placeholder: "e.g.: 198.18.0.2:53"
+  elevation_title: "Administrator rights required"
+  elevation_body: "Enabling TUN requires administrator rights. Restart ClashEdge as administrator? TUN will be enabled automatically after the restart."
+  elevation_confirm: "Restart and enable"
 
 dns:
   title: "DNS Settings"
@@ -302,8 +305,7 @@ connections:
   overview: "Traffic overview"
   download_rate: "Download"
   upload_rate: "Upload"
-  active: "Active connections"
-  session: "Session traffic"
+  session_summary: "Session ↓ {down} · ↑ {up} · {n} active connections"
   filter_placeholder: "Filter host, rule or chain"
   rule_chain: "Rule → Chain"
   kind: "Type"

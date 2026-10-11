@@ -64,3 +64,31 @@ describe("splitRate", () => {
     expect(splitRate(0)).toEqual(["0", "B/s"]);
   });
 });
+
+describe("formatAppVersion", () => {
+  it("stamps a v prefix to match release tags, keeps dev as-is", async () => {
+    const { formatAppVersion } = await import("./format");
+    expect(formatAppVersion("0.1.0")).toBe("v0.1.0");
+    expect(formatAppVersion("v0.2.0")).toBe("v0.2.0");
+    expect(formatAppVersion("dev")).toBe("dev");
+    expect(formatAppVersion("")).toBe("");
+  });
+});
+
+describe("maskUrl", () => {
+  it("keeps structure and query keys, masking token-like segments and values", async () => {
+    const { maskUrl } = await import("./format");
+    // query 值全遮、键名保留
+    expect(maskUrl("https://example.com/x?token=secret")).toBe("https://example.com/x?token=••••••••");
+    // 末段形似 token（≥8 且含数字）→ 遮蔽；普通路径词 / 文件名保留
+    expect(maskUrl("https://example.com/sub/Ab12CdEf34Gh")).toBe("https://example.com/sub/••••••••");
+    expect(maskUrl("https://example.com/profiles/me.yaml")).toBe("https://example.com/profiles/me.yaml");
+    expect(maskUrl("https://example.com/subscribe")).toBe("https://example.com/subscribe");
+    expect(maskUrl("https://example.com")).toBe("https://example.com");
+    // 幂等：已脱敏地址再过一遍不变
+    expect(maskUrl("https://example.com/sub/••••••••")).toBe("https://example.com/sub/••••••••");
+    expect(maskUrl("https://example.com/…")).toBe("https://example.com/…");
+    // 解析失败不透出原文
+    expect(maskUrl("not a url")).toBe("…");
+  });
+});

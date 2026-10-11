@@ -57,3 +57,44 @@ export function splitRate(bytesPerSecond: number): [string, string] {
   const [value, unit] = formatBytes(bytesPerSecond).split(" ");
   return [value, `${unit}/s`];
 }
+
+/** 应用版本显示：发布版本补 "v" 前缀与 release tag 一致；"dev" 构建原样，已有 v 不重复加。 */
+export function formatAppVersion(version: string): string {
+  if (!version) return "";
+  if (version === "dev") return "dev";
+  return /^v/i.test(version) ? version : `v${version}`;
+}
+
+/** 遮蔽占位（与后端 redact_subscribe_url 一致；固定长度，不泄露原值长度）。 */
+const URL_MASK = "••••••••";
+
+/** 形似 token 的路径段：≥8 字符、仅 `[A-Za-z0-9_-]` 且含数字（与后端同规则）。 */
+function isTokenLikeSegment(seg: string): boolean {
+  return seg.length >= 8 && /^[A-Za-z0-9_-]+$/.test(seg) && /\d/.test(seg);
+}
+
+/** 订阅地址显示脱敏（与后端 redact_subscribe_url 同策略，前端幂等兜底）：
+ *  保留 scheme://host[:port]、路径结构与 query 键名；末段疑似 token 与
+ *  query 值一律换成 ••••••••。解析失败返回 "…"（不透出原文）。 */
+export function maskUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    // URL 会把路径里的 • 规范化为 %E2%80%A2…；解码回来保证幂等（已遮蔽值不再二次处理）
+    let pathname = u.pathname;
+    try {
+      pathname = decodeURIComponent(pathname);
+    } catch {
+      /* 保留原样 */
+    }
+    let path = "";
+    if (pathname !== "/" && pathname !== "") {
+      const segs = pathname.replace(/^\/+/, "").split("/");
+      if (isTokenLikeSegment(segs[segs.length - 1] ?? "")) segs[segs.length - 1] = URL_MASK;
+      path = `/${segs.join("/")}`;
+    }
+    const query = u.search ? `?${[...u.searchParams.keys()].map((k) => `${k}=${URL_MASK}`).join("&")}` : "";
+    return `${u.protocol}//${u.host}${path}${query}`;
+  } catch {
+    return "…";
+  }
+}
