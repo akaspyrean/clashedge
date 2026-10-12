@@ -233,6 +233,8 @@ jobs:
   android-build:
     needs: [prepare, quality]
     runs-on: ubuntu-latest
+    # Requires the release environment to access the shared PKCS12 keystore secrets.
+    environment: release
     permissions:
       contents: read
     outputs:
