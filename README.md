@@ -2,12 +2,12 @@
 
 # ClashEdge
 
-**轻量、开箱即用的 Mihomo 客户端（Windows 正式发布 / Android 实验性规划）**
+**轻量、开箱即用的 Mihomo 客户端（Windows 正式发布 / Android 预览版）**
 
 订阅提供节点，ClashEdge 负责分流与策略。内置规则开箱即用，也可自由配置。
 
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-4F6D7A?style=flat-square)
-![Android](https://img.shields.io/badge/Android-Experimental-3DDC84?style=flat-square)
+![Android](https://img.shields.io/badge/Android-Preview-3DDC84?style=flat-square)
 ![Version](https://img.shields.io/github/v/release/akaspyrean/clashedge?style=flat-square&label=Version&color=66856A&prefix=v)
 ![License](https://img.shields.io/badge/license-MIT-A98652?style=flat-square&label=License)
 
@@ -19,7 +19,7 @@
 
 ## 平台
 
-| | **ClashEdge for Windows** | **ClashEdge for Android（实验性 / 规划中）** |
+| | **ClashEdge for Windows** | **ClashEdge for Android（预览版）** |
 | --- | --- | --- |
 | 定位 | Lightweight / Portable / Windows-first | Lightweight / Simple / Mihomo-based |
 | 内核接入 | Mihomo（sidecar）+ WinTUN | Mihomo（Android AAR / JNI） |
@@ -29,7 +29,7 @@
 
 两个平台共享品牌、产品定位、默认规则体系与相近的信息架构，但平台能力各自独立实现。
 
-> **Android 为实验性/规划中，不包含在正式发布链路内**：当前缺少 gradle wrapper（无可执行的 `gradlew`/`gradlew.bat`）、Mihomo AAR/JNI 为占位实现（无真实 VPN 内核集成）、无 release 签名配置，因此**无法提供真实 VPN 服务**。现状与进入发布范围的前置条件清单见 [`apps/android/README.md`](apps/android/README.md)。
+> **Android 预览版**：自 v0.1.0 起进入发布链路——APK 由 CI 自动构建、签名并随 [Release](../../releases) 发布，可安装体验完整的界面与 VPN 授权流程；但 Mihomo 核心（AAR / JNI）仍为占位实现，**暂无法提供真实代理**。进入正式版的前置条件清单见 [`apps/android/README.md`](apps/android/README.md)。
 
 ---
 
@@ -199,10 +199,11 @@ flowchart LR
 从 [Releases](../../releases) 下载：
 
 ```text
-ClashEdge-portable-win64.zip
+ClashEdge-portable-win64.zip    # Windows 便携版
+ClashEdge-android-<version>.apk # Android 预览版
 ```
 
-解压后运行：
+解压后运行（Windows）：
 
 ```text
 ClashEdge.exe

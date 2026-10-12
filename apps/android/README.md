@@ -2,35 +2,40 @@
 
 Lightweight / Simple / Mihomo-based Clash client for Android.
 
-## Status: experimental / planned (NOT released)
+## Status: preview (in the release chain since v0.1.0)
 
-Android is **experimental / planned work**. It is **not part of the release
-chain** and must not be advertised as a shipping platform until every
-prerequisite below is done.
+Android ships as a **preview**: the APK is built, signed and published by the
+release workflow (`android-build` job, v0.1.0 was the first tagged release to
+include it). It is installable and exercises the full UI / VPN permission flow,
+but the Mihomo core is still a placeholder, so it cannot proxy real traffic yet.
 
 Current state (as of 2026-10-12):
 
+- **Release chain integrated**: `android-build` runs in `release.yml` with the
+  `release` environment; the APK and its `.sha256` are attached to every
+  release. CI fails if the workflow stops referencing `apps/android`.
 - **Gradle wrapper checked in** (pinned 8.7): `assembleRelease` /
   `assembleDebug` build from a clean checkout after staging the rule assets.
+- **Release signing configured**: keystore (JKS) + passwords are injected via
+  environment secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
+  `ANDROID_KEY_PASSWORD`, `ANDROID_STORE_PASSWORD`); nothing is committed.
+- **Version from tag only**: `CLASHEDGE_RELEASE_VERSION` injected by CI;
+  `versionCode` = `major*1_000_000 + minor*1_000 + patch` (v0.1.0 → 1000).
 - **No real Mihomo integration**: the Mihomo Android core (AAR / JNI) is a
-  placeholder — `mihomo/MihomoCoreImpl.kt` is a no-op stub and the dependency
-  coordinate in `gradle/libs.versions.toml` is still commented out. The app
-  cannot provide a real VPN.
-- **No signing config**: no release keystore / `signingConfig` exists.
+  placeholder — the `MihomoCoreImpl` class in `mihomo/MihomoCore.kt` is a no-op
+  stub and the dependency coordinate in `gradle/libs.versions.toml` is still
+  commented out. The app cannot provide a real VPN.
 - **Subscription import is a skeleton**: `SubscriptionRepository` keeps only `name/type/server`
   (credentials are dropped), so generated nodes cannot connect. Real node retention must reuse
   the Windows normalizer rules before this platform is shipped.
-- **Release-chain guard**: CI fails if any release workflow references `apps/android`.
 
-Prerequisites before Android can enter the release scope:
+Prerequisites before Android can leave the preview stage:
 
-1. Reproducible build — **DONE**: the pinned gradle wrapper (`gradlew`,
-   `gradlew.bat`, `gradle-wrapper.jar`, `gradle-wrapper.properties`) is
-   checked in and verified against a clean toolchain (JDK 17, compileSdk 34).
-2. Real Mihomo integration: pin the AAR/JNI artifact, replace the
+1. Reproducible build — **DONE** (pinned gradle wrapper, clean toolchain JDK 17 / compileSdk 34).
+2. Release signing — **DONE** (JKS keystore via environment secrets).
+3. Real Mihomo integration: pin the AAR/JNI artifact, replace the
    `MihomoCoreImpl` placeholder with real JNI calls, and verify the tunnel
    actually passes traffic.
-3. Release signing: keystore + `signingConfig` (secrets only, never committed).
 4. ProGuard / R8: rules verified against the real Mihomo integration (the
    current `app/proguard-rules.pro` only keeps the placeholder package).
 5. Data / backup strategy: decide and document backup / uninstall behavior
