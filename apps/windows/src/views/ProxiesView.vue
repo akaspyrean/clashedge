@@ -5,7 +5,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowDownUp, RefreshCw, Search, Zap } from "lucide-vue-next";
+import { ArrowDownUp, Search, Zap } from "lucide-vue-next";
 import type { ProxyGroup } from "@/api/proxy";
 import CeNodeTile from "@/components/ui/CeNodeTile.vue";
 import CeSegmented from "@/components/ui/CeSegmented.vue";
@@ -204,15 +204,6 @@ watch(
           :aria-label="$t('proxies.search_placeholder')"
         />
       </label>
-      <el-button
-        class="icon-btn"
-        :title="$t('proxies.reload')"
-        :aria-label="$t('proxies.reload')"
-        :loading="proxyStore.testing"
-        @click="proxyStore.loadGroups()"
-      >
-        <RefreshCw :size="18" :stroke-width="1.75" aria-hidden="true" />
-      </el-button>
     </div>
 
     <el-empty

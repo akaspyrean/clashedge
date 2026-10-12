@@ -278,7 +278,6 @@ proxies:
   url_test: "URL 测试"
   fallback: "故障转移"
   load_balance: "负载均衡"
-  reload: "刷新"
   empty: "暂无代理组"
   core_not_running: "核心未运行，启动后即可查看代理组。"
   direct_hint: "直连模式：所有流量直连，不走代理。"
