@@ -112,7 +112,7 @@ function policyClass(proxy: string): string {
       <ul class="rule-list">
         <li v-for="r in shown" :key="r.n" class="row">
           <span class="idx">{{ r.n }}</span>
-          <span><span class="type-tag">{{ r.type }}</span></span>
+          <span class="type">{{ r.type }}</span>
           <span class="payload" :title="r.payload">{{ r.payload || "—" }}</span>
           <span class="policy" :class="policyClass(r.proxy)">{{ r.proxy }}</span>
         </li>
@@ -227,17 +227,11 @@ function policyClass(proxy: string): string {
   font-variant-numeric: tabular-nums;
 }
 
-.type-tag {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 var(--ce-space-2);
-  border-radius: var(--ce-radius-sm);
-  background: var(--ce-fill-soft);
-  color: var(--ce-text-secondary);
-  font: var(--ce-type-caption);
-  font-family: var(--ce-font-mono);
+.type {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  font: var(--ce-type-mono);
 }
 
 .payload {
