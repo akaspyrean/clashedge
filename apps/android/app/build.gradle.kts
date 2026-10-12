@@ -47,8 +47,10 @@ android {
             val alias = System.getenv("ANDROID_KEY_ALIAS")
             val keyPass = System.getenv("ANDROID_KEY_PASSWORD")
             val storePass = System.getenv("ANDROID_STORE_PASSWORD")
-            if (storeB64 != null && alias != null && keyPass != null && storePass != null) {
+            if (!storeB64.isNullOrBlank() && !alias.isNullOrBlank() &&
+                !keyPass.isNullOrBlank() && !storePass.isNullOrBlank()) {
                 val jksFile = File(layout.buildDirectory.get().asFile, "keystore.jks")
+                jksFile.parentFile.mkdirs()
                 jksFile.writeBytes(Base64.getDecoder().decode(storeB64))
                 signingConfig = signingConfigs.create("release") {
                     storeFile = jksFile
