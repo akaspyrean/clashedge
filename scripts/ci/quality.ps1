@@ -163,14 +163,55 @@ if (-not $SkipLauncher) {
   }
 }
 
-# Android is experimental and frozen (apps/android/README.md): it must never leak into the
-# release chain until its prerequisites are done.
+# Android release-chain guard: since PR #31 we intentionally integrate Android
+# into the release flow. The guard now verifies the job is present and wired
+# with the shared PKCS12 keystore secrets (no loose ends).
 Invoke-Step 'android release-chain guard' {
-  $hit = Select-String -Path (Join-Path $repoRoot '.github\workflows\release.yml') -Pattern 'apps/android|apps\\android' -SimpleMatch:$false -ErrorAction SilentlyContinue
-  if ($hit) {
-    Write-Host "release.yml references apps/android: $($hit[0].Line.Trim())" -ForegroundColor Red
+  $releaseYml = Join-Path $repoRoot '.github\workflows\release.yml'
+  $yaml = Get-Content $releaseYml -Raw
+  # 1. android-build job must exist
+  if ($yaml -notmatch '(?m)^\s+android-build:') {
+    Write-Host "android-build job missing from release.yml" -ForegroundColor Red
     $global:LASTEXITCODE = 1
+    return
   }
+  # 2. Must reference the 4 Android keystore secrets
+  $requiredSecrets = @(
+    'ANDROID_KEYSTORE_BASE64',
+    'ANDROID_KEY_ALIAS',
+    'ANDROID_KEY_PASSWORD',
+    'ANDROID_STORE_PASSWORD'
+  )
+  foreach ($s in $requiredSecrets) {
+    if ($yaml -notmatch ('secrets\.' + $s)) {
+      Write-Host "android-build missing secret reference: $s" -ForegroundColor Red
+      $global:LASTEXITCODE = 1
+      return
+    }
+  }
+  # 3. Must also reference Windows PFX secrets (shared keystore)
+  $sharedSecrets = @('WINDOWS_CODESIGN_PFX_BASE64', 'WINDOWS_CODESIGN_PFX_PASSWORD')
+  foreach ($s in $sharedSecrets) {
+    if ($yaml -notmatch ('secrets\.' + $s)) {
+      Write-Host "shared keystore secret missing in release.yml: $s" -ForegroundColor Red
+      $global:LASTEXITCODE = 1
+      return
+    }
+  }
+  # 4. publish must depend on android-build
+  if ($yaml -notmatch 'publish:') {
+    Write-Host "publish job not found" -ForegroundColor Red
+    $global:LASTEXITCODE = 1
+    return
+  }
+  $pubIdx = $yaml.IndexOf('publish:')
+  $afterPub = $yaml.Substring($pubIdx)
+  if ($afterPub -notmatch 'android-build') {
+    Write-Host "publish job does not depend on android-build" -ForegroundColor Red
+    $global:LASTEXITCODE = 1
+    return
+  }
+  Write-Host "android release-chain guard: OK (job present, secrets wired, publish depends on it)" -ForegroundColor Green
 }
 
 Write-Host ""
