@@ -19,5 +19,10 @@ export default defineConfig({
     // element-plus.ts 引入各组件的 .css：让 vite 处理（否则 node 直接 import 报 Unknown file extension）。
     server: { deps: { inline: ["element-plus"] } },
     css: false,
+    // 满载并行时重型视图的按需转换可能超出默认 5s（历史 flaky：Settings 两个 spec）。
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
+    // transform 结果跨运行持久化（vitest 官方提示）：全量跑的 transform 占比 ~36%。
+    fsModuleCache: true,
   },
 });
