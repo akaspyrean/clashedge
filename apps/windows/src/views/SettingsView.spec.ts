@@ -2,7 +2,8 @@
 // 设置页此前无组件级测试；行式化改造后补上渲染冒烟，防止模板回归。
 // 注意：theme.ts 在模块顶层调用 window.matchMedia，happy-dom 未提供，
 // 因此先 stub 再动态导入被测组件。
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Component } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 
 const invokeMock = vi.fn();
@@ -59,35 +60,45 @@ const mountOptions = {
   },
 };
 
+/** theme.ts / ResizeObserver：在 beforeAll 先 stub 再加载组件模块（每文件一次），
+ *  beforeEach 再重置 Pinia/mock 并重复 stub（幂等），测试体只剩 mount+断言。 */
+function stubDom() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }));
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+}
+
+let SettingsView: Component;
+
 describe("SettingsView: 行式布局冒烟", () => {
+  beforeAll(async () => {
+    stubDom();
+    ({ default: SettingsView } = await import("@/views/SettingsView.vue"));
+  });
+
   beforeEach(() => {
     setActivePinia(createPinia());
     invokeMock.mockReset();
     mockBackend();
-    // theme.ts 模块顶层依赖 matchMedia（happy-dom 缺失），给一个最小实现。
-    vi.stubGlobal("matchMedia", (query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    }));
-    // SettingsView mounted 钩子用 ResizeObserver 观察 tabs 容器（happy-dom 缺失）。
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      }
-    );
+    stubDom();
   });
 
   it("整页渲染偏好行（语言/主题/系统代理），不再使用 el-form", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const wrapper = mount(SettingsView, mountOptions);
     await flushPromises();
     const html = wrapper.html();
@@ -102,7 +113,6 @@ describe("SettingsView: 行式布局冒烟", () => {
   });
 
   it("五个分组齐全且顺序为 常规 / 代理 / TUN / 高级 / 关于", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const wrapper = mount(SettingsView, mountOptions);
     await flushPromises();
     expect(wrapper.findAll(".group-title").map((h) => h.text())).toEqual([
@@ -115,7 +125,6 @@ describe("SettingsView: 行式布局冒烟", () => {
   });
 
   it("整页只有一个主按钮（保存）", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const wrapper = mount(SettingsView, mountOptions);
     await flushPromises();
     const primaries = wrapper.findAll(".el-button--primary");
@@ -124,7 +133,6 @@ describe("SettingsView: 行式布局冒烟", () => {
   });
 
   it("搜索设置：命中的行高亮并报告数量，清空后恢复", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const wrapper = mount(SettingsView, { ...mountOptions, attachTo: document.body });
     await flushPromises();
     const input = wrapper.find(".search-box input");
@@ -145,7 +153,6 @@ describe("SettingsView: 行式布局冒烟", () => {
   });
 
   it("高级页承接低频技术项（日志级别/地理数据/进程查找）", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const wrapper = mount(SettingsView, mountOptions);
     await flushPromises();
     // 单页分组：不再有标签页，高级项与常规项同页可见。
