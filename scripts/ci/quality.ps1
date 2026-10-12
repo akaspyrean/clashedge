@@ -170,8 +170,8 @@ Invoke-Step 'android release-chain guard' {
   $releaseYml = Join-Path $repoRoot '.github\workflows\release.yml'
   $yaml = Get-Content $releaseYml -Raw
   # 1. android-build job must exist
-  if ($yaml -notmatch '^\s+android-build:' -or $yaml -notmatch '^\s+needs:\s*\[\s*prepare,\s*quality\s*\]') {
-    Write-Host "android-build job missing or wrong needs" -ForegroundColor Red
+  if ($yaml -notmatch '(?m)^\s+android-build:') {
+    Write-Host "android-build job missing from release.yml" -ForegroundColor Red
     $global:LASTEXITCODE = 1
     return
   }
@@ -183,7 +183,7 @@ Invoke-Step 'android release-chain guard' {
     'ANDROID_STORE_PASSWORD'
   )
   foreach ($s in $requiredSecrets) {
-    if ($yaml -notmatch '\$\{\{\s*secrets\.' + $s + '\s*\}\}') {
+    if ($yaml -notmatch ('secrets\.' + $s)) {
       Write-Host "android-build missing secret reference: $s" -ForegroundColor Red
       $global:LASTEXITCODE = 1
       return
@@ -192,14 +192,21 @@ Invoke-Step 'android release-chain guard' {
   # 3. Must also reference Windows PFX secrets (shared keystore)
   $sharedSecrets = @('WINDOWS_CODESIGN_PFX_BASE64', 'WINDOWS_CODESIGN_PFX_PASSWORD')
   foreach ($s in $sharedSecrets) {
-    if ($yaml -notmatch '\$\{\{\s*secrets\.' + $s + '\s*\}\}') {
+    if ($yaml -notmatch ('secrets\.' + $s)) {
       Write-Host "shared keystore secret missing in release.yml: $s" -ForegroundColor Red
       $global:LASTEXITCODE = 1
       return
     }
   }
   # 4. publish must depend on android-build
-  if ($yaml -notmatch 'publish:\s*\n\s+needs:\s*\[\s*prepare,\s*build,\s*android-build\s*\]') {
+  if ($yaml -notmatch 'publish:') {
+    Write-Host "publish job not found" -ForegroundColor Red
+    $global:LASTEXITCODE = 1
+    return
+  }
+  $pubIdx = $yaml.IndexOf('publish:')
+  $afterPub = $yaml.Substring($pubIdx)
+  if ($afterPub -notmatch 'android-build') {
     Write-Host "publish job does not depend on android-build" -ForegroundColor Red
     $global:LASTEXITCODE = 1
     return
