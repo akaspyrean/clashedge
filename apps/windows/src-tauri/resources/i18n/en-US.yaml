@@ -278,7 +278,6 @@ proxies:
   url_test: "URL Test"
   fallback: "Fallback"
   load_balance: "Load Balance"
-  reload: "Reload"
   empty: "No proxy groups"
   core_not_running: "Core is not running. Start it to view proxy groups."
   direct_hint: "Direct mode: all traffic bypasses proxies."
