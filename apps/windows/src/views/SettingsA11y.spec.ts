@@ -1,6 +1,7 @@
 // 设置页无障碍回归：每个控件都必须有可访问名称（来自 PrefRow 的标题），
 // 每个偏好行都是被标题命名的 group。新增控件忘了接 `:aria-label="label"` 时这里会红。
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Component } from "vue";
 import { flushPromises } from "@vue/test-utils";
 
 const invokeMock = vi.fn();
@@ -27,6 +28,13 @@ const config = {
   advanced: { "geoip-url": "", "geosite-url": "" },
 };
 
+let SettingsView: Component;
+
+beforeAll(async () => {
+  stubBrowserApis(vi);
+  ({ default: SettingsView } = await import("@/views/SettingsView.vue"));
+});
+
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation((cmd: string) => {
@@ -44,7 +52,6 @@ beforeEach(() => {
 
 describe("SettingsView accessibility", () => {
   it("every switch, select and number input has an accessible name", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const w = mountApp(SettingsView);
     await flushPromises();
 
@@ -63,7 +70,6 @@ describe("SettingsView accessibility", () => {
   });
 
   it("every preference row is a group named by its own title", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const w = mountApp(SettingsView);
     await flushPromises();
 
@@ -81,7 +87,6 @@ describe("SettingsView accessibility", () => {
   });
 
   it("the invalid LAN CIDR warning is announced as an alert", async () => {
-    const { default: SettingsView } = await import("@/views/SettingsView.vue");
     const w = mountApp(SettingsView);
     await flushPromises();
     const ta = w.find("#lan-allowed-ips");
