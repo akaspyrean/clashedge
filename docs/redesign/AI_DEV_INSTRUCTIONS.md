@@ -21,7 +21,7 @@
 | 项 | 事实 |
 |---|---|
 | Windows 客户端 | `apps/windows`：Tauri 2 + Vue 3.5 + Pinia + vue-i18n 11 + **Element Plus 2.x（按需注册，见 `src/element-plus.ts`）**。已正式发布 |
-| Android 客户端 | `apps/android`：Kotlin + Jetpack Compose（Material 3）。**实验性**：没有 gradle wrapper，内核是占位实现，无法在本地构建验证 |
+| Android 客户端 | `apps/android`：Kotlin + Jetpack Compose（Material 3）。**预览版**（v0.1.0 起随 Release 发布）：gradle wrapper 已提交、CI 构建签名正常；Mihomo 内核为占位实现（无真实 VPN）。不在本次 Windows 重设计范围内 |
 | macOS / Linux / iOS | 仓库中不存在，不在本次范围内 |
 | 主题入口 | `src/theme.ts`：同时维护 `<html data-theme>`（设计系统用）和 `.dark` class（EP 用）；存储键 `cfw-theme`；目前默认值为 `"dark"` |
 | 样式入口 | `src/styles.css`：token 段 + EP 映射 + 全局精修，约 510 行 |
