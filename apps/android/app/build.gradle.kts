@@ -38,6 +38,23 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Signing config: injected via CI secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS,
+            // ANDROID_KEY_PASSWORD, ANDROID_STORE_PASSWORD). If any is missing, the release
+            // artifact stays unsigned (local dev behavior).
+            val storeB64 = System.getenv("ANDROID_KEYSTORE_BASE64")
+            val alias = System.getenv("ANDROID_KEY_ALIAS")
+            val keyPass = System.getenv("ANDROID_KEY_PASSWORD")
+            val storePass = System.getenv("ANDROID_STORE_PASSWORD")
+            if (storeB64 != null && alias != null && keyPass != null && storePass != null) {
+                val storeFile = File(project.buildDir, "keystore.jks")
+                storeFile.writeBytes(android.util.Base64.decode(storeB64, android.util.Base64.DEFAULT))
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = storeFile
+                    storePassword = storePass
+                    keyAlias = alias
+                    keyPassword = keyPass
+                }
+            }
         }
     }
 

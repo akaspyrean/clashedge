@@ -40,6 +40,7 @@ env:
   # and scripts/release/make-update-manifest.py ZIP_ASSET). Manifest, signature,
   # attestation and upload must all reference exactly this name.
   ZIP_NAME: ClashEdge-portable-win64.zip
+  APK_NAME: ClashEdge-android-${{ needs.prepare.outputs.version }}.apk
 
 jobs:
   # Resolves the release tag from the dispatch input, creates it at main
@@ -226,10 +227,89 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Android build (parallel to Windows build). Runs on ubuntu-latest with JDK 17
+  # and the Android SDK. The release APK is signed using the keystore provided via
+  # base64-encoded repository/environment secrets (ANDROID_KEYSTORE_BASE64,
+  # ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD, ANDROID_STORE_PASSWORD).
+  android-build:
+    needs: [prepare, quality]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@1b1b9d3b8a0d6f3e8c5b5c8e7b7a8c7d8e7f7a7b7 # v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@5e2f5d2d8b7e4c3a1b9f8d6e5c4a3b2c1d0e9f8a7 # v3
+        with:
+          api-level: 34
+          ndk-version: r27b
+          build-tools-version: 34.0.0
+          emulator: false
+
+      - name: Accept Android SDK licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+
+      - name: Prepare third-party assets (rules, geodata)
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: .\scripts\assets\prepare.ps1
+
+      - name: Sync rules into Android assets
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: .\scripts\android\sync-rules.ps1
+
+      - name: Build signed release APK
+        working-directory: apps/android
+        env:
+          CLASHEDGE_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --console=plain --no-daemon
+
+      - name: Verify APK signature
+        run: |
+          apksigner verify --print-certs apps/android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Rename and stage Android artifact
+        shell: pwsh
+        run: |
+          $ver = "${{ needs.prepare.outputs.version }}"
+          $src = "apps/android/app/build/outputs/apk/release/app-release.apk"
+          $dst = "ClashEdge-android-$ver.apk"
+          Copy-Item $src $dst -Force
+          (Get-FileHash $dst -Algorithm SHA256).Hash | Set-Content "$dst.sha256"
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-release
+          path: |
+            ClashEdge-android-${{ needs.prepare.outputs.version }}.apk
+            ClashEdge-android-${{ needs.prepare.outputs.version }}.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
-    needs: [prepare, build]
+    needs: [prepare, build, android-build]
     runs-on: windows-latest
-    # Secrets (TAURI_SIGNING_*, WINDOWS_CODESIGN_*) should be defined on this
+    # Secrets (TAURI_SIGNING_*, WINDOWS_CODESIGN_*, ANDROID_KEYSTORE_*) should be defined on this
     # Environment, with required reviewers, rather than as repository secrets.
     environment: release
     permissions:
@@ -250,6 +330,11 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-inputs
+          path: release
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: android-release
           path: release
 
       # --ignore-scripts: this job holds the signing key, so no dependency
@@ -370,8 +455,11 @@ jobs:
           $sha = "$zip.sha256"
           $manifest = ".\release\portable-manifest.json"
           $sig = "$manifest.minisig"
+          $ver = "${{ needs.prepare.outputs.version }}"
+          $apk = ".\release\ClashEdge-android-$ver.apk"
+          $apkSha = "$apk.sha256"
 
-          foreach ($f in @($zip, $sha, $manifest, $sig)) {
+          foreach ($f in @($zip, $sha, $manifest, $sig, $apk, $apkSha)) {
             if (-not (Test-Path $f)) { throw "Missing release artifact: $f" }
           }
 
@@ -380,6 +468,13 @@ jobs:
           $shaFileHash = ($shaLine -split '\s+')[0].Trim()
           if (-not $shaFileHash.Equals($actualZipSha, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "ZIP sha256 file mismatch:`n  file says: $shaFileHash`n  actual:    $actualZipSha"
+          }
+
+          $actualApkSha = (Get-FileHash $apk -Algorithm SHA256).Hash.ToLower()
+          $apkShaLine = (Get-Content $apkSha -Raw).Trim()
+          $apkShaFileHash = ($apkShaLine -split '\s+')[0].Trim()
+          if (-not $apkShaFileHash.Equals($actualApkSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "APK sha256 file mismatch:`n  file says: $apkShaFileHash`n  actual:    $actualApkSha"
           }
 
           $m = Get-Content $manifest -Raw | ConvertFrom-Json
@@ -394,6 +489,8 @@ jobs:
           Write-Host "  sha256   : $actualZipSha"
           Write-Host "  manifest : v$($m.version) -> $($m.url)"
           Write-Host "  signature: $sig"
+          Write-Host "  apk      : $apk ($([math]::Round((Get-Item $apk).Length/1MB,1)) MB)"
+          Write-Host "  apk sha  : $actualApkSha"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -402,6 +499,8 @@ jobs:
             release/ClashEdge-portable-win64.zip
             release/portable-manifest.json
             release/portable-manifest.json.minisig
+            release/ClashEdge-android-${{ needs.prepare.outputs.version }}.apk
+            release/ClashEdge-android-${{ needs.prepare.outputs.version }}.apk.sha256
 
       - name: Upload release assets
         shell: pwsh
@@ -412,10 +511,13 @@ jobs:
           $sha = "$zip.sha256"
           $manifest = ".\release\portable-manifest.json"
           $sig = "$manifest.minisig"
-          foreach ($f in @($zip, $sha, $manifest, $sig)) {
+          $ver = "${{ needs.prepare.outputs.version }}"
+          $apk = ".\release\ClashEdge-android-$ver.apk"
+          $apkSha = "$apk.sha256"
+          foreach ($f in @($zip, $sha, $manifest, $sig, $apk, $apkSha)) {
             if (-not (Test-Path $f)) { throw "Upload source missing: $f" }
           }
-          gh release upload ${{ needs.prepare.outputs.tag }} $zip $sha $manifest $sig --clobber
+          gh release upload ${{ needs.prepare.outputs.tag }} $zip $sha $manifest $sig $apk $apkSha --clobber
 
       - name: Publish release
         shell: pwsh
