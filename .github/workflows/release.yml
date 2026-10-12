@@ -40,7 +40,6 @@ env:
   # and scripts/release/make-update-manifest.py ZIP_ASSET). Manifest, signature,
   # attestation and upload must all reference exactly this name.
   ZIP_NAME: ClashEdge-portable-win64.zip
-  APK_NAME: ClashEdge-android-${{ needs.prepare.outputs.version }}.apk
 
 jobs:
   # Resolves the release tag from the dispatch input, creates it at main
@@ -245,33 +244,35 @@ jobs:
           fetch-depth: 0
 
       - name: Set up JDK 17
-        uses: actions/setup-java@1b1b9d3b8a0d6f3e8c5b5c8e7b7a8c7d8e7f7a7b7 # v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: 17
-          cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@5e2f5d2d8b7e4c3a1b9f8d6e5c4a3b2c1d0e9f8a7 # v3
-        with:
-          api-level: 34
-          ndk-version: r27b
-          build-tools-version: 34.0.0
-          emulator: false
-
-      - name: Accept Android SDK licenses
+      # ubuntu-latest ships the Android SDK pre-installed; sdkmanager is at
+      # $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager. Install only what
+      # AGP 8.5.2 + compileSdk 34 needs.
+      - name: Install Android SDK packages
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+          set -e
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null
 
-      - name: Prepare third-party assets (rules, geodata)
-        shell: pwsh
-        working-directory: ${{ github.workspace }}
-        run: .\scripts\assets\prepare.ps1
-
-      - name: Sync rules into Android assets
-        shell: pwsh
-        working-directory: ${{ github.workspace }}
-        run: .\scripts\android\sync-rules.ps1
+      # Stage the pinned rule set (direct/proxy/media/ai/ad) into the Android
+      # app assets. These are the same URLs pinned in assets.lock.json; we
+      # download them directly because scripts/assets/prepare.ps1 uses
+      # Windows-style path separators that break on Linux.
+      - name: Stage rule assets into Android app
+        run: |
+          set -e
+          dst="apps/android/app/src/main/assets/rules"
+          mkdir -p "$dst"
+          base="https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules"
+          for f in direct proxy media ai ad; do
+            curl -fsSL "$base/$f.yaml" -o "$dst/$f.yaml"
+            echo "  staged: $dst/$f.yaml ($(wc -c < "$dst/$f.yaml") bytes)"
+          done
 
       - name: Build signed release APK
         working-directory: apps/android
@@ -281,20 +282,29 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-        run: ./gradlew :app:assembleRelease --console=plain --no-daemon
-
-      - name: Verify APK signature
         run: |
-          apksigner verify --print-certs apps/android/app/build/outputs/apk/release/app-release.apk
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --console=plain --no-daemon
+
+      - name: Verify APK signature and version
+        run: |
+          set -e
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/34.0.0/aapt2"
+          APK="apps/android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK" || { echo "APK not found: $APK"; exit 1; }
+          "$APKSIGNER" verify --print-certs "$APK"
+          "$AAPT2" dump badging "$APK" | head -1
 
       - name: Rename and stage Android artifact
-        shell: pwsh
         run: |
-          $ver = "${{ needs.prepare.outputs.version }}"
-          $src = "apps/android/app/build/outputs/apk/release/app-release.apk"
-          $dst = "ClashEdge-android-$ver.apk"
-          Copy-Item $src $dst -Force
-          (Get-FileHash $dst -Algorithm SHA256).Hash | Set-Content "$dst.sha256"
+          set -e
+          ver="${{ needs.prepare.outputs.version }}"
+          src="apps/android/app/build/outputs/apk/release/app-release.apk"
+          dst="ClashEdge-android-$ver.apk"
+          cp "$src" "$dst"
+          sha256sum "$dst" | awk '{print $1}' > "$dst.sha256"
+          echo "APK: $dst ($(du -h "$dst" | cut -f1))"
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
