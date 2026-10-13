@@ -2,9 +2,7 @@
 
 # ClashEdge
 
-**轻量、开箱即用的 Mihomo 客户端**
-
-便携运行 · 智能分流 · 开箱即用
+轻量便携的 Mihomo 客户端，支持智能分流，开箱即用。
 
 [![License](https://img.shields.io/badge/License-MIT-2465F0?style=flat-square&labelColor=15171B)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/akaspyrean/clashedge/ci.yml?branch=main&label=CI&style=flat-square&labelColor=15171B&color=2465F0)](https://github.com/akaspyrean/clashedge/actions/workflows/ci.yml)
@@ -42,7 +40,7 @@ flowchart LR
     A["浏览器发起请求"] --> B{"内置规则链<br/>自动分诊"}
     B -- "命中 AI 规则" --> C["人工智能组"]
     B -- "命中国内规则" --> D["DIRECT 直连"]
-    C --> E["自动优选<br/>延迟最低节点"]
+    C --> E["人工优选"]
     E --> F(["AI 服务经代理到达"])
     D --> G(["国内站点直接返回"])
     classDef brand fill:#2465F0,stroke:#1C55D4,color:#FFFFFF
