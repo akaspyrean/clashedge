@@ -571,7 +571,7 @@ proxies:
             .filter_map(|p| p.as_str())
             .collect();
         assert_eq!(names, vec!["DIRECT"]);
-}
+    }
 
     /// 无区域信息时：人工优选=全部节点扁平注入，组骨架固定六组。
     #[test]
