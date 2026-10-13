@@ -6,11 +6,11 @@
 
 便携运行 · 智能分流 · 开箱即用
 
-[![License](https://img.shields.io/badge/License-MIT-286F78?style=flat-square&labelColor=1D3F45)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/akaspyrean/clashedge/ci.yml?branch=main&label=CI&style=flat-square&labelColor=1D3F45&color=4E7C6F)](https://github.com/akaspyrean/clashedge/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/akaspyrean/clashedge?style=flat-square&label=Release&labelColor=1D3F45&color=8C6D3F&prefix=v)](../../releases)
-[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-2D5C6B?style=flat-square&labelColor=1D3F45)](#平台)
-[![Android](https://img.shields.io/badge/Android-Preview-3E7F86?style=flat-square&labelColor=1D3F45)](#平台)
+[![License](https://img.shields.io/badge/License-MIT-2465F0?style=flat-square&labelColor=15171B)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/akaspyrean/clashedge/ci.yml?branch=main&label=CI&style=flat-square&labelColor=15171B&color=2465F0)](https://github.com/akaspyrean/clashedge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/akaspyrean/clashedge?style=flat-square&label=Release&labelColor=15171B&color=2465F0&prefix=v)](../../releases)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-2465F0?style=flat-square&labelColor=15171B)](#平台)
+[![Android](https://img.shields.io/badge/Android-Preview-F0A01E?style=flat-square&labelColor=15171B)](#平台)
 
 [下载](../../releases) · [快速开始](#快速开始) · [文档](docs/index.md) · [常见问题](docs/faq.md)
 
@@ -45,8 +45,8 @@ flowchart LR
     C --> E["自动优选<br/>延迟最低节点"]
     E --> F(["AI 服务经代理到达"])
     D --> G(["国内站点直接返回"])
-    classDef brand fill:#286F78,stroke:#1D3F45,color:#FBF9F9
-    classDef soft fill:#E7F0F1,stroke:#286F78,color:#1D3F45
+    classDef brand fill:#2465F0,stroke:#1C55D4,color:#FFFFFF
+    classDef soft fill:#EBF1FE,stroke:#2465F0,color:#15171B
     class C,E brand
     class A,B,D,F,G soft
 ```
@@ -83,12 +83,12 @@ flowchart TB
     CORE --> CHAIN["内置规则链<br/>广告拦截 → 国内直连 → AI → 影音 → 代理兜底"]
     CHAIN --> GROUPS["策略组<br/>扶梯出行 · 人工智能 · 影音视听"]
     GROUPS --> PICK["节点选择<br/>人工优选（手动）· 自动优选（URL-Test）"]
-    classDef brand fill:#286F78,stroke:#1D3F45,color:#FBF9F9
-    classDef soft fill:#E7F0F1,stroke:#286F78,color:#1D3F45
-    classDef warm fill:#F4EDE0,stroke:#8C6D3F,color:#3B2E1A
+    classDef brand fill:#2465F0,stroke:#1C55D4,color:#FFFFFF
+    classDef soft fill:#EBF1FE,stroke:#2465F0,color:#15171B
+    classDef warn fill:#FEF4E2,stroke:#F0A01E,color:#9A5700
     class CORE brand
     class NET,CHAIN,GROUPS soft
-    class PICK warm
+    class PICK warn
 ```
 
 | 策略组 | 类型 | 说明 |
@@ -131,8 +131,8 @@ flowchart TB
 flowchart LR
     T["维护者：推送版本 tag"] --> B["Release Workflow<br/>Windows 便携包 · Android APK<br/>签名与校验"]
     B --> R["GitHub Release<br/>产物 + 校验值"]
-    classDef brand fill:#286F78,stroke:#1D3F45,color:#FBF9F9
-    classDef soft fill:#E7F0F1,stroke:#286F78,color:#1D3F45
+    classDef brand fill:#2465F0,stroke:#1C55D4,color:#FFFFFF
+    classDef soft fill:#EBF1FE,stroke:#2465F0,color:#15171B
     class R brand
     class T,B soft
 ```
