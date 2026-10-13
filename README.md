@@ -10,6 +10,8 @@
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-2465F0?style=flat-square&labelColor=15171B)](#平台)
 [![Android](https://img.shields.io/badge/Android-Preview-F0A01E?style=flat-square&labelColor=15171B)](#平台)
 
+![source](https://img.shields.io/badge/source-akaspyrean/external-2465F0?&label=规则集来源&style=flat-square&labelColor=15171B) ![direct](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.direct.yaml&label=直连路线&style=flat-square&labelColor=15171B&color=2465F0) ![proxy](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.proxy.yaml&label=扶梯出行&style=flat-square&labelColor=15171B&color=2465F0) ![media](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.media.yaml&label=影音视听&style=flat-square&labelColor=15171B&color=2465F0) ![ai](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.ai.yaml&label=人工智能&style=flat-square&labelColor=15171B&color=2465F0) ![ad](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.ad.yaml&label=广告拦截&style=flat-square&labelColor=15171B&color=2465F0) 
+
 [下载](../../releases) · [快速开始](#快速开始) · [文档](docs/index.md) · [常见问题](docs/faq.md)
 
 </div>
@@ -98,8 +100,6 @@ flowchart TB
 | **人工优选** | Select | 全部订阅节点，纯手动选择 |
 | **自动优选** | URL-Test | 每 5 分钟测速，自动选最低延迟（容差 100ms） |
 | **GLOBAL** | Select | Global 模式专用，规则模式下隐藏 |
-
-![source](https://img.shields.io/badge/source-akaspyrean/external-2465F0?&label=source&style=flat-square&labelColor=15171B) ![direct](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.direct.yaml&label=direct&style=flat-square&labelColor=15171B&color=2465F0) ![ad](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.ad.yaml&label=ad&style=flat-square&labelColor=15171B&color=2465F0) ![proxy](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.proxy.yaml&label=proxy&style=flat-square&labelColor=15171B&color=2465F0) ![media](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.media.yaml&label=media&style=flat-square&labelColor=15171B&color=2465F0) ![ai](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.ai.yaml&label=ai&style=flat-square&labelColor=15171B&color=2465F0)
 
 ## 仓库结构
 
