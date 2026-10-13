@@ -21,7 +21,7 @@
 ClashEdge 是一个 Mihomo 图形客户端（Mihomo 是 Clash 内核的活跃延续，ClashEdge 负责把它包装成开箱即用的桌面与移动应用）。你提供订阅链接，它负责规则分流、节点选择与系统接入。
 
 - **便携优先**：Windows 解压即用，程序与数据分离（`App/` + `Data/`），复制文件夹即整体迁移。
-- **开箱即用**：内置规则链与策略组，订阅只提供节点，无需手写任何规则。
+- **开箱即用**：内置经签名校验的规则链与策略组，订阅只提供节点，无需手写任何规则。
 - **内核托管**：mihomo 配置由应用统一生成并守护——崩溃自启、端口预检、热重载。
 
 | 平台 | 状态 | 网络接入 | 分发形态 |
@@ -77,16 +77,17 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    NET["接入层<br/>系统代理 · TUN · VpnService"] --> CORE["mihomo 内核<br/>Rule / Global / Direct"]
-    CORE --> CHAIN["内置规则链<br/>广告拦截 → 国内直连 → AI → 影音 → 代理兜底"]
-    CHAIN --> GROUPS["策略组<br/>扶梯出行 · 人工智能 · 影音视听"]
-    GROUPS --> PICK["节点选择<br/>人工优选（手动）· 自动优选（URL-Test）"]
-    classDef brand fill:#2465F0,stroke:#1C55D4,color:#FFFFFF
-    classDef soft fill:#EBF1FE,stroke:#2465F0,color:#15171B
-    classDef warn fill:#FEF4E2,stroke:#F0A01E,color:#9A5700
-    class CORE brand
-    class NET,CHAIN,GROUPS soft
-    class PICK warn
+    A[客户端配置]
+    A --> C[在线规则]
+    A --> B[节点选择]
+    C --> E[规则匹配]
+    B --> D[自动优选 / 人工优选]
+    E --> G[直连 / 拦截]
+    E --> F[分类代理]
+    D --> F
+    F --> H[人工智能]
+    F --> I[影音视听]
+    F --> J[扶梯出行]
 ```
 
 | 策略组 | 类型 | 说明 |
@@ -97,8 +98,6 @@ flowchart TB
 | **人工优选** | Select | 全部订阅节点，纯手动选择 |
 | **自动优选** | URL-Test | 每 5 分钟测速，自动选最低延迟（容差 100ms） |
 | **GLOBAL** | Select | Global 模式专用，规则模式下隐藏 |
-
-内置规则集（[akaspyrean/external](https://github.com/akaspyrean/external)）：direct 11.1 万 / ad 21.6 万 / proxy 2.7 万 / media 1.6 千 / ai 82 条，经签名清单校验，每日自动更新。
 
 ## 仓库结构
 
