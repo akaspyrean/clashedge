@@ -99,6 +99,8 @@ flowchart TB
 | **自动优选** | URL-Test | 每 5 分钟测速，自动选最低延迟（容差 100ms） |
 | **GLOBAL** | Select | Global 模式专用，规则模式下隐藏 |
 
+内置规则集来自 [akaspyrean/external](https://github.com/akaspyrean/external)：![direct](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.direct.yaml&label=direct&style=flat-square&labelColor=15171B&color=2465F0) ![ad](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.ad.yaml&label=ad&style=flat-square&labelColor=15171B&color=2465F0) ![proxy](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.proxy.yaml&label=proxy&style=flat-square&labelColor=15171B&color=2465F0) ![media](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.media.yaml&label=media&style=flat-square&labelColor=15171B&color=2465F0) ![ai](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fakaspyrean%2Fexternal%2Fmain%2Fstats.json&query=%24.rules.ai.yaml&label=ai&style=flat-square&labelColor=15171B&color=2465F0)，经签名校验，每日自动更新。
+
 ## 仓库结构
 
 | 目录 | 内容 |
