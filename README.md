@@ -2,250 +2,158 @@
 
 # ClashEdge
 
-**轻量、开箱即用的 Mihomo 客户端（Windows 正式发布 / Android 预览版）**
+**轻量、开箱即用的 Mihomo 客户端**
 
-订阅提供节点，ClashEdge 负责分流与策略。内置规则开箱即用，也可自由配置。
+便携运行 · 智能分流 · 开箱即用
 
-![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-4F6D7A?style=flat-square)
-![Android](https://img.shields.io/badge/Android-Preview-3DDC84?style=flat-square)
-![Version](https://img.shields.io/github/v/release/akaspyrean/clashedge?style=flat-square&label=Version&color=66856A&prefix=v)
-![License](https://img.shields.io/badge/license-MIT-A98652?style=flat-square&label=License)
+[![License](https://img.shields.io/badge/License-MIT-286F78?style=flat-square&labelColor=1D3F45)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/akaspyrean/clashedge/ci.yml?branch=main&label=CI&style=flat-square&labelColor=1D3F45&color=4E7C6F)](https://github.com/akaspyrean/clashedge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/akaspyrean/clashedge?style=flat-square&label=Release&labelColor=1D3F45&color=8C6D3F&prefix=v)](../../releases)
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-2D5C6B?style=flat-square&labelColor=1D3F45)](#平台)
+[![Android](https://img.shields.io/badge/Android-Preview-3E7F86?style=flat-square&labelColor=1D3F45)](#平台)
 
-[📥 下载](../../releases) · [📚 文档](docs/) · [🔧 规则库](https://github.com/akaspyrean/external) · [❓ 常见问题](docs/faq.md)
+[下载](../../releases) · [快速开始](#快速开始) · [文档](docs/index.md) · [常见问题](docs/faq.md)
 
 </div>
 
----
+> 新手请从 **这是什么** 读到 **快速开始**。想理解分流原理，看 [进阶](#进阶分流体系如何工作)。
 
-## 目录
+## 这是什么
 
-- [平台对比](#平台对比)
-- [核心特性](#核心特性)
-- [快速开始](#快速开始)
-- [界面预览](#界面预览)
-- [智能分流体系](#智能分流体系)
-- [文档导航](#文档导航)
-- [相关仓库](#相关仓库)
+ClashEdge 是一个 Mihomo 图形客户端（Mihomo 是 Clash 内核的活跃延续，ClashEdge 负责把它包装成开箱即用的桌面与移动应用）。你提供订阅链接，它负责规则分流、节点选择与系统接入。
 
----
+- **便携优先**：Windows 解压即用，程序与数据分离（`App/` + `Data/`），复制文件夹即整体迁移。
+- **开箱即用**：内置规则链与策略组，订阅只提供节点，无需手写任何规则。
+- **内核托管**：mihomo 配置由应用统一生成并守护——崩溃自启、端口预检、热重载。
 
-## 平台对比
+| 平台 | 状态 | 网络接入 | 分发形态 |
+| --- | --- | --- | --- |
+| **Windows** | ✅ 正式版 | 系统代理 · TUN（Wintun） | 便携目录 |
+| **Android** | 🔶 预览版 | VpnService（TUN） | APK |
 
-| 特性 | **ClashEdge for Windows** (正式版) | **ClashEdge for Android** (预览版) |
-|------|-----------------------------------|-----------------------------------|
-| **定位** | Lightweight / Portable / Windows-first | Lightweight / Simple / Mihomo-based |
-| **内核接入** | Mihomo (sidecar) + WinTUN | Mihomo (Android AAR / JNI) |
-| **网络方式** | 系统代理 + TUN (Wintun) | Android VpnService (TUN) |
-| **分发形态** | 便携目录 (根启动器 + App/ + Data/) | APK |
-| **前端技术** | Tauri 2 (Rust + Vue 3) | Kotlin + Jetpack Compose |
-| **发布状态** | ✅ 正式发布 | 🔶 预览版 (无真实代理能力) |
+> Android 预览版自 v0.1.0 起随 [Release](../../releases) 发布，界面与 VPN 授权流程完整可体验；Mihomo 内核（AAR/JNI）仍为占位实现，暂无真实代理。正式版前置条件见 [`apps/android/README.md`](apps/android/README.md)。
 
-> **Android 预览版说明**：自 v0.1.0 起进入发布链路——APK 由 CI 自动构建、签名并随 [Release](../../releases) 发布，可安装体验完整的界面与 VPN 授权流程；但 Mihomo 核心 (AAR/JNI) 仍为占位实现，**暂无法提供真实代理**。进入正式版的前置条件清单见 [`apps/android/README.md`](apps/android/README.md)。
+## 一个例子
 
-两个平台共享品牌、产品定位、默认规则体系与相近的信息架构，但平台能力各自独立实现。
+导入订阅后，你在浏览器打开一个 AI 站点——
 
----
+```mermaid
+flowchart LR
+    A["浏览器发起请求"] --> B{"内置规则链<br/>自动分诊"}
+    B -- "命中 AI 规则" --> C["人工智能组"]
+    B -- "命中国内规则" --> D["DIRECT 直连"]
+    C --> E["自动优选<br/>延迟最低节点"]
+    E --> F(["AI 服务经代理到达"])
+    D --> G(["国内站点直接返回"])
+    classDef brand fill:#286F78,stroke:#1D3F45,color:#FBF9F9
+    classDef soft fill:#E7F0F1,stroke:#286F78,color:#1D3F45
+    class C,E brand
+    class A,B,D,F,G soft
+```
 
-## 核心特性
-
-### 📦 便携运行
-- 解压即用，无需安装
-- 整体迁移：复制文件夹即可迁移所有配置
-- 支持中文路径、空格路径
-- 程序与数据完全分离 (App/ + Data/)
-
-### 🔗 订阅管理
-- 订阅导入 / 更新 / 重命名
-- 原始配置编辑 / User-Agent 自定义
-- 导入导出 / 热重载
-- 订阅流量 / 到期提醒 (Subscription-Userinfo)
-
-### 🧭 分流策略
-- **三种模式**：Rule (智能分流) / Global (全局代理) / Direct (直连)
-- **五大策略组**：扶梯出行 / 人工智能 / 影音视听 / 人工优选 / 自动优选
-- **两种节点选择**：人工优选 (手动) / 自动优选 (URL-Test 延迟测速)
-
-### 🌐 系统网络
-- 系统代理 (HTTP/HTTPS/SOCKS5)
-- TUN 模式 (Wintun 驱动，需管理员权限)
-- Mihomo 核心直连 (mixed-port / DNS / controller)
-
-### 📊 状态体验
-- 实时延迟监测 (六档分级：良好/一般/较差/超时/测速中/未测)
-- 流量统计 / 活动连接 / 连接详情
-- 核心日志 (级别筛选 + 正则搜索 + 导出)
-- 中英双语 / 浅色深色主题 / 跟随系统
-
----
+整个过程无需任何配置：广告被拦截、国内流量直连、AI 与影音流量各走各的出口。
 
 ## 快速开始
 
-### Windows (便携版)
+### Windows
+
+| 步骤 | 操作 |
+| --- | --- |
+| 1 | 从 [Releases](../../releases) 下载 `ClashEdge-portable-win64.zip`，解压到任意目录（建议非系统盘） |
+| 2 | 运行 `ClashEdge.exe`，首次启动自动创建 `Data` 目录 |
+| 3 | 左侧「订阅」→「添加订阅」，粘贴订阅链接 |
+| 4 | 首页「启动核心」，状态变为「已连接」 |
+| 5 | 开启「系统代理」或「TUN 模式」 |
+
+### Android
+
+下载 [Release](../../releases) 中的 `ClashEdge-android-<version>.apk` → 安装（允许未知来源）→ 授予 VPN 权限 → 添加订阅 → 启动核心。
+
+### 常见问题
+
+- **TUN 模式**：需要管理员权限，程序会自动请求 UAC 提权。
+- **杀毒软件误报**：属未签名便携程序的常见现象，可添加信任，说明见 [FAQ](docs/faq.md)。
+- **订阅与配置细节**：见 [配置详解](docs/configuration.md)。
+
+## 进阶：分流体系如何工作
 
 ```mermaid
-flowchart LR
-    A[下载 Portable] --> B[解压]
-    B --> C[启动 ClashEdge.exe]
-    C --> D[添加订阅]
-    D --> E[启动核心]
-    E --> F((开始使用))
+flowchart TB
+    NET["接入层<br/>系统代理 · TUN · VpnService"] --> CORE["mihomo 内核<br/>Rule / Global / Direct"]
+    CORE --> CHAIN["内置规则链<br/>广告拦截 → 国内直连 → AI → 影音 → 代理兜底"]
+    CHAIN --> GROUPS["策略组<br/>扶梯出行 · 人工智能 · 影音视听"]
+    GROUPS --> PICK["节点选择<br/>人工优选（手动）· 自动优选（URL-Test）"]
+    classDef brand fill:#286F78,stroke:#1D3F45,color:#FBF9F9
+    classDef soft fill:#E7F0F1,stroke:#286F78,color:#1D3F45
+    classDef warm fill:#F4EDE0,stroke:#8C6D3F,color:#3B2E1A
+    class CORE brand
+    class NET,CHAIN,GROUPS soft
+    class PICK warm
 ```
-
-1. 从 [Releases](../../releases) 下载 `ClashEdge-portable-win64.zip`
-2. 解压到任意目录 (建议非系统盘，避免权限问题)
-3. 运行 `ClashEdge.exe` (首次运行会自动创建 Data 目录)
-4. 点击左侧「订阅」→「添加订阅」粘贴订阅链接
-5. 点击首页「启动核心」按钮，核心状态变为「已连接」
-6. 开启「系统代理」或「TUN 模式」即可使用
-
-> **首次运行提示**：开启 TUN 模式需要管理员权限，程序会自动请求 UAC 提权。
-
-### Android (预览版)
-
-1. 从 [Releases](../../releases) 下载 `ClashEdge-android-<version>.apk`
-2. 安装 APK (需允许"未知来源应用")
-3. 打开应用，授予 VPN 权限
-4. 添加订阅 → 启动核心
-5. **注意**：当前预览版无真实代理能力，仅可体验界面与 VPN 授权流程
-
----
-
-## 界面预览
-
-| 首页 (仪表盘) | 代理管理 |
-|--------------|---------|
-| ![概览](docs/images/clashedge-001.webp) | ![代理](docs/images/clashedge-002.webp) |
-
-| 订阅管理 | 设置 |
-|---------|------|
-| ![配置](docs/images/clashedge-003.webp) | ![设置](docs/images/clashedge-004.webp) |
-
----
-
-## 智能分流体系
-
-### 分流逻辑
-
-```mermaid
-flowchart LR
-    A((网络请求))
-    A --> AD[广告拦截]
-    A --> CN[国内直连]
-    A --> AI[AI 服务]
-    A --> M[影音媒体]
-    A --> P[其他流量]
-
-    AD --> X[REJECT 拦截]
-    CN --> D[DIRECT 直连]
-
-    AI --> S1[人工智能组]
-    M --> S2[影音视听组]
-    P --> S3[扶梯出行组]
-
-    S1 --> U[人工优选]
-    S1 --> T[自动优选]
-    S2 --> U
-    S2 --> T
-    S3 --> U
-    S3 --> T
-
-    U --> N((订阅节点))
-    T --> N
-```
-
-### 规则优先级 (内置规则链)
-
-```
-GEOSITE,private
-→ RULE-SET,direct (直连规则)
-→ RULE-SET,ad (广告拦截)
-→ GEOSITE,category-ads-all
-→ RULE-SET,ai (AI 服务)
-→ RULE-SET,media (影音媒体)
-→ RULE-SET,proxy (代理规则)
-→ GEOSITE,cn
-→ GEOIP,CN
-→ MATCH → 扶梯出行
-```
-
-### 策略组说明
 
 | 策略组 | 类型 | 说明 |
-|--------|------|------|
-| **扶梯出行** | Select | 主代理组，含"自动优选"、"人工优选" |
-| **人工智能** | Select | AI 服务专用，优先人工优选 |
-| **影音视听** | Select | 视频/音乐流媒体专用，优先人工优选 |
-| **自动优选** | URL-Test | 每 5 分钟测速，选延迟最低节点 (容差 50ms) |
-| **人工优选** | Select | 手动选择节点，包含所有有效订阅节点 |
-| **GLOBAL** | Select | 隐藏组，Global 模式下使用 |
+| --- | --- | --- |
+| **扶梯出行** | Select | 主出口组：自动 / 人工优选 + DIRECT |
+| **人工智能** | Select | AI 服务专用出口 |
+| **影音视听** | Select | 流媒体专用出口 |
+| **人工优选** | Select | 全部订阅节点，纯手动选择 |
+| **自动优选** | URL-Test | 每 5 分钟测速，自动选最低延迟（容差 100ms） |
+| **GLOBAL** | Select | Global 模式专用，规则模式下隐藏 |
 
----
+内置规则集（[akaspyrean/external](https://github.com/akaspyrean/external)）：direct 11.1 万 / ad 21.6 万 / proxy 2.7 万 / media 1.6 千 / ai 82 条，经签名清单校验，每日自动更新。
 
-## 文档导航
+## 仓库结构
 
-### 📖 用户文档
+| 目录 | 内容 |
+| --- | --- |
+| `apps/windows/` | Windows 客户端（Tauri 2：Rust 后端 + Vue 3 前端） |
+| `apps/android/` | Android 客户端（Kotlin + Jetpack Compose） |
+| `docs/` | 用户文档、架构与设计规范、审计报告 |
+| `design/` `packaging/` `scripts/` | 设计资源、打包配置与构建脚本 |
 
-| 文档 | 说明 |
-|------|------|
-| [快速上手指南](docs/getting-started.md) | 30 秒上手、常见问题、故障排查 |
-| [配置详解](docs/configuration.md) | 订阅、规则、DNS、TUN、代理组完整配置说明 |
-| [界面使用手册](docs/ui-guide.md) | 各页面功能详细介绍、快捷键、操作技巧 |
-| [常见问题 (FAQ)](docs/faq.md) | 安装、连接、订阅、更新、杀毒软件误报等 |
+## 维护者参考
 
-### 🔧 开发文档
+### 本地检查
 
-| 文档 | 说明 |
-|------|------|
-| [架构设计](docs/architecture.md) | 系统架构、核心模块、数据流、不变量 |
-| [设计系统](docs/design-system.md) | Clear Edge v2 设计规范 (Token、组件、交互) |
-| [UI 重构指令](docs/redesign/AI_DEV_INSTRUCTIONS.md) | AI 编码代理执行的逐卡开发任务 |
-| [源码审计报告](docs/audit/AUDIT-2026-10-08.md) | 完整代码审计、风险评级、修复状态 |
-| [构建与发布](docs/build-release.md) | 本地构建、CI 流水线、签名发布、便携包制作 |
+以下检查在 CI 中统一执行，本地运行用于提前发现问题。
 
-### 📦 打包与部署
+| 命令 | 作用 |
+| --- | --- |
+| `cd apps/windows/src-tauri && cargo fmt --check` | Rust 格式检查 |
+| `cargo clippy --all-targets -- -D warnings` | Rust 静态检查（警告即失败） |
+| `cargo test` | Rust 单元测试 |
+| `cargo audit` / `cargo deny` | 依赖漏洞与许可审计 |
+| `cd apps/windows && npm test` | 前端单元测试 |
 
-| 文档 | 说明 |
-|------|------|
-| [便携包结构](docs/packaging/portable-layout.md) | 三分离布局、Data 目录、启动器行为 |
-| [Windows 打包脚本](docs/packaging/windows-build.md) | build-portable.ps1、prepare.ps1、scan-portable-paths.ps1 |
-| [Android 构建](apps/android/README.md) | Gradle 配置、签名、Mihomo AAR 接入 |
+### 发布
 
----
+```mermaid
+flowchart LR
+    T["维护者：推送版本 tag"] --> B["Release Workflow<br/>Windows 便携包 · Android APK<br/>签名与校验"]
+    B --> R["GitHub Release<br/>产物 + 校验值"]
+    classDef brand fill:#286F78,stroke:#1D3F45,color:#FBF9F9
+    classDef soft fill:#E7F0F1,stroke:#286F78,color:#1D3F45
+    class R brand
+    class T,B soft
+```
 
-## 相关仓库
+- 版本号只来自手动推送的 tag，仓库内版本字段不参与决定。
+- 构建与签名细节见[构建与发布](docs/build-release.md)。
 
-| 仓库 | 用途 | 关联 |
-|------|------|------|
-| [akaspyrean/external](https://github.com/akaspyrean/external) | **规则集与配置模板** | 内置规则来源、Parser 配置、Shadowrocket 配置 |
-| [Mihomo](https://github.com/MetaCubeX/mihomo) | 核心内核 | ClashEdge 的底层代理引擎 |
+### 文档
 
-### 规则库使用
+[快速上手](docs/getting-started.md) · [配置详解](docs/configuration.md) · [界面手册](docs/ui-guide.md) · [架构设计](docs/architecture.md) · [设计系统](docs/design-system.md) · [便携包结构](docs/packaging/portable-layout.md)
 
-ClashEdge 内置的规则集来源于 [`akaspyrean/external`](https://github.com/akaspyrean/external)，包含：
+## 参与贡献
 
-- **direct** - 直连域名/IP (110,890 条)
-- **proxy** - 代理域名/IP (27,244 条)
-- **ai** - AI 服务域名 (82 条)
-- **media** - 影音媒体域名 (1,578 条)
-- **ad** - 广告拦截域名 (215,689 条)
+- 面向人的文档使用中文；提交信息与 PR 标题使用英文。
+- 分支从 `main` 创建，使用 `feat/`、`fix/`、`docs/` 等前缀。
+- PR 默认以 Squash merge 合并，每个 PR 只有一个主要目标。
 
-规则集通过签名清单机制验证完整性，每日自动更新，无需手动干预。
+## 安全
 
----
+请不要在公开 Issue 中披露漏洞，使用 GitHub 私密报告：**Security → Report a vulnerability**。
 
-## 许可与声明
+## 许可
 
-- **许可证**：[MIT License](LICENSE)
-- **第三方声明**：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-- **用途声明**：仅用于网络配置、代理管理与技术研究
-- **合规提示**：使用者应自行确认相关配置、规则及网络服务符合所在地法律法规及服务条款
-
----
-
-<div align="center">
-
-**ClashEdge** — 下载 · 解压 · 添加订阅 · 使用
-
-[Releases](../../releases) · [External Rules](https://github.com/akaspyrean/external) · [Issue 反馈](../../issues)
-
-</div>
+[MIT](LICENSE)。第三方组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。仅用于网络配置、代理管理与技术研究，请自行确认相关配置及网络服务符合所在地法律法规及服务条款。
