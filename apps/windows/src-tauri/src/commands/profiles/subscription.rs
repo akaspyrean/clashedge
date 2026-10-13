@@ -184,19 +184,15 @@ pub(super) fn apply_header_user_agent(content: &str, user_agent: Option<&str>) -
 
 /// 归一化订阅正文为 proxies-only 的 YAML 文档（Subscription Normalizer）。
 /// 兼容仅含 `proxy-providers` 的现代订阅；返回 (归一化文档, 过程提示)。
-/// 归一化后同步检测节点区域（GeoIP + DoH），写入 profiles/<name>.region.json。
 pub(super) async fn normalize_subscription_body(
     app: &AppHandle,
-    profile_name: &str,
+    _profile_name: &str,
     body: &str,
 ) -> Result<(String, Vec<String>)> {
     let norm = crate::util::normalizer::normalize_subscription(app, body).await?;
     for w in &norm.warnings {
         warn!("Subscription normalization: {}", w);
     }
-    // 区域检测：失败只降级为空 map，不阻断导入/刷新。
-    // 在序列化前用 norm.proxies 检测，避免重复解析。
-    let _regions = crate::util::region::detect_and_persist(app, profile_name, &norm.proxies).await;
     let mut m = serde_yaml::Mapping::new();
     m.insert(
         serde_yaml::Value::String("proxies".into()),
