@@ -42,7 +42,7 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 log = "0.4"
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 # 0.12（保持）：Cargo.lock 里另有 tauri 2.11+ 引入的 reqwest 0.13（不带 TLS feature），
 # 属上游依赖结构；升级到 0.13 会强制 aws-lc-rs 构建链（需 CMake/NASM），
 # 且其 `rustls` feature 走 rustls-platform-verifier（OS 证书库），会失去
