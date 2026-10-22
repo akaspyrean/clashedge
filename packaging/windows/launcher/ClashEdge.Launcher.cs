@@ -529,6 +529,20 @@ internal static class ClashEdgeLauncher
         }
     }
 
+    /// Compute SHA256 from an already-open stream (does not close it).
+    /// Resets the stream position to the beginning before hashing.
+    private static string Sha256OfStream(Stream stream)
+    {
+        stream.Seek(0, SeekOrigin.Begin);
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+        {
+            var hash = sha.ComputeHash(stream);
+            var sb = new StringBuilder(hash.Length * 2);
+            foreach (var b in hash) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+    }
+
     // --- 安全解压（P1：zip bomb 防御）-------------------------------------
     // 下载侧已限制 ZIP ≤ 300 MB（update::MAX_UPDATE_BYTES），但
     // ZipFile.ExtractToDirectory 不限制解压后总大小、entry 数量、单 entry 大小，
@@ -892,13 +906,32 @@ internal static class ClashEdgeLauncher
             if (!string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("SHA256 mismatch on staged update");
 
-            // pending.json 里的哈希不是信任根（本地可写）。必须由已安装的内层应用用内置公钥
-            // 复验签名清单，并核对 ZIP 的哈希与清单一致。
-            VerifyStagedWithInnerApp(root, staging);
+            // P2-04 TOCTOU 修复：以 FileShare.Read 独占打开 ZIP（允许读取、禁止写入），
+            // 从验签到解压全程持有文件句柄，防止本地攻击者在窗口期替换 staging 文件。
+            string extracted = Path.Combine(staging, "extracted");
+            using (var zipStream = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                // 双重哈希（defense in depth）：进入前/后各算一次，检测验证期间是否被修改
+                string hashBeforeVerify = Sha256OfStream(zipStream);
 
-            var extracted = Path.Combine(staging, "extracted");
-            if (Directory.Exists(extracted)) Directory.Delete(extracted, true);
-            SafeExtractToDirectory(zipPath, extracted);
+                // pending.json 里的哈希不是信任根（本地可写）。必须由已安装的内层应用用内置公钥
+                // 复验签名清单，并核对 ZIP 的哈希与清单一致。
+                VerifyStagedWithInnerApp(root, staging);
+
+                // 验签后重算哈希：若期间文件被替换（尽管 FileShare.Read 已阻止写入，
+                // 这里作为纵深防御），拒绝继续。
+                string hashAfterVerify = Sha256OfStream(zipStream);
+                if (!string.Equals(hashBeforeVerify, hashAfterVerify, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Staged update ZIP changed during signature verification");
+
+                if (Directory.Exists(extracted)) Directory.Delete(extracted, true);
+                SafeExtractToDirectory(zipPath, extracted);
+
+                // 解压后再验一次哈希，确保整个流程中文件未被替换
+                string hashAfterExtract = Sha256OfFile(zipPath);
+                if (!string.Equals(hashBeforeVerify, hashAfterExtract, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Staged update ZIP changed during extraction");
+            }
 
             // 定位应用根
             string appRoot = null;

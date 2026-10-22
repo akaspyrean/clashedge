@@ -82,6 +82,7 @@ const tiles = computed(() => {
   const g = current.value;
   if (!g) return [];
   const q = query.value.trim().toLowerCase();
+  const regions = g.regions ?? {};
   return groupNodes.value
     .filter((n) => (q ? n.toLowerCase().includes(q) : true))
     .map((name) => {
@@ -92,6 +93,7 @@ const tiles = computed(() => {
         timeout: d === null,
         testing: testingNodes.value.has(name),
         selected: g.now === name,
+        region: regions[name],
       };
     })
     .sort((a, b) => {
@@ -127,12 +129,16 @@ function onKeydown(e: KeyboardEvent) {
 // ---- 首次启动：人工优选默认选中延迟最低节点（一次性） ----
 // 规格：人工优选默认=全网延迟最低节点、可手动改。仅首次导入/启动后自动跑一次
 // 全量测速并选到最低延迟者；完成后打持久化标记，此后永不覆盖用户手动选择。
-const MANUAL_DEFAULT_KEY = "ce:manual-default:v1";
+// P2 修复：标记按 profile 作用域存储，切换 profile 后可各自初始化一次。
+function manualDefaultKey(profileName: string): string {
+  return `ce:manual-default:v1:${profileName}`;
+}
 let manualDefaultRunning = false;
 
 async function initManualDefault() {
   if (manualDefaultRunning) return;
-  if (localStorage.getItem(MANUAL_DEFAULT_KEY)) return;
+  const profileName = configStore.activeProfile;
+  if (localStorage.getItem(manualDefaultKey(profileName))) return;
   if (!coreStore.status.running) return;
   const manual = proxyStore.groups.find((g) => resolveGroupId(g.name) === "manual");
   const manualNodes = manual ? manual.all.filter((n) => n !== "DIRECT") : [];
@@ -165,7 +171,7 @@ async function initManualDefault() {
   } catch {
     // 一次性初始化失败静默；无论成败均打标记，避免每次启动重复全量测速
   } finally {
-    localStorage.setItem(MANUAL_DEFAULT_KEY, "1");
+    localStorage.setItem(manualDefaultKey(profileName), "1");
     manualDefaultRunning = false;
   }
 }
@@ -266,6 +272,7 @@ watch(
             :testing="n.testing"
             :selected="n.selected"
             :readonly="readonlyGroup"
+            :region="n.region"
             @select="onSelectNode(n.name)"
             @retest="onRetest(n.name)"
           />

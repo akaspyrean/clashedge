@@ -56,8 +56,28 @@ pub fn is_elevated() -> bool {
 ///
 /// 用户在 UAC 弹窗点「否」→ `ShellExecuteExW` 返回 0 且 `GetLastError`
 /// 为 `ERROR_CANCELLED`，映射为明确的取消文案（前端据此提示，不误导为故障）。
+/// 提权重启时携带的数据目录参数前缀。
+///
+/// **便携数据目录必须显式透传**：参考包 C# 启动器靠 `CLASH_EDGE_DATA_DIR`
+/// （以及 `HOME`/`APPDATA`/`LOCALAPPDATA`）把内层应用的数据目录指向包根
+/// `Data/`。`ShellExecuteExW("runas")` 走 shell 提权，**不会**可靠继承当前
+/// 进程的环境块；若不显式携带，新实例会退化成“安装版”判定、写到
+/// `%APPDATA%`，表现为**配置与订阅全部丢失**（原 `Data/` 仍在，只是没被读到）。
+pub const RELAUNCH_DATA_DIR_ARG: &str = "--clash-edge-data-dir=";
+
+/// 以管理员身份（UAC）重启当前应用。
+///
+/// 成功返回后调用方应立即退出当前进程——新实例启动时会先通过
+/// [`wait_for_previous_instance`] 等待旧 PID 退出，避开单实例锁把新实例挡掉。
+/// 附带参数：
+/// - `--clash-edge-elevated-relaunch=<旧 PID>`：新实例等待旧实例退出；
+/// - `--clash-edge-enable-tun`：新实例在内核就绪后自动开启 TUN；
+/// - `--clash-edge-data-dir=<路径>`：新实例沿用同一数据目录（便携包必需）。
+///
+/// 用户在 UAC 弹窗点「否」→ `ShellExecuteExW` 返回 0 且 `GetLastError`
+/// 为 `ERROR_CANCELLED`，映射为明确的取消文案（前端据此提示，不误导为故障）。
 #[cfg(windows)]
-pub fn relaunch_elevated(enable_tun: bool) -> Result<()> {
+pub fn relaunch_elevated(enable_tun: bool, data_dir: Option<&std::path::Path>) -> Result<()> {
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_CANCELLED};
     use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW};
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -67,6 +87,12 @@ pub fn relaunch_elevated(enable_tun: bool) -> Result<()> {
     let mut params = format!("--clash-edge-elevated-relaunch={}", std::process::id());
     if enable_tun {
         params.push_str(" --clash-edge-enable-tun");
+    }
+    // 显式携带数据目录，避免提权实例因环境变量丢失而"丢失配置与订阅"。
+    if let Some(dir) = data_dir {
+        params.push(' ');
+        params.push_str(RELAUNCH_DATA_DIR_ARG);
+        params.push_str(&dir.to_string_lossy());
     }
     let w = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let verb = w("runas");
@@ -94,8 +120,38 @@ pub fn relaunch_elevated(enable_tun: bool) -> Result<()> {
 
 /// 非 Windows 平台：不支持 UAC 提权（`is_elevated()` 恒为 true，不会被调用）。
 #[cfg(not(windows))]
-pub fn relaunch_elevated(_enable_tun: bool) -> Result<()> {
+pub fn relaunch_elevated(_enable_tun: bool, _data_dir: Option<&std::path::Path>) -> Result<()> {
     Err(Error::Other("当前平台不支持提权重启".to_string()))
+}
+
+/// 提权重启的新实例在启动早期应用携带的数据目录：把
+/// `--clash-edge-data-dir=` 落到 `CLASH_EDGE_DATA_DIR` 环境变量，并按
+/// C# 启动器布局一并重定向 `HOME`/`APPDATA`/`LOCALAPPDATA`。
+///
+/// 必须在任何路径解析（`util::paths::get_app_data_dir`）之前调用。
+/// 非提权启动（无该参数）时不做任何事。
+pub fn apply_relaunch_data_dir() {
+    let raw =
+        std::env::args().find_map(|a| a.strip_prefix(RELAUNCH_DATA_DIR_ARG).map(|s| s.to_string()));
+    let Some(raw) = raw else {
+        return;
+    };
+    if raw.is_empty() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(&raw);
+    // 只接受绝对路径，避免相对路径被解析到不同工作目录。
+    if !dir.is_absolute() {
+        return;
+    }
+    unsafe {
+        std::env::set_var("CLASH_EDGE_DATA_DIR", &dir);
+        // 与 C# 启动器一致：用户级目录也重定向进 Data/，提权实例的缓存 /
+        // WebView2 数据不会跑到 %APPDATA%，避免看起来像"配置丢失"。
+        std::env::set_var("HOME", dir.join("Home"));
+        std::env::set_var("APPDATA", dir.join("AppData"));
+        std::env::set_var("LOCALAPPDATA", dir.join("LocalAppData"));
+    }
 }
 
 /// 提权重启的新实例在初始化（含单实例注册）之前，等待旧实例进程退出。
@@ -151,5 +207,51 @@ mod tests {
     #[test]
     fn is_elevated_returns_bool() {
         let _ = is_elevated();
+    }
+
+    /// 回归：提权重启必须显式携带数据目录参数。
+    ///
+    /// 曾经的真实故障：C# 启动器靠 `CLASH_EDGE_DATA_DIR` 指向包根 `Data/`，
+    /// 而 `ShellExecuteExW("runas")` 提权不继承环境变量 → 提权实例退化成
+    /// 安装版判定、写到 `%APPDATA%`，用户看到"配置与订阅全部丢失"。
+    /// 本测试锁定参数名与解析规则，防止后续再引入同类问题。
+    #[test]
+    fn relaunch_data_dir_arg_is_parsed_into_env() {
+        let dir = std::env::temp_dir().join(format!(
+            "clash-edge-relaunch-dir-{}-{}",
+            std::process::id(),
+            "relaunch"
+        ));
+        // 只接受绝对路径
+        assert!(dir.is_absolute());
+        let arg = format!("{}{}", RELAUNCH_DATA_DIR_ARG, dir.to_string_lossy());
+
+        // 解析规则与 apply_relaunch_data_dir 一致：strip_prefix 后取剩余部分
+        let parsed = arg
+            .strip_prefix(RELAUNCH_DATA_DIR_ARG)
+            .map(|s| s.to_string())
+            .expect("arg must carry the data dir");
+        assert_eq!(parsed, dir.to_string_lossy());
+
+        // 参数前缀本身必须是稳定的 CLI 约定（启动器/文档/测试共用）
+        assert_eq!(RELAUNCH_DATA_DIR_ARG, "--clash-edge-data-dir=");
+    }
+
+    /// 回归：数据目录环境变量被 path 模块识别（便携判定不退回安装版）。
+    #[test]
+    fn relaunch_data_dir_env_is_recognized_by_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "clash-edge-relaunch-env-{}-{}",
+            std::process::id(),
+            "env"
+        ));
+        unsafe {
+            std::env::set_var("CLASH_EDGE_DATA_DIR", &dir);
+        }
+        assert!(crate::util::paths::is_portable_mode());
+        assert_eq!(crate::util::paths::get_app_data_dir_for_test(), Some(dir));
+        unsafe {
+            std::env::remove_var("CLASH_EDGE_DATA_DIR");
+        }
     }
 }

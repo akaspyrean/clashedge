@@ -31,7 +31,9 @@ mod files;
 mod subscription;
 mod validate;
 
-pub use subscription::{auto_refresh_stale_subscriptions, refresh_subscription};
+pub use subscription::{
+    auto_refresh_stale_subscriptions, refresh_all_subscriptions, refresh_subscription,
+};
 
 use files::{
     activate_with_rollback, active_profile, commit_profile_file, pending_delete_path_for,
@@ -98,6 +100,9 @@ pub(crate) async fn update_profile_content_locked(
     file_path: &Path,
     content: &str,
 ) -> Result<()> {
+    if !file_path.exists() {
+        return Err(Error::NotFound("Profile not found".to_string()));
+    }
     let temp_path = temp_path_for(file_path);
     std::fs::write(&temp_path, content.as_bytes())?;
     commit_profile_file(&temp_path, file_path)?;
@@ -294,11 +299,7 @@ pub async fn update_profile_content(app: AppHandle, name: String, content: Strin
     let profiles_dir = get_profiles_dir(&app)?;
     let file_path = profile_path(&profiles_dir, &name)?;
 
-    if !file_path.exists() {
-        return Err(Error::NotFound("Profile not found".to_string()));
-    }
-
-    // 手动编辑：严格校验（节点名唯一 / 非保留名）
+    // 严格校验（节点名唯一 / 非保留名），包含 URI-list 拒绝
     validate_profile_strict(&content)?;
 
     let state = app.state::<crate::AppState>();

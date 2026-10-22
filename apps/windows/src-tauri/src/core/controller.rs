@@ -202,6 +202,11 @@ impl ControllerClient {
 
         let json: serde_json::Value = resp.json().await?;
         let mut groups = Vec::new();
+        // 节点名 → 地区（仅在能识别时给出；识别不到就不出现在表里）。
+        // 地区由节点名推断（util::region），不依赖订阅内的额外字段，
+        // 因此对既有订阅同样生效。
+        let mut regions: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         if let Some(proxies) = json.get("proxies").and_then(|v| v.as_object()) {
             for (name, value) in proxies {
                 let group_type = value
@@ -228,12 +233,49 @@ impl ControllerClient {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
+                    for node in &all {
+                        if let Some(region) = crate::util::region::detect_region(node) {
+                            regions.insert(node.clone(), region.to_string());
+                        }
+                    }
                     groups.push(serde_json::json!({
                         "name": name,
                         "type": group_type,
                         "now": now,
                         "all": all,
                     }));
+                }
+            }
+        }
+        // 顶层节点（不隶属于任何组）也一并标注，供直连/手动节点使用。
+        if let Some(proxies) = json.get("proxies").and_then(|v| v.as_object()) {
+            for (name, value) in proxies {
+                if regions.contains_key(name) {
+                    continue;
+                }
+                let is_group = ["Selector", "URLTest", "Fallback", "LoadBalance", "Relay"]
+                    .iter()
+                    .any(|t| {
+                        value
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .map(|x| t.eq_ignore_ascii_case(x))
+                            .unwrap_or(false)
+                    });
+                if is_group {
+                    continue;
+                }
+                if let Some(region) = crate::util::region::detect_region(name) {
+                    regions.insert(name.clone(), region.to_string());
+                }
+            }
+        }
+        // regions 附在每个 group 上（前端按节点名查），避免额外 IPC 往返。
+        if !regions.is_empty() {
+            let regions_json = serde_json::to_value(&regions).unwrap_or(serde_json::Value::Null);
+            for g in groups.iter_mut() {
+                if let Some(obj) = g.as_object_mut() {
+                    obj.insert("regions".to_string(), regions_json.clone());
                 }
             }
         }

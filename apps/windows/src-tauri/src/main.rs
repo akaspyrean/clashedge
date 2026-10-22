@@ -413,6 +413,9 @@ pub fn run() {
             crate::commands::update::get_staged_update,
             crate::commands::update::discard_staged_update,
             crate::commands::update::restart_and_apply_update,
+            // Auto-update status (shown on the dashboard)
+            crate::commands::update_status::get_auto_update_status,
+            crate::commands::update_status::trigger_subscription_refresh,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -703,6 +706,10 @@ fn main() {
     // 提权重启（UAC）的新实例：先等旧实例进程退出再初始化，
     // 否则会被单实例锁挡下（第二实例直接退出）。无该参数时为 no-op。
     crate::util::elevation::wait_for_previous_instance();
+    // 提权重启携带的数据目录必须在任何路径解析之前落地：
+    // 便携包靠 `CLASH_EDGE_DATA_DIR` 定位 `Data/`，缺失会让新实例退化成
+    // 安装版判定（写到 %APPDATA%），表现为"配置与订阅全部丢失"。
+    crate::util::elevation::apply_relaunch_data_dir();
     // 启动器在应用更新前调用 `ClashEdge.exe --verify-staged <dir>` 复验暂存更新
     // 的签名链；该模式只做校验并以退出码返回，不启动 Tauri。
     if let Some(code) = crate::update::cli_verify_staged() {

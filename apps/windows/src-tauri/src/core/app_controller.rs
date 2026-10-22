@@ -388,10 +388,32 @@ impl AppController {
             new_config.general.system_proxy = false;
         }
 
-        // 2. 持久化新配置（disk-first：落盘成功才提交内存）
+        // 2. 持久化新配置（disk-first：落盘成功才提交内存）。
+        //    若落盘失败，内存/磁盘仍为旧值；但 prepare_proxy_transition 已释放
+        //    旧端口 ownership，必须立即尝试恢复，否则出现「配置=旧意图=ON、
+        //    注册表=用户基线=OFF、journal=已清」的分裂状态。
         {
             let mut guard = state.config_manager.lock().unwrap();
-            guard.set_config(new_config)?;
+            if let Err(persist_err) = guard.set_config(new_config) {
+                let reacquire = match &proxy_transition {
+                    ProxyTransition::Released(expected_baseline) => {
+                        let data_dir = crate::util::paths::get_app_data_dir(app)?;
+                        crate::proxy::journal::acquire_system_proxy_if_unchanged(
+                            &data_dir,
+                            old.general.mixed_port,
+                            Some(expected_baseline),
+                        )
+                    }
+                    ProxyTransition::None | ProxyTransition::OwnershipUnavailable => Ok(()),
+                };
+                return match reacquire {
+                    Ok(()) => Err(persist_err),
+                    Err(r_err) => Err(Error::Other(format!(
+                        "配置持久化失败（{}），且系统代理恢复也失败（{}）；journal 已保留或重建",
+                        persist_err, r_err
+                    ))),
+                };
+            }
         }
 
         // 3. 应用到运行时：重写 runtime-config.yaml + 热重载/重启运行中的核心。
@@ -532,26 +554,42 @@ async fn rollback_config_runtime_and_proxy(
     }
     let old_port = old.general.mixed_port;
     let old_proxy_intent = old.general.system_proxy;
-    rollback_config_and_runtime(state, old).await?;
+
+    // 收集所有回滚步骤的错误，避免某一步失败就提前返回导致
+    // 其余步骤（特别是系统代理 reacquire）永远不被执行。
+    let mut errors: Vec<String> = Vec::new();
+
+    if let Err(e) = rollback_config_and_runtime(state, old).await {
+        errors.push(format!("配置/运行时回滚失败：{}", e));
+    }
 
     if old_proxy_intent {
         if let ProxyTransition::Released(expected_baseline) = transition {
-            crate::core::runtime::ensure_core_serving(app).await?;
-            let data_dir = crate::util::paths::get_app_data_dir(app)?;
-            if let Err(e) = crate::proxy::journal::acquire_system_proxy_if_unchanged(
-                &data_dir,
-                old_port,
-                Some(expected_baseline),
-            ) {
-                crate::core::runtime::mark_system_proxy_failed(app, &e.to_string()).await;
-                return Err(Error::Other(format!(
-                    "旧端口 runtime 已恢复，但系统代理 ownership 无法安全恢复：{}",
-                    e
-                )));
+            match crate::core::runtime::ensure_core_serving(app).await {
+                Ok(()) => {
+                    let data_dir = crate::util::paths::get_app_data_dir(app)?;
+                    if let Err(e) = crate::proxy::journal::acquire_system_proxy_if_unchanged(
+                        &data_dir,
+                        old_port,
+                        Some(expected_baseline),
+                    ) {
+                        crate::core::runtime::mark_system_proxy_failed(app, &e.to_string()).await;
+                        errors.push(format!("系统代理 ownership 无法安全恢复：{}", e));
+                    }
+                }
+                Err(e) => {
+                    crate::core::runtime::mark_system_proxy_failed(app, &e.to_string()).await;
+                    errors.push(format!("旧端口核心恢复失败：{}", e));
+                }
             }
         }
     }
-    Ok(())
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Other(errors.join("；")))
+    }
 }
 
 /// 让 Windows 注册表与新配置的 system-proxy 意图一致。

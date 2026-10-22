@@ -17,6 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use once_cell::sync::Lazy;
 use tracing::{info, warn};
 
 use crate::geodata::download::{download_to_file, replace_all};
@@ -31,10 +32,31 @@ const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(600);
 /// 自动更新的最小间隔
 const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// 全局 GeoData 更新互斥锁：防止托盘事件、UI 命令和自动更新并发触发时
+/// 产生 staging 竞争、文件替换交错或重复 reload。
+static GEODATA_UPDATE_LOCK: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
+
 /// 更新完成后通知前端刷新 geo 状态（托盘触发与命令触发都受益）。
 /// 成功/失败都发，前端据此更新「GeoIP/GeoSite 大小」等展示。
 pub async fn update_geodata(app_handle: &tauri::AppHandle) -> Result<()> {
+    // 全局锁：同一时刻只允许一个 GeoData 更新流程。
+    // 并发调用者在此排队等待，前一个完成后才进入下一个。
+    let _guard = GEODATA_UPDATE_LOCK.lock().await;
     let result = update_geodata_inner(app_handle).await;
+    // 记录本次结果（成功/失败 + 时间），供首页展示"何时更新、成功还是失败"。
+    if let Ok(data_dir) = crate::util::paths::get_app_data_dir(app_handle) {
+        let (ok, err) = match &result {
+            Ok(()) => (true, String::new()),
+            Err(e) => (false, e.to_string()),
+        };
+        crate::util::update_status::record(
+            &data_dir,
+            crate::util::update_status::KEY_GEO,
+            ok,
+            &err,
+        );
+    }
     let (ok, msg) = match &result {
         Ok(()) => (true, "ok".to_string()),
         Err(e) => (false, e.to_string()),
@@ -49,6 +71,7 @@ pub async fn update_geodata(app_handle: &tauri::AppHandle) -> Result<()> {
 async fn update_geodata_inner(app: &tauri::AppHandle) -> Result<()> {
     // 1. 签名规则清单（尽力而为：清单未发布 / 网络不通不阻断 geodata 更新）
     let mut covered: Vec<String> = Vec::new();
+    let mut rules_updated = false;
     match crate::geodata::rules::update_rules(app).await {
         Ok(o) => {
             info!(
@@ -58,17 +81,30 @@ async fn update_geodata_inner(app: &tauri::AppHandle) -> Result<()> {
                 o.up_to_date
             );
             covered = o.covered;
+            rules_updated = !o.up_to_date;
         }
         Err(e) => warn!("Signed rules update skipped: {}", e),
     }
     // 2. GeoData 文件（签名清单已覆盖的文件不再用未签名源重复下载 / 覆盖）
-    update_geo_files(app, &covered).await?;
+    let geo_result = update_geo_files(app, &covered).await;
+    let geo_updated = matches!(&geo_result, Ok(true));
+
+    // 3. 所有文件替换完成后统一 reload 一次（不再由 update_rules /
+    //    update_geo_files 各自 reload，消除双重 reload）。
+    if rules_updated || geo_updated {
+        if let Err(e) = crate::geodata::rules::reload_core(app).await {
+            warn!("GeoData/rules replaced but core reload failed: {}", e);
+        }
+    }
+
+    geo_result.map(|_| ())?;
     stamp_updated(app);
     Ok(())
 }
 
 /// 下载 GeoIP / GeoSite 并事务式替换。
-async fn update_geo_files(app: &tauri::AppHandle, signed_covered: &[String]) -> Result<()> {
+/// 返回是否有文件被替换（供调用方决定是否 reload 核心）。
+async fn update_geo_files(app: &tauri::AppHandle, signed_covered: &[String]) -> Result<bool> {
     let sources = geodata_sources(app);
     let all: Vec<(&str, PathBuf, Vec<String>)> = vec![
         (
@@ -113,7 +149,7 @@ async fn update_geo_files(app: &tauri::AppHandle, signed_covered: &[String]) -> 
         }
     }
     if staged.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     // 3. 事务式一起替换
@@ -121,11 +157,8 @@ async fn update_geo_files(app: &tauri::AppHandle, signed_covered: &[String]) -> 
         cleanup(&staged);
         return Err(e);
     }
-    // 4. 让核心读取新数据
-    if let Err(e) = crate::geodata::rules::reload_core(app).await {
-        warn!("GeoData replaced but core reload failed: {}", e);
-    }
-    Ok(())
+    // Reload 由 update_geodata_inner 统一执行（合并规则 + GeoData 为一次 reload）。
+    Ok(true)
 }
 
 /// 去掉已由签名清单管理的目标：同名文件的可信来源只有清单，

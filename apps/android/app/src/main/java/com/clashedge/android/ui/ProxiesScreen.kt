@@ -1,5 +1,6 @@
 package com.clashedge.android.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -54,10 +55,16 @@ private fun ProxyGroupCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             group.nodes.forEach { node ->
+                val isCurrent = node == group.now
                 Text(
-                    node,
-                    modifier = Modifier.padding(top = 4.dp).fillMaxWidth(),
+                    node + if (isCurrent) " ✓" else "",
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .fillMaxWidth()
+                        .clickable { onSelect(group.name, node) },
                     style = MaterialTheme.typography.bodyMedium,
+                    color = if (isCurrent) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface,
                 )
             }
         }

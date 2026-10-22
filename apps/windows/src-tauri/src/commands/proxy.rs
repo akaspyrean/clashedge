@@ -26,9 +26,14 @@ pub async fn set_tun_mode(app: AppHandle, enable: bool) -> Result<()> {
 /// 新实例带 `--clash-edge-enable-tun` 启动并在内核就绪后自动开启 TUN
 ///（等待旧实例退出由 `util::elevation::wait_for_previous_instance` 完成）。
 /// 仅在 `set_tun_mode` 权限预检失败、前端二次确认后调用。
+///
+/// 显式携带当前数据目录：新实例必须沿用同一个 `Data/`（便携包靠
+/// `CLASH_EDGE_DATA_DIR` 定位），否则提权实例会写到 `%APPDATA%`，
+/// 表现为"配置与订阅全部丢失"。
 #[command]
 pub fn relaunch_for_tun(app: AppHandle) -> Result<()> {
-    crate::util::elevation::relaunch_elevated(true)?;
+    let data_dir = crate::util::paths::get_app_data_dir(&app).ok();
+    crate::util::elevation::relaunch_elevated(true, data_dir.as_deref())?;
     app.exit(0);
     Ok(())
 }

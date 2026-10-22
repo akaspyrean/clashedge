@@ -80,14 +80,23 @@ pub(super) fn validate_subscription_content(text: &str) -> Result<()> {
 /// 在 [`validate_subscription_content`] 之上增加节点名约束——
 /// 必须是字符串、不得重复、不得与内置分组 / mihomo 保留策略重名。
 /// 这些冲突若放行，会在 mihomo 启动时才以晦涩错误暴露并触发回滚。
+/// 此外必须包含非空 `proxies` 序列；纯 URI-list / 无 proxies 的 YAML 直接拒绝，
+/// 防止写入后运行时启动失败。
 pub(super) fn validate_profile_strict(text: &str) -> Result<()> {
     validate_subscription_content(text)?;
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(text) else {
-        return Ok(());
-    };
-    let Some(proxies) = value.get("proxies").and_then(|v| v.as_sequence()) else {
-        return Ok(());
-    };
+    let value = serde_yaml::from_str::<serde_yaml::Value>(text)
+        .map_err(|e| Error::Subscription(format!("Invalid YAML: {}", e)))?;
+    let proxies = value
+        .get("proxies")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| {
+            Error::Subscription("Profile must contain a non-empty 'proxies' list".to_string())
+        })?;
+    if proxies.is_empty() {
+        return Err(Error::Subscription(
+            "Profile 'proxies' list must not be empty".to_string(),
+        ));
+    }
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, node) in proxies.iter().enumerate() {
         let Some(name) = node.get("name").and_then(|n| n.as_str()) else {

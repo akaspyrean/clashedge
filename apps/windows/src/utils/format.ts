@@ -74,7 +74,7 @@ function isTokenLikeSegment(seg: string): boolean {
 }
 
 /** 订阅地址显示脱敏（与后端 redact_subscribe_url 同策略，前端幂等兜底）：
- *  保留 scheme://host[:port]、路径结构与 query 键名；末段疑似 token 与
+ *  保留 scheme://host[:port]、路径结构与 query 键名；所有疑似 token 的路径段与
  *  query 值一律换成 ••••••••。解析失败返回 "…"（不透出原文）。 */
 export function maskUrl(url: string): string {
   try {
@@ -89,7 +89,10 @@ export function maskUrl(url: string): string {
     let path = "";
     if (pathname !== "/" && pathname !== "") {
       const segs = pathname.replace(/^\/+/, "").split("/");
-      if (isTokenLikeSegment(segs[segs.length - 1] ?? "")) segs[segs.length - 1] = URL_MASK;
+      // 遮蔽所有形似 token 的路径段（≥8 字符、仅字母数字下划线连字符且含数字）
+      for (let i = 0; i < segs.length; i++) {
+        if (isTokenLikeSegment(segs[i])) segs[i] = URL_MASK;
+      }
       path = `/${segs.join("/")}`;
     }
     const query = u.search ? `?${[...u.searchParams.keys()].map((k) => `${k}=${URL_MASK}`).join("&")}` : "";
