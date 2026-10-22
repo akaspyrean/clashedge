@@ -14,12 +14,14 @@ import { useTunElevation } from "@/composables/useTunElevation";
 import { useConfigStore } from "@/stores/config";
 import { pollIntervalFor, useConnectionsStore } from "@/stores/connections";
 import { useCoreStore } from "@/stores/core";
+import { useUpdateStatusStore } from "@/stores/updateStatus";
 import { formatBytes, splitRate } from "@/utils/format";
 
 const { t } = useI18n();
 const core = useCoreStore();
 const config = useConfigStore();
 const connections = useConnectionsStore();
+const updateStatus = useUpdateStatusStore();
 
 // 流量轮询：沿用 connections store 的自适应间隔；核心未运行时不请求。
 usePolling(
@@ -28,6 +30,83 @@ usePolling(
   },
   () => pollIntervalFor(connections.count),
 );
+
+// 自动更新状态：随轮询刷新（60s 一次；usePolling 会在挂载时立即拉一次）。
+usePolling(
+  async () => {
+    await updateStatus.refresh();
+  },
+  () => 60_000,
+);
+
+/** 相对时间（unix 秒 → "3 小时前"）。0 / 非法值 → 空串。 */
+function agoText(unixSecs: number): string {
+  if (!unixSecs || unixSecs <= 0) return "";
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - unixSecs));
+  if (secs < 60) return t("dashboard.autoupdate_ago_now");
+  if (secs < 3600) return t("dashboard.autoupdate_ago_min", { n: Math.floor(secs / 60) });
+  if (secs < 86400) return t("dashboard.autoupdate_ago_hour", { n: Math.floor(secs / 3600) });
+  return t("dashboard.autoupdate_ago_day", { n: Math.floor(secs / 86400) });
+}
+
+/** 单条更新记录 → 展示文本。 */
+function recordLine(
+  rec: { attempt: number; success: number; ok: boolean; error: string } | undefined,
+  enabled: boolean,
+): string {
+  if (!enabled) return t("dashboard.autoupdate_disabled");
+  if (!rec || rec.attempt <= 0) return t("dashboard.autoupdate_never_run");
+  const when = agoText(rec.ok ? rec.attempt : rec.success || rec.attempt);
+  const result = rec.ok
+    ? t("dashboard.autoupdate_ok")
+    : t("dashboard.autoupdate_failed");
+  if (!rec.ok && rec.success > 0) {
+    return t("dashboard.autoupdate_at", {
+      when,
+      result: `${result} · ${t("dashboard.autoupdate_last_ok", { when: agoText(rec.success) })}`,
+    });
+  }
+  return t("dashboard.autoupdate_at", { when, result });
+}
+
+const geoUpdateLine = computed(() => {
+  const s = updateStatus.status;
+  if (!s) return "";
+  return recordLine(s.geo, s.geo_enabled);
+});
+
+/** 订阅自动刷新：取"最近一次尝试"的那条作为总体状态。 */
+const subscriptionUpdateLine = computed(() => {
+  const s = updateStatus.status;
+  if (!s) return "";
+  const recs = Object.values(s.subscriptions ?? {});
+  if (!recs.length) return s.subscription_enabled ? t("dashboard.autoupdate_never_run") : t("dashboard.autoupdate_disabled");
+  const latest = recs.reduce((a, b) => (b.attempt > a.attempt ? b : a));
+  return recordLine(latest, s.subscription_enabled);
+});
+
+/** 失败态（用于把文字染成 danger 色 + 悬停显示原因）。 */
+const geoUpdateFailed = computed(() => {
+  const s = updateStatus.status;
+  return !!s?.geo_enabled && !!s?.geo?.attempt && !s.geo.ok;
+});
+const geoUpdateError = computed(() => updateStatus.status?.geo?.error ?? "");
+
+const subUpdateFailed = computed(() => {
+  const s = updateStatus.status;
+  if (!s?.subscription_enabled) return false;
+  const recs = Object.values(s.subscriptions ?? {});
+  if (!recs.length) return false;
+  const latest = recs.reduce((a, b) => (b.attempt > a.attempt ? b : a));
+  return !!latest.attempt && !latest.ok;
+});
+const subUpdateError = computed(() => {
+  const s = updateStatus.status;
+  const recs = Object.values(s?.subscriptions ?? {});
+  if (!recs.length) return "";
+  const latest = recs.reduce((a, b) => (b.attempt > a.attempt ? b : a));
+  return latest.error ?? "";
+});
 
 const running = computed(() => core.status.running);
 
@@ -160,6 +239,25 @@ const sessionLine = computed(() =>
           :label="$t('dashboard.traffic_chart_label')"
         />
       </section>
+
+      <!-- 自动更新状态：何时更新、成功还是失败 -->
+      <section class="ce-card autoupdate-card" :aria-label="$t('dashboard.autoupdate_title')">
+        <h3 class="autoupdate-title">{{ $t("dashboard.autoupdate_title") }}</h3>
+        <dl class="autoupdate-list">
+          <div class="autoupdate-row">
+            <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_geo") }}</dt>
+            <dd class="autoupdate-value" :class="{ 'is-failed': geoUpdateFailed }" :title="geoUpdateError">
+              {{ geoUpdateLine }}
+            </dd>
+          </div>
+          <div class="autoupdate-row">
+            <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_sub") }}</dt>
+            <dd class="autoupdate-value" :class="{ 'is-failed': subUpdateFailed }" :title="subUpdateError">
+              {{ subscriptionUpdateLine }}
+            </dd>
+          </div>
+        </dl>
+      </section>
     </div>
   </div>
 </template>
@@ -170,6 +268,58 @@ const sessionLine = computed(() =>
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: var(--ce-space-4);
+}
+
+/* 自动更新卡片：占满整行（信息量少但需要可读）。 */
+.autoupdate-card {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ce-space-3);
+  min-width: 0;
+}
+
+.autoupdate-title {
+  margin: 0;
+  font: var(--ce-type-title-3);
+  color: var(--ce-text-primary);
+}
+
+.autoupdate-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ce-space-2);
+}
+
+.autoupdate-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ce-space-2) var(--ce-space-4);
+  min-width: 0;
+}
+
+.autoupdate-key {
+  margin: 0;
+  font: var(--ce-type-body-strong);
+  color: var(--ce-text-primary);
+  white-space: nowrap;
+}
+
+.autoupdate-value {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--ce-type-callout);
+  color: var(--ce-text-secondary);
+}
+
+.autoupdate-value.is-failed {
+  color: var(--ce-danger-fg);
 }
 
 @media (max-width: 959px) {

@@ -11,4 +11,5 @@ pub mod proxy;
 pub mod rules;
 pub mod tray;
 pub mod update;
+pub mod update_status;
 pub mod util;

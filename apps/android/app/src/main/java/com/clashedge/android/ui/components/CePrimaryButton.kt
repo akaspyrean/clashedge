@@ -14,11 +14,13 @@ import com.clashedge.android.ui.theme.CeTokens
 fun CePrimaryButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit,
 ) {
     Button(
         onClick = onClick,
         modifier = modifier,
+        enabled = enabled,
         colors = ButtonDefaults.buttonColors(
             containerColor = CeTokens.Light.accentBg, // #2465F0（Light/Dark 同值）
             contentColor = CeTokens.Light.onAccent,

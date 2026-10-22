@@ -7,11 +7,14 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.locks.ReentrantLock
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Minimal logger: keeps an in-memory ring buffer (shown in the Logs screen) and
  * appends to a rotating file in filesDir. The [entries] flow drives the UI.
+ *
+ * Thread-safe: uses a lock for all mutations and a thread-local SimpleDateFormat.
  */
 object Logger {
 
@@ -23,11 +26,17 @@ object Logger {
     val entries: kotlinx.coroutines.flow.StateFlow<List<LogEntry>> = _entries
 
     private var file: File? = null
-    private val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+    private val lock = ReentrantLock()
+
+    // Thread-local SimpleDateFormat (not thread-safe)
+    private val fmt = ThreadLocal.withInitial {
+        SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+    }
 
     fun init(context: Context) {
-        file = File(context.filesDir, "logs").apply { mkdirs() } // dir
-            .resolve("clashedge.log")
+        lock.withLock {
+            file = File(context.filesDir, "logs").apply { mkdirs() }.resolve("clashedge.log")
+        }
     }
 
     fun info(msg: String) = append("INFO", msg)
@@ -36,8 +45,10 @@ object Logger {
 
     fun append(level: String, message: String) {
         val entry = LogEntry(System.currentTimeMillis(), level, message)
-        _entries.value = (_entries.value + entry).takeLast(RING_SIZE)
-        file?.let { safeAppend(it, level, message) }
+        lock.withLock {
+            _entries.value = (_entries.value + entry).takeLast(RING_SIZE)
+            file?.let { safeAppend(it, level, message) }
+        }
     }
 
     private fun safeAppend(file: File, level: String, message: String) {
@@ -45,10 +56,10 @@ object Logger {
             if (file.exists() && file.length() > FILE_CAP_MB * 1024L * 1024L) {
                 file.delete()
             }
-            val line = "[${fmt.format(Date())}] [$level] $message${System.lineSeparator()}"
+            val line = "[${fmt.get().format(Date())}] [$level] $message${System.lineSeparator()}"
             file.appendText(line)
         } catch (t: Throwable) {
-            Log.w(TAG, "log write failed", t)
+            android.util.Log.w(TAG, "log write failed", t)
         }
     }
 }
