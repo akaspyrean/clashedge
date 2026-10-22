@@ -20,8 +20,10 @@ const groups: ProxyGroup[] = [
   { name: "自动优选", type: "URLTest", now: "Node1", all: ["Node1", "Node2"] },
 ];
 
-/** 首次启动自动选最低延迟的一次性标记（默认阻断，只在专门用例里放行）。 */
-const MANUAL_DEFAULT_KEY = "ce:manual-default:v1";
+/** 首次启动自动选最低延迟的一次性标记（默认阻断，只在专门用例里放行）。
+ *  P2 后 key 按 profile 作用域存储；mock config 不含 profile 字段，
+ *  activeProfile 回退默认值 "DIRECT"，故 key = ce:manual-default:v1:DIRECT。 */
+const MANUAL_DEFAULT_KEY = "ce:manual-default:v1:DIRECT";
 
 /** 模拟测速结果：Node2 最快，Node1 较慢。 */
 const NODE_DELAYS: Record<string, number | null> = { Node1: 300, Node2: 50 };
