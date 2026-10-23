@@ -56,6 +56,10 @@ impl ConfigManager {
                 self.degraded.store(false, Ordering::SeqCst);
                 let mut validated = crate::core::config::merge_rules(loaded);
                 let rotated = self.ensure_secure_secret(&mut validated);
+                // C7: external-controller 必须是回环地址，防止导入/手动编辑把控制器指向远程
+                crate::config::model::validate_external_controller(
+                    &validated.proxy.external_controller,
+                )?;
                 if rotated {
                     info!("Rotating controller secret to a random value");
                     // 轮换必须落盘，否则下次启动又回到占位值、也无法认证重启后的核心。
@@ -192,6 +196,14 @@ impl ConfigManager {
             .map_err(|e| Error::ConfigParse(format!("Invalid config YAML: {}", e)))?;
         // C7 控制器地址限回环（导入 YAML 为用户可控输入，落盘前校验）
         crate::config::model::validate_external_controller(&config.proxy.external_controller)?;
+        // SSRF 防护：rule-providers 中的 URL 必须通过同源/私网/IP 校验（复用订阅下载守卫）
+        for (name, provider) in &config.rule_providers {
+            if let Some(url) = provider.get("url").and_then(|v| v.as_str()) {
+                crate::util::fetch::validate_url_sync(url).map_err(|e| {
+                    Error::ConfigParse(format!("rule-provider '{}' URL invalid: {}", name, e))
+                })?;
+            }
+        }
         Ok(config)
     }
 

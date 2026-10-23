@@ -75,3 +75,5 @@ minisign-verify = "0.3"
 # 托盘图标运行时着色（系统代理开=绿 / 关=灰）；
 # 已作为传递依赖存在于 Cargo.lock（image 0.25.10），无需新增下载。
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 节点地区/国家提取（从节点名解析 emoji 国旗、前缀代码、关键词等）
+regex = "1"

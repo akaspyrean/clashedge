@@ -3,14 +3,18 @@
 # Release CI builds the ZIP in an unprivileged job (third-party build code runs there) and
 # signs it here, in the publish job that is the only one holding signing secrets.
 # Re-packs with the same layout ("ClashEdge/" top-level folder) and rewrites <zip>.sha256.
-# Without a configured certificate the ZIP is left untouched.
+#
+# Fail-closed by default: without a configured certificate the script exits non-zero.
+# Local builds that intentionally want an unsigned ZIP may pass -AllowUnsigned.
 #
 #   pwsh scripts/windows/sign-portable.ps1 -Zip release\ClashEdge-portable-win64.zip
+#   pwsh scripts/windows/sign-portable.ps1 -Zip ... -AllowUnsigned   # local dev only
 #
 # ASCII-only; Windows PowerShell 5.1 compatible.
 
 param(
-    [Parameter(Mandatory = $true)][string]$Zip
+    [Parameter(Mandatory = $true)][string]$Zip,
+    [switch]$AllowUnsigned
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,8 +24,11 @@ if (-not (Test-Path $Zip)) { throw "ZIP not found: $Zip" }
 $Zip = (Resolve-Path $Zip).Path
 
 if (-not $env:WINDOWS_CODESIGN_PFX_BASE64) {
-    Write-Host "  [WARN] No signing certificate configured - ZIP left unsigned." -ForegroundColor DarkYellow
-    exit 0
+    if ($AllowUnsigned) {
+        Write-Host "  [WARN] No signing certificate configured - ZIP left unsigned (-AllowUnsigned)." -ForegroundColor DarkYellow
+        exit 0
+    }
+    throw "No signing certificate configured (WINDOWS_CODESIGN_PFX_BASE64 is empty). Release builds must be Authenticode-signed; pass -AllowUnsigned only for local dev."
 }
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("clashedge-sign-" + [guid]::NewGuid().ToString("N"))

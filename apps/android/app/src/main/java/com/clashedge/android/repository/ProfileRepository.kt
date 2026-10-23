@@ -115,17 +115,19 @@ class ProfileRepository(
     }
 
     private fun copyYamlFromAssets(dir: File, names: List<String>) {
-        val copied = names.any { name ->
+        var anyCopied = false
+        for (name in names) {
             try {
                 context.assets.open("rules/$name.yaml").use { input ->
                     File(dir, "$name.yaml").writeBytes(input.readBytes())
                 }
-                true
+                anyCopied = true
+                Logger.info("copied rule set $name.yaml")
             } catch (e: Exception) {
-                false
+                Logger.warn("failed to copy $name.yaml: $e")
             }
         }
-        if (copied) Logger.info("bundled rule sets copied into data dir")
+        if (anyCopied) Logger.info("bundled rule sets copied into data dir")
     }
 
     private fun writePlaceholderRules(dir: File, names: List<String>) {

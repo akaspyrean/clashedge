@@ -146,7 +146,7 @@ fn ensure_all_globally_routable(host: &str, addrs: &[SocketAddr]) -> Result<()> 
 /// 同步 URL 校验（scheme / 主机名 / 字面 IP 白名单）。
 /// 供重定向目标预检与 `validate_url` 的字面量阶段调用（策略回调是同步的，
 /// 无法 await DNS，因此只做字面量校验）。
-fn validate_url_sync(url: &str) -> Result<()> {
+pub fn validate_url_sync(url: &str) -> Result<()> {
     let parsed =
         Url::parse(url).map_err(|e| Error::InvalidArgument(format!("Invalid URL: {}", e)))?;
     let scheme = parsed.scheme();

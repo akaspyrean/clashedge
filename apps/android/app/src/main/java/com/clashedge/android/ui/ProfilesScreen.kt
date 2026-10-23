@@ -25,6 +25,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.clashedge.android.R
 import com.clashedge.android.model.Profile
+import com.clashedge.android.util.maskUrl
 import kotlinx.coroutines.flow.StateFlow
 
 @Composable
@@ -101,7 +102,7 @@ private fun ProfileCard(
         Column(modifier = Modifier.padding(16.dp)) {
             Text(profile.name, style = MaterialTheme.typography.titleMedium)
             Text(
-                profile.subscribeUrl ?: "local",
+                maskUrl(profile.subscribeUrl ?: "local"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
