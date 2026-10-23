@@ -23,7 +23,7 @@ pub(super) fn validate_subscription_content(text: &str) -> Result<()> {
             MAX_YAML_CONTENT_BYTES
         )));
     }
-    let value: serde_yaml::Value = match serde_yaml::from_str(text) {
+    let value: serde_norway::Value = match serde_norway::from_str(text) {
         Ok(v) => v,
         Err(e) => {
             // Base64 / 分享链接列表不是合法 YAML 也属正常订阅格式（审计 B7），
@@ -80,14 +80,23 @@ pub(super) fn validate_subscription_content(text: &str) -> Result<()> {
 /// 在 [`validate_subscription_content`] 之上增加节点名约束——
 /// 必须是字符串、不得重复、不得与内置分组 / mihomo 保留策略重名。
 /// 这些冲突若放行，会在 mihomo 启动时才以晦涩错误暴露并触发回滚。
+/// 此外必须包含非空 `proxies` 序列；纯 URI-list / 无 proxies 的 YAML 直接拒绝，
+/// 防止写入后运行时启动失败。
 pub(super) fn validate_profile_strict(text: &str) -> Result<()> {
     validate_subscription_content(text)?;
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(text) else {
-        return Ok(());
-    };
-    let Some(proxies) = value.get("proxies").and_then(|v| v.as_sequence()) else {
-        return Ok(());
-    };
+    let value = serde_norway::from_str::<serde_norway::Value>(text)
+        .map_err(|e| Error::Subscription(format!("Invalid YAML: {}", e)))?;
+    let proxies = value
+        .get("proxies")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| {
+            Error::Subscription("Profile must contain a non-empty 'proxies' list".to_string())
+        })?;
+    if proxies.is_empty() {
+        return Err(Error::Subscription(
+            "Profile 'proxies' list must not be empty".to_string(),
+        ));
+    }
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, node) in proxies.iter().enumerate() {
         let Some(name) = node.get("name").and_then(|n| n.as_str()) else {
@@ -116,7 +125,7 @@ pub(super) fn validate_profile_strict(text: &str) -> Result<()> {
 /// 每种协议有各自的必需字段，统一校验可防止字段缺失导致 mihomo 启动失败。
 /// 不使用统一的极小字段白名单——保证 VLESS/Reality/Trojan/Hysteria2/TUIC
 /// 等现有协议能力不被破坏。
-fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> {
+fn validate_node_protocol(node: &serde_norway::Value, index: usize) -> Result<()> {
     let Some(map) = node.as_mapping() else {
         return Err(Error::Subscription(format!(
             "Node #{} is not a mapping",
@@ -124,10 +133,10 @@ fn validate_node_protocol(node: &serde_yaml::Value, index: usize) -> Result<()> 
         )));
     };
     let get_str = |key: &str| {
-        map.get(serde_yaml::Value::String(key.to_string()))
+        map.get(serde_norway::Value::String(key.to_string()))
             .and_then(|v| v.as_str())
     };
-    let has = |key: &str| map.contains_key(serde_yaml::Value::String(key.to_string()));
+    let has = |key: &str| map.contains_key(serde_norway::Value::String(key.to_string()));
     let protocol = get_str("type").unwrap_or("unknown");
     let name_raw = get_str("name").unwrap_or("");
     // 通用字段：所有节点都必须有非空的 name / type / server。
@@ -255,7 +264,7 @@ mod tests {
     fn validate_requires_non_empty_name_type_server() {
         // 缺失 name：运行时靠 name 注入内置叶子组，且 Normalizer 的 dedupe_by_name
         // 会把多个无名单节点折叠成一个——必须显式拒绝，不做静默修复。
-        let no_name: serde_yaml::Value = serde_yaml::from_str(
+        let no_name: serde_norway::Value = serde_norway::from_str(
             "type: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
         )
         .unwrap();
@@ -265,7 +274,7 @@ mod tests {
         );
 
         // 缺失 type
-        let no_type: serde_yaml::Value = serde_yaml::from_str(
+        let no_type: serde_norway::Value = serde_norway::from_str(
             "name: n\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
         )
         .unwrap();
@@ -275,7 +284,7 @@ mod tests {
         );
 
         // 缺失 server
-        let no_server: serde_yaml::Value = serde_yaml::from_str(
+        let no_server: serde_norway::Value = serde_norway::from_str(
             "name: n\ntype: ss\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
         )
         .unwrap();
@@ -285,7 +294,7 @@ mod tests {
         );
 
         // 合法节点通过
-        let ok: serde_yaml::Value = serde_yaml::from_str(
+        let ok: serde_norway::Value = serde_norway::from_str(
             "name: n\ntype: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
         )
         .unwrap();
@@ -297,17 +306,17 @@ mod tests {
 
     #[test]
     fn tuic_v5_nodes_are_accepted() {
-        let v5: serde_yaml::Value = serde_yaml::from_str(
+        let v5: serde_norway::Value = serde_norway::from_str(
             "name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\nuuid: u\npassword: p\ncongestion-controller: bbr\n",
         )
         .unwrap();
         assert!(validate_node_protocol(&v5, 1).is_ok());
-        let v4: serde_yaml::Value =
-            serde_yaml::from_str("name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\ntoken: x\n")
+        let v4: serde_norway::Value =
+            serde_norway::from_str("name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\ntoken: x\n")
                 .unwrap();
         assert!(validate_node_protocol(&v4, 1).is_ok());
-        let bad: serde_yaml::Value =
-            serde_yaml::from_str("name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\n").unwrap();
+        let bad: serde_norway::Value =
+            serde_norway::from_str("name: t\ntype: tuic\nserver: 1.1.1.1\nport: 443\n").unwrap();
         assert!(validate_node_protocol(&bad, 1).is_err());
     }
 

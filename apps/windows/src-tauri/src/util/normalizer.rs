@@ -19,7 +19,7 @@
 //! 远程 provider 的拉取复用 SSRF 防护的 `fetch::get_direct_first`；本地 file 型
 //! provider 只允许解析应用数据目录内的相对安全路径，拒绝任意绝对路径读取。
 
-use serde_yaml::Value;
+use serde_norway::Value;
 use tauri::AppHandle;
 
 use crate::util::error::{Error, Result};
@@ -129,7 +129,7 @@ fn try_uri_list(body: &str) -> Option<Result<NormalizedSubscription>> {
 }
 
 async fn normalize_inner(app: &AppHandle, body: &str) -> Result<NormalizedSubscription> {
-    let value: Value = match serde_yaml::from_str(body) {
+    let value: Value = match serde_norway::from_str(body) {
         Ok(v) => v,
         Err(e) => {
             if let Some(r) = try_uri_list(body) {
@@ -242,7 +242,7 @@ fn validate_provider_count(count: usize) -> Result<()> {
 async fn expand_http_provider(
     app: &AppHandle,
     name: &str,
-    prov_map: &serde_yaml::Mapping,
+    prov_map: &serde_norway::Mapping,
     total_bytes: &mut u64,
 ) -> Result<Vec<Value>> {
     let url = prov_map
@@ -286,7 +286,7 @@ async fn expand_http_provider(
     let text = String::from_utf8(bytes)
         .map_err(|e| Error::Subscription(format!("provider response not UTF-8: {}", e)))?;
 
-    let doc: Value = serde_yaml::from_str(&text)
+    let doc: Value = serde_norway::from_str(&text)
         .map_err(|e| Error::Subscription(format!("provider YAML invalid: {}", e)))?;
     Ok(doc
         .as_mapping()
@@ -301,7 +301,7 @@ async fn expand_http_provider(
 fn expand_file_provider(
     app: &AppHandle,
     name: &str,
-    prov_map: &serde_yaml::Mapping,
+    prov_map: &serde_norway::Mapping,
 ) -> Result<Vec<Value>> {
     let path = prov_map
         .get("path")
@@ -352,7 +352,7 @@ fn expand_file_provider(
     }
     let text = std::fs::read_to_string(&full_canon)
         .map_err(|e| Error::Subscription(format!("file provider '{}' unreadable: {}", name, e)))?;
-    let doc: Value = serde_yaml::from_str(&text)
+    let doc: Value = serde_norway::from_str(&text)
         .map_err(|e| Error::Subscription(format!("provider YAML invalid: {}", e)))?;
     Ok(doc
         .as_mapping()
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn dedupe_keeps_first() {
         let node = |n: &str| -> Value {
-            serde_yaml::from_str(&format!(
+            serde_norway::from_str(&format!(
                 "name: {}\ntype: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
                 n
             ))
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn prefix_provider_nodes() {
-        let node = serde_yaml::from_str::<Value>(
+        let node = serde_norway::from_str::<Value>(
             "name: n1\ntype: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
         )
         .unwrap();
@@ -463,7 +463,7 @@ proxy-providers:
     type: http
     url: https://example.com/nodes.yaml
 "#;
-        let value: Value = serde_yaml::from_str(body).unwrap();
+        let value: Value = serde_norway::from_str(body).unwrap();
         let map = value.as_mapping().unwrap();
 
         // 顶层 proxies 原样抽取
@@ -484,7 +484,7 @@ proxy-providers:
 
         // inline provider 内嵌节点可抽取，经 append_prefixed 加前缀
         let inline_nodes = providers
-            .get(serde_yaml::Value::String("inlineP".into()))
+            .get(serde_norway::Value::String("inlineP".into()))
             .and_then(|v| v.as_mapping())
             .and_then(|m| m.get("proxies"))
             .and_then(|v| v.as_sequence())
@@ -500,7 +500,7 @@ proxy-providers:
 
         // unsupported type 会被跳过、发出警告（不进入节点集）
         let weird_type = providers
-            .get(serde_yaml::Value::String("weird".into()))
+            .get(serde_norway::Value::String("weird".into()))
             .and_then(|v| v.as_mapping())
             .and_then(|m| m.get("type"))
             .and_then(|v| v.as_str())
@@ -526,7 +526,7 @@ proxy-providers:
                 i, i
             ));
         }
-        let value: Value = serde_yaml::from_str(&body).unwrap();
+        let value: Value = serde_norway::from_str(&body).unwrap();
         let providers = value
             .as_mapping()
             .unwrap()
@@ -545,7 +545,7 @@ proxy-providers:
     /// 订阅兼容性 fixtures：数组根不是 mapping，也不是分享链接列表 → 仍被拒绝。
     #[test]
     fn non_mapping_root_is_rejected() {
-        let value: Value = serde_yaml::from_str("- item1\n- item2\n").unwrap();
+        let value: Value = serde_norway::from_str("- item1\n- item2\n").unwrap();
         assert!(value.as_mapping().is_none(), "array root is not a mapping");
         assert!(try_uri_list("- item1\n- item2\n").is_none());
     }
@@ -554,7 +554,7 @@ proxy-providers:
     #[test]
     fn finalize_renames_reserved_and_dedupes() {
         let node = |n: &str| -> Value {
-            serde_yaml::from_str(&format!(
+            serde_norway::from_str(&format!(
                 "name: \"{}\"\ntype: ss\nserver: 1.1.1.1\nport: 8388\ncipher: aes-128-gcm\npassword: x\n",
                 n
             ))

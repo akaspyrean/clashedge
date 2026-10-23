@@ -27,7 +27,7 @@ static RESOURCES: Lazy<HashMap<&'static str, HashMap<String, String>>> = Lazy::n
 /// 将嵌套 YAML 扁平化为 "a.b.c" 键到字符串值的映射
 fn flatten_yaml(yaml: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+    match serde_norway::from_str::<serde_norway::Value>(yaml) {
         Ok(value) => flatten_value(&value, "", &mut out),
         // 解析失败（如同层重复键）会导致整张消息表为空、界面显示原始键名；
         // 打日志便于定位，并由下方测试在 CI 阶段拦截。
@@ -36,9 +36,9 @@ fn flatten_yaml(yaml: &str) -> HashMap<String, String> {
     out
 }
 
-fn flatten_value(value: &serde_yaml::Value, prefix: &str, out: &mut HashMap<String, String>) {
+fn flatten_value(value: &serde_norway::Value, prefix: &str, out: &mut HashMap<String, String>) {
     match value {
-        serde_yaml::Value::Mapping(map) => {
+        serde_norway::Value::Mapping(map) => {
             for (k, v) in map {
                 let key = k.as_str().unwrap_or_default();
                 let joined = if prefix.is_empty() {
@@ -49,14 +49,14 @@ fn flatten_value(value: &serde_yaml::Value, prefix: &str, out: &mut HashMap<Stri
                 flatten_value(v, &joined, out);
             }
         }
-        serde_yaml::Value::String(s) => {
+        serde_norway::Value::String(s) => {
             out.insert(prefix.to_string(), s.clone());
         }
         // 数字/布尔等其他标量：转字符串
-        serde_yaml::Value::Number(n) => {
+        serde_norway::Value::Number(n) => {
             out.insert(prefix.to_string(), n.to_string());
         }
-        serde_yaml::Value::Bool(b) => {
+        serde_norway::Value::Bool(b) => {
             out.insert(prefix.to_string(), b.to_string());
         }
         _ => {}
@@ -135,7 +135,7 @@ pub fn default_locale() -> &'static str {
 mod tests {
     use super::*;
 
-    /// 内嵌 YAML 必须能解析且非空：同层重复键会让 serde_yaml 报错，
+    /// 内嵌 YAML 必须能解析且非空：同层重复键会让 serde_norway 报错，
     /// 进而整张消息表为空、界面全部显示原始键名。
     #[test]
     fn embedded_yaml_parses_and_non_empty() {
@@ -143,7 +143,7 @@ mod tests {
             ("zh-CN", include_str!("../../resources/i18n/zh-CN.yaml")),
             ("en-US", include_str!("../../resources/i18n/en-US.yaml")),
         ] {
-            serde_yaml::from_str::<serde_yaml::Value>(yaml)
+            serde_norway::from_str::<serde_norway::Value>(yaml)
                 .unwrap_or_else(|e| panic!("{locale} yaml invalid: {e}"));
             let table = flatten_yaml(yaml);
             assert!(

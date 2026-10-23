@@ -164,55 +164,61 @@ if (-not $SkipLauncher) {
 }
 
 # Android release-chain guard: since PR #31 we intentionally integrate Android
-# into the release flow. The guard now verifies the job is present and wired
-# with the shared PKCS12 keystore secrets (no loose ends).
-Invoke-Step 'android release-chain guard' {
-  $releaseYml = Join-Path $repoRoot '.github\workflows\release.yml'
-  $yaml = Get-Content $releaseYml -Raw
-  # 1. android-build job must exist
-  if ($yaml -notmatch '(?m)^\s+android-build:') {
-    Write-Host "android-build job missing from release.yml" -ForegroundColor Red
-    $global:LASTEXITCODE = 1
-    return
-  }
-  # 2. Must reference the 4 Android keystore secrets
-  $requiredSecrets = @(
-    'ANDROID_KEYSTORE_BASE64',
-    'ANDROID_KEY_ALIAS',
-    'ANDROID_KEY_PASSWORD',
-    'ANDROID_STORE_PASSWORD'
-  )
-  foreach ($s in $requiredSecrets) {
-    if ($yaml -notmatch ('secrets\.' + $s)) {
-      Write-Host "android-build missing secret reference: $s" -ForegroundColor Red
+  # into the release flow. The guard now verifies the jobs are present and wired
+  # with the shared PKCS12 keystore secrets (no loose ends).
+  Invoke-Step 'android release-chain guard' {
+    $releaseYml = Join-Path $repoRoot '.github\workflows\release.yml'
+    $yaml = Get-Content $releaseYml -Raw
+    # 1. android-build-unsigned job must exist (unsigned build)
+    if ($yaml -notmatch '(?m)^\s+android-build-unsigned:') {
+      Write-Host "android-build-unsigned job missing from release.yml" -ForegroundColor Red
       $global:LASTEXITCODE = 1
       return
     }
-  }
-  # 3. Must also reference Windows PFX secrets (shared keystore)
-  $sharedSecrets = @('WINDOWS_CODESIGN_PFX_BASE64', 'WINDOWS_CODESIGN_PFX_PASSWORD')
-  foreach ($s in $sharedSecrets) {
-    if ($yaml -notmatch ('secrets\.' + $s)) {
-      Write-Host "shared keystore secret missing in release.yml: $s" -ForegroundColor Red
+    # 2. android-sign job must exist (signing in protected environment)
+    if ($yaml -notmatch '(?m)^\s+android-sign:') {
+      Write-Host "android-sign job missing from release.yml" -ForegroundColor Red
       $global:LASTEXITCODE = 1
       return
     }
+    # 3. Must reference the 4 Android keystore secrets (only in android-sign)
+    $requiredSecrets = @(
+      'ANDROID_KEYSTORE_BASE64',
+      'ANDROID_KEY_ALIAS',
+      'ANDROID_KEY_PASSWORD',
+      'ANDROID_STORE_PASSWORD'
+    )
+    foreach ($s in $requiredSecrets) {
+      if ($yaml -notmatch ('secrets\.' + $s)) {
+        Write-Host "android-sign missing secret reference: $s" -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+        return
+      }
+    }
+    # 4. Must also reference Windows PFX secrets (shared keystore)
+    $sharedSecrets = @('WINDOWS_CODESIGN_PFX_BASE64', 'WINDOWS_CODESIGN_PFX_PASSWORD')
+    foreach ($s in $sharedSecrets) {
+      if ($yaml -notmatch ('secrets\.' + $s)) {
+        Write-Host "shared keystore secret missing in release.yml: $s" -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+        return
+      }
+    }
+    # 4. publish must depend on android-sign (not android-build)
+    if ($yaml -notmatch 'publish:') {
+      Write-Host "publish job not found" -ForegroundColor Red
+      $global:LASTEXITCODE = 1
+      return
+    }
+    $pubIdx = $yaml.IndexOf('publish:')
+    $afterPub = $yaml.Substring($pubIdx)
+    if ($afterPub -notmatch 'android-sign') {
+      Write-Host "publish job does not depend on android-sign" -ForegroundColor Red
+      $global:LASTEXITCODE = 1
+      return
+    }
+    Write-Host "android release-chain guard: OK (jobs present, secrets wired, publish depends on android-sign)" -ForegroundColor Green
   }
-  # 4. publish must depend on android-build
-  if ($yaml -notmatch 'publish:') {
-    Write-Host "publish job not found" -ForegroundColor Red
-    $global:LASTEXITCODE = 1
-    return
-  }
-  $pubIdx = $yaml.IndexOf('publish:')
-  $afterPub = $yaml.Substring($pubIdx)
-  if ($afterPub -notmatch 'android-build') {
-    Write-Host "publish job does not depend on android-build" -ForegroundColor Red
-    $global:LASTEXITCODE = 1
-    return
-  }
-  Write-Host "android release-chain guard: OK (job present, secrets wired, publish depends on it)" -ForegroundColor Green
-}
 
 Write-Host ""
 Write-Host ("Results: {0} passed, {1} failed." -f $script:passCount, $script:failCount)

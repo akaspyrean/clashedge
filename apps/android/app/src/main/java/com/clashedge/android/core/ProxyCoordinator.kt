@@ -78,13 +78,18 @@ class ProxyCoordinator(
         }
     }
 
-    fun stop() {
+    private fun stopServices() {
         scope.launch {
             _state.value = ConnectionState.STOPPING
             core.stop()
             context.stopService(Intent(context, ProxyForegroundService::class.java))
+            context.stopService(Intent(context, ClashVpnService::class.java))
             _state.value = ConnectionState.STOPPED
         }
+    }
+
+    fun stop() {
+        stopServices()
     }
 
     fun onCoreRunning() {
@@ -98,9 +103,13 @@ class ProxyCoordinator(
             try {
                 core.startTun(fd, box)
                 if (core.start(config)) onCoreRunning()
-                else onCoreError("Mihomo core failed to start")
+                else {
+                    onCoreError("Mihomo core failed to start")
+                    stopServices()
+                }
             } catch (t: Throwable) {
                 onCoreError("proxy start failed: ${t.message}")
+                stopServices()
             }
         }
     }
@@ -114,6 +123,7 @@ class ProxyCoordinator(
     fun onCoreError(message: String) {
         _error.value = message
         _state.value = ConnectionState.ERROR
+        stopServices()
     }
 
     fun refreshGroups() {

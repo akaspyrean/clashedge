@@ -14,6 +14,8 @@ const props = defineProps<{
   good?: number;
   bad?: number;
   selected?: boolean;
+  /** 节点地区（由后端按节点名推断；识别不到则为 undefined，不显示） */
+  region?: string;
   /** 节点不可用（延迟失败等）：文字弱化为 disabled 色，仍可点选 */
   unavailable?: boolean;
   /** 只读：自动测速组由内核自动选择 */
@@ -41,6 +43,8 @@ function onSelect() {
       <span class="ce-tile__name">{{ name }}</span>
       <span v-if="protocol" class="ce-tile__proto">{{ protocol }}</span>
     </button>
+    <!-- 地区标签：位于延迟标签左侧（延迟标签绝对定位在右下角） -->
+    <span v-if="region" class="ce-tile__region" :title="region">{{ region }}</span>
     <CeLatencyTag
       class="ce-tile__lat"
       clickable
@@ -138,6 +142,23 @@ function onSelect() {
   right: var(--ce-space-4);
   bottom: var(--ce-space-3);
   z-index: 1;
+}
+
+/* 地区标签：与右下角延迟标签同一行，位于其左侧。 */
+.ce-tile__region {
+  position: absolute;
+  left: var(--ce-space-4);
+  bottom: var(--ce-space-3);
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--ce-type-caption);
+  color: var(--ce-text-tertiary);
+}
+
+.ce-tile.is-unavailable .ce-tile__region {
+  color: var(--ce-text-disabled);
 }
 
 .ce-tile__check {

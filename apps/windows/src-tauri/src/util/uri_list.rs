@@ -9,7 +9,7 @@
 //! `tuic://`。无法识别或字段缺失的行记入 warnings，不影响其余节点。
 
 use base64::{engine::general_purpose, Engine as _};
-use serde_yaml::{Mapping, Value};
+use serde_norway::{Mapping, Value};
 
 const SCHEMES: &[&str] = &[
     "ss://",

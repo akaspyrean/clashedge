@@ -56,6 +56,10 @@ impl ConfigManager {
                 self.degraded.store(false, Ordering::SeqCst);
                 let mut validated = crate::core::config::merge_rules(loaded);
                 let rotated = self.ensure_secure_secret(&mut validated);
+                // C7: external-controller 必须是回环地址，防止导入/手动编辑把控制器指向远程
+                crate::config::model::validate_external_controller(
+                    &validated.proxy.external_controller,
+                )?;
                 if rotated {
                     info!("Rotating controller secret to a random value");
                     // 轮换必须落盘，否则下次启动又回到占位值、也无法认证重启后的核心。
@@ -188,10 +192,18 @@ impl ConfigManager {
 
     /// 从 YAML 字符串构造新配置（解析 + 校验，**不落盘**）。供事务流程使用。
     pub fn prepare_import(&self, yaml: String) -> Result<Config> {
-        let config: Config = serde_yaml::from_str(&yaml)
+        let config: Config = serde_norway::from_str(&yaml)
             .map_err(|e| Error::ConfigParse(format!("Invalid config YAML: {}", e)))?;
         // C7 控制器地址限回环（导入 YAML 为用户可控输入，落盘前校验）
         crate::config::model::validate_external_controller(&config.proxy.external_controller)?;
+        // SSRF 防护：rule-providers 中的 URL 必须通过同源/私网/IP 校验（复用订阅下载守卫）
+        for (name, provider) in &config.rule_providers {
+            if let Some(url) = provider.get("url").and_then(|v| v.as_str()) {
+                crate::util::fetch::validate_url_sync(url).map_err(|e| {
+                    Error::ConfigParse(format!("rule-provider '{}' URL invalid: {}", name, e))
+                })?;
+            }
+        }
         Ok(config)
     }
 
@@ -209,7 +221,7 @@ impl ConfigManager {
 
     /// 导出当前配置为 YAML 字符串
     pub fn export_config(&self) -> Result<String> {
-        let yaml = serde_yaml::to_string(&*self.config.read())?;
+        let yaml = serde_norway::to_string(&*self.config.read())?;
         Ok(yaml)
     }
 
@@ -233,7 +245,7 @@ impl Default for ConfigManager {
 }
 
 /// 去除 UTF-8 BOM。Windows 记事本及部分编辑器保存 UTF-8 时会写 BOM
-/// （0xEFBBBF），serde_yaml 不认 BOM 开头，会解析失败进而触发迁移、
+/// （0xEFBBBF），serde_norway 不认 BOM 开头，会解析失败进而触发迁移、
 /// 最终导致启动 panic（退出码 101）。读取时统一剥离。
 pub fn strip_utf8_bom(content: &str) -> &str {
     content.trim_start_matches('\u{feff}')
@@ -256,7 +268,7 @@ pub fn read_config(config_path: &Path) -> Result<Config> {
     let content = strip_utf8_bom(&content);
 
     // 尝试按新格式解析
-    match serde_yaml::from_str::<Config>(content) {
+    match serde_norway::from_str::<Config>(content) {
         Ok(config) => Ok(config),
         Err(parse_err) => {
             warn!(
@@ -362,7 +374,7 @@ pub fn find_corrupt_backup(config_path: &Path) -> Option<String> {
 /// 独立运行时配置（runtime-config.yaml），应用配置不再直接喂给 mihomo，
 /// 因此这里不再剔除任何字段——剔除应用级字段属于运行时配置生成阶段。
 pub fn write_config(config_path: &Path, config: &Config) -> Result<()> {
-    let yaml = serde_yaml::to_string(config)?;
+    let yaml = serde_norway::to_string(config)?;
     // 原子写入：随机后缀临时文件 + 排他创建 + rename（见 util::atomic）
     atomic_write(config_path, yaml.as_bytes())?;
 
@@ -383,7 +395,7 @@ mod tests {
     #[test]
     fn write_config_keeps_full_app_config() {
         let mut config = Config::default();
-        config.general.geodata_mode = serde_yaml::Value::String("metax".to_string());
+        config.general.geodata_mode = serde_norway::Value::String("metax".to_string());
         config.general.profile = "DIRECT".to_string();
         config.proxy.external_controller = "127.0.0.1:50715".to_string();
         config.proxy.secret = "b1616fdd-63a8-44e9-b196-c63b68307a9b".to_string();
@@ -447,7 +459,7 @@ mod tests {
         let loaded = read_config(&path).unwrap();
         assert_eq!(
             loaded.general.geodata_mode,
-            serde_yaml::Value::String("metax".to_string())
+            serde_norway::Value::String("metax".to_string())
         );
         assert_eq!(loaded.general.profile, "DIRECT");
         assert_eq!(loaded.proxy.external_controller, "127.0.0.1:50715");
@@ -521,7 +533,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// UTF-8 BOM 会令 serde_yaml 解析失败并触发迁移（迁移重读仍带 BOM，
+    /// UTF-8 BOM 会令 serde_norway 解析失败并触发迁移（迁移重读仍带 BOM，
     /// 再解析失败）导致启动 panic 退出码 101。read_config 必须剥离 BOM。
     #[test]
     fn read_config_handles_utf8_bom() {
@@ -529,7 +541,7 @@ mod tests {
         config.general.mixed_port = 7897;
         let mut buf = Vec::new();
         buf.extend_from_slice(&[0xEF, 0xBB, 0xBF]); // UTF-8 BOM
-        buf.extend_from_slice(serde_yaml::to_string(&config).unwrap().as_bytes());
+        buf.extend_from_slice(serde_norway::to_string(&config).unwrap().as_bytes());
 
         let dir = std::env::temp_dir().join(format!(
             "clash-edge-bom-test-{}-{}",

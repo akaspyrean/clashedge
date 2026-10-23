@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::geodata::download::{download_to_file, fetch_small, replace_all, sha256_of_file};
 use crate::util::error::{Error, Result};
@@ -124,7 +124,7 @@ pub fn validate_content(rel: &str, path: &Path) -> Result<()> {
     if rel.ends_with(".yaml") {
         let text = std::fs::read_to_string(path)
             .map_err(|e| Error::Other(format!("{}: not valid UTF-8 text: {}", rel, e)))?;
-        let doc: serde_yaml::Value = serde_yaml::from_str(&text)
+        let doc: serde_norway::Value = serde_norway::from_str(&text)
             .map_err(|e| Error::Other(format!("{}: invalid YAML: {}", rel, e)))?;
         let ok = doc
             .get("payload")
@@ -155,9 +155,9 @@ fn read_local_version(data_dir: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-fn write_local_version(data_dir: &Path, version: u64) {
+fn write_local_version(data_dir: &Path, version: u64) -> Result<()> {
     let body = serde_json::json!({ "version": version });
-    let _ = crate::util::atomic::atomic_write(&state_path(data_dir), body.to_string().as_bytes());
+    crate::util::atomic::atomic_write(&state_path(data_dir), body.to_string().as_bytes())
 }
 
 /// 更新规则集 / geodata（签名清单驱动）。
@@ -257,7 +257,7 @@ pub async fn update_rules(app: &tauri::AppHandle) -> Result<RulesOutcome> {
     };
     if downloaded.is_empty() {
         outcome.up_to_date = true;
-        write_local_version(&data_dir, manifest.version);
+        write_local_version(&data_dir, manifest.version)?;
         info!("Rules already up to date (v{})", manifest.version);
         return Ok(outcome);
     }
@@ -268,7 +268,7 @@ pub async fn update_rules(app: &tauri::AppHandle) -> Result<RulesOutcome> {
         .collect();
     replace_all(&pairs)?;
     outcome.updated = downloaded.into_iter().map(|(_, _, rel)| rel).collect();
-    write_local_version(&data_dir, manifest.version);
+    write_local_version(&data_dir, manifest.version)?;
     info!(
         "Rules updated to v{} (released_at {}, {} files): {:?}",
         manifest.version,
@@ -276,9 +276,7 @@ pub async fn update_rules(app: &tauri::AppHandle) -> Result<RulesOutcome> {
         outcome.updated.len(),
         outcome.updated
     );
-    if let Err(e) = reload_core(app).await {
-        warn!("Rules updated but core reload failed: {}", e);
-    }
+    // Reload 由调用方（update_geodata_inner）统一执行，消除双重 reload。
     Ok(outcome)
 }
 
@@ -368,7 +366,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(read_local_version(&d), 0);
-        write_local_version(&d, 42);
+        write_local_version(&d, 42).unwrap();
         assert_eq!(read_local_version(&d), 42);
         let _ = std::fs::remove_dir_all(&d);
     }

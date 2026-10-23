@@ -52,8 +52,19 @@ class ClashVpnService : VpnService() {
         Logger.warn("VPN revoked by the system")
         coordinator().onCoreStopped("VPN was revoked")
         started = false
+        closeFd()
         stopSelf()
         super.onRevoke()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        closeFd()
+    }
+
+    private fun closeFd() {
+        fileDescriptor?.close()
+        fileDescriptor = null
     }
 
     private fun establish(): Int? {

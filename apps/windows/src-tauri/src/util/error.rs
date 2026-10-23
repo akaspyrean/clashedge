@@ -14,7 +14,7 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
 
     #[error("YAML error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_norway::Error),
 
     #[error("Tauri error: {0}")]
     Tauri(#[from] tauri::Error),

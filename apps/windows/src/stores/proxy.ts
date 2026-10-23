@@ -74,13 +74,19 @@ export const useProxyStore = defineStore("proxy", {
       await this.testNodes(g.all.filter((p) => p !== "DIRECT"));
     },
     /** 批量测速指定节点（去重）：分块限并发（每批 10 个）防止一次性全量并发压垮后端；
-     *  testingNodes 标志防重入。 */
+     *  testingNodes 标志防重入。
+     *
+     *  自愈：若**所有**被测节点都超时（节点全挂），立即通知后端拉取最新订阅
+     *  （节点全挂通常是订阅过期/机场换端口所致）。后端自带冷却限流，重复
+     *  触发不会打爆订阅服务器。 */
     async testNodes(names: string[]) {
       if (this.testingNodes) return;
       this.testingNodes = true;
       try {
         const nodes = [...new Set(names)];
         const CHUNK = 10;
+        let tested = 0;
+        let failed = 0;
         for (let i = 0; i < nodes.length; i += CHUNK) {
           const batch = nodes.slice(i, i + CHUNK);
           await Promise.allSettled(
@@ -93,6 +99,19 @@ export const useProxyStore = defineStore("proxy", {
               }
             })
           );
+          for (const n of batch) {
+            const d = this.nodeDelays[n];
+            tested += 1;
+            if (d === null || d === undefined || d <= 0) failed += 1;
+          }
+        }
+        // 全部超时 → 立即拉取最新订阅（后端限流，不会反复打上游）
+        if (tested > 0 && failed === tested) {
+          try {
+            await proxyApi.reportAllNodesTimeout();
+          } catch {
+            // 自愈失败不影响测速结果
+          }
         }
       } finally {
         this.testingNodes = false;

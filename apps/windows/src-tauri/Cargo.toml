@@ -33,7 +33,7 @@ tauri-plugin-single-instance = "2"
 # P1-11：shell / fs / notification / clipboard / opener 均未被前后端调用；文件导入
 # 只用 dialog + Rust command，打开目录也走 Rust command，故移除未使用插件。
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_norway = "0.9"
 serde_json = "1"
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time", "net", "fs", "process", "sync", "io-util"] }
 # "log" feature: without it (and with no tracing subscriber installed) every tracing::info!/warn!
@@ -75,3 +75,5 @@ minisign-verify = "0.3"
 # 托盘图标运行时着色（系统代理开=绿 / 关=灰）；
 # 已作为传递依赖存在于 Cargo.lock（image 0.25.10），无需新增下载。
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 节点地区/国家提取（从节点名解析 emoji 国旗、前缀代码、关键词等）
+regex = "1"

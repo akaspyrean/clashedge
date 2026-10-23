@@ -137,6 +137,7 @@ export function useLogStream() {
         pausedByHidden = true;
         void logsApi.stop().catch(() => {});
         connected.value = false;
+        connecting.value = false; // 关键：重置连接中状态，允许可见时重新连接
       }
     } else if (pausedByHidden) {
       pausedByHidden = false;
