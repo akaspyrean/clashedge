@@ -48,7 +48,7 @@ thiserror = "2.0"
 # 且其 `rustls` feature 走 rustls-platform-verifier（OS 证书库），会失去
 # `rustls-tls-webpki-roots`（内置固定根）的抗篡改属性，故维持 0.12（审计 C5）。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream", "rustls-tls-webpki-roots", "socks"] }
-winreg = "0.11"
+winreg = "0.55"
 # 已作为传递依赖存在于 Cargo.lock（tauri/tokio 体系），无需新增下载。
 # Win32_Networking_WinInet：写入系统代理注册表后通知 WinINet 立即刷新。
 # Win32_Security / Win32_System_Threading / Win32_Foundation：
