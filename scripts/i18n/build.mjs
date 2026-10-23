@@ -20,12 +20,12 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const sources = {
   "values/strings.xml": {
-    yaml: resolve(root, "resources/i18n/en-US.yaml"),
-    header: "Source: resources/i18n/en-US.yaml (android:)",
+    yaml: resolve(root, "apps/windows/src-tauri/resources/i18n/en-US.yaml"),
+    header: "Source: apps/windows/src-tauri/resources/i18n/en-US.yaml (android:)",
   },
   "values-zh/strings.xml": {
-    yaml: resolve(root, "resources/i18n/zh-CN.yaml"),
-    header: "Source: resources/i18n/zh-CN.yaml (android:)",
+    yaml: resolve(root, "apps/windows/src-tauri/resources/i18n/zh-CN.yaml"),
+    header: "Source: apps/windows/src-tauri/resources/i18n/zh-CN.yaml (android:)",
   },
 };
 const androidDir = resolve(
