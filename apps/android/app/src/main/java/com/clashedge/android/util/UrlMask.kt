@@ -16,14 +16,14 @@ fun maskUrl(url: String): String {
         val path = if (u.path != null && u.path != "/") {
             val segs = u.path!!.replace("^/+".toRegex(), "").split("/")
             // 遮蔽所有形似 token 的路径段（≥8 字符、仅字母数字下划线连字符且含数字）
-            val masked = segs.map { seg ->
-                if (isTokenLikeSegment(seg)) "••••••••" else seg
+            val maskedSegs = segs.map { seg ->
+                if (isTokenLikeSegment(seg)) MASK else seg
             }
-            "/${segs.joinToString("/")}"
+            "/${maskedSegs.joinToString("/")}"
         } else ""
 
         val query = if (u.query != null) {
-            "?${u.getQueryParameterNames().joinToString("&") { "$it=••••••••" }}"
+            "?${u.getQueryParameterNames().joinToString("&") { "$it=$MASK" }}"
         } else ""
 
         "${u.scheme}://${u.host}${if (u.port != -1) ":${u.port}" else ""}$path$query"
