@@ -19,7 +19,7 @@ use crate::util::error::{Error, Result};
 /// 4. 否则把可识别的旧字段（kebab-case / snake_case 双写法、顶层平铺或
 ///    分段嵌套）逐个合并到默认配置上。
 pub fn migrate_content(content: &str) -> Result<Config> {
-    let value: serde_yaml::Value = serde_yaml::from_str(content)
+    let value: serde_norway::Value = serde_norway::from_str(content)
         .map_err(|e| Error::ConfigParse(format!("not valid YAML: {}", e)))?;
     if !value.is_mapping() {
         return Err(Error::ConfigParse(
@@ -27,7 +27,7 @@ pub fn migrate_content(content: &str) -> Result<Config> {
         ));
     }
     // 直接按新结构（flatten 布局）解析；失败则走字段级宽松合并
-    let mut config = match serde_yaml::from_value::<Config>(value.clone()) {
+    let mut config = match serde_norway::from_value::<Config>(value.clone()) {
         Ok(config) => config,
         Err(_) => merge_legacy_value(&value),
     };
@@ -43,7 +43,7 @@ pub fn migrate_content(content: &str) -> Result<Config> {
 
 /// 从顶层 `proxy:` 子映射中提取 external-controller / secret，
 /// 仅当顶层没有对应字段时才补齐（顶层优先）。
-fn merge_nested_proxy_section(value: &serde_yaml::Value, config: &mut Config) {
+fn merge_nested_proxy_section(value: &serde_norway::Value, config: &mut Config) {
     let Some(map) = value.as_mapping() else {
         return;
     };
@@ -66,29 +66,29 @@ fn merge_nested_proxy_section(value: &serde_yaml::Value, config: &mut Config) {
 }
 
 /// 按 key 的多种历史写法取字段：kebab-case 与 snake_case 等价。
-fn field<'a>(map: &'a serde_yaml::Mapping, name: &str) -> Option<&'a serde_yaml::Value> {
-    let kebab = serde_yaml::Value::String(name.to_string());
+fn field<'a>(map: &'a serde_norway::Mapping, name: &str) -> Option<&'a serde_norway::Value> {
+    let kebab = serde_norway::Value::String(name.to_string());
     if let Some(v) = map.get(&kebab) {
         return Some(v);
     }
-    let snake = serde_yaml::Value::String(name.replace('-', "_"));
+    let snake = serde_norway::Value::String(name.replace('-', "_"));
     map.get(&snake)
 }
 
-fn as_bool(v: Option<&serde_yaml::Value>) -> Option<bool> {
+fn as_bool(v: Option<&serde_norway::Value>) -> Option<bool> {
     v.and_then(|v| v.as_bool())
 }
 
-fn as_string(v: Option<&serde_yaml::Value>) -> Option<String> {
+fn as_string(v: Option<&serde_norway::Value>) -> Option<String> {
     v.and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-fn as_u16(v: Option<&serde_yaml::Value>) -> Option<u16> {
+fn as_u16(v: Option<&serde_norway::Value>) -> Option<u16> {
     v.and_then(|v| v.as_u64())
         .and_then(|n| u16::try_from(n).ok())
 }
 
-fn as_string_list(v: Option<&serde_yaml::Value>) -> Option<Vec<String>> {
+fn as_string_list(v: Option<&serde_norway::Value>) -> Option<Vec<String>> {
     v.and_then(|v| v.as_sequence()).map(|seq| {
         seq.iter()
             .filter_map(|item| item.as_str().map(|s| s.to_string()))
@@ -97,7 +97,10 @@ fn as_string_list(v: Option<&serde_yaml::Value>) -> Option<Vec<String>> {
 }
 
 /// 子映射：顶层 `tun:` / `dns:` 等
-fn sub_mapping<'a>(map: &'a serde_yaml::Mapping, name: &str) -> Option<&'a serde_yaml::Mapping> {
+fn sub_mapping<'a>(
+    map: &'a serde_norway::Mapping,
+    name: &str,
+) -> Option<&'a serde_norway::Mapping> {
     field(map, name).and_then(|v| v.as_mapping())
 }
 
@@ -106,7 +109,7 @@ fn sub_mapping<'a>(map: &'a serde_yaml::Mapping, name: &str) -> Option<&'a serde
 /// 兼容两种历史布局：
 /// - 0.8.x 平铺格式：external-controller / secret 直接在顶层；
 /// - 分段格式：controller 字段位于 `proxy:` 段下。
-fn merge_legacy_value(value: &serde_yaml::Value) -> Config {
+fn merge_legacy_value(value: &serde_norway::Value) -> Config {
     let mut config = Config::default();
     let Some(map) = value.as_mapping() else {
         return config;
@@ -296,7 +299,7 @@ proxy:
         let mut config = Config::default();
         config.general.mixed_port = 7899;
         config.general.allow_lan = true;
-        let yaml = serde_yaml::to_string(&config).unwrap();
+        let yaml = serde_norway::to_string(&config).unwrap();
         let migrated = migrate_content(&yaml).unwrap();
         assert_eq!(migrated.general.mixed_port, 7899);
         assert!(migrated.general.allow_lan);

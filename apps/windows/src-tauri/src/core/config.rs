@@ -148,20 +148,23 @@ pub(crate) fn merge_rules(config: Config) -> Config {
 pub fn build_runtime_config(
     app: &Config,
     profile_content: Option<&str>,
-) -> Result<serde_yaml::Value> {
-    let mut map = serde_yaml::Mapping::new();
+) -> Result<serde_norway::Value> {
+    let mut map = serde_norway::Mapping::new();
     macro_rules! put {
         ($k:expr, $v:expr) => {
-            map.insert(serde_yaml::Value::String($k.to_string()), $v);
+            map.insert(serde_norway::Value::String($k.to_string()), $v);
         };
     }
 
     // 1) AppConfig 受控运行时设置
     put!(
         "mixed-port",
-        serde_yaml::Value::from(app.general.mixed_port)
+        serde_norway::Value::from(app.general.mixed_port)
     );
-    put!("allow-lan", serde_yaml::Value::from(app.general.allow_lan));
+    put!(
+        "allow-lan",
+        serde_norway::Value::from(app.general.allow_lan)
+    );
     // allow-lan 高级控制。仅 allow-lan=true 时写入：
     // - bind-address：限定监听接口（如仅内网 IP）；
     // - lan-allowed-ips：来源网段白名单（CIDR）。
@@ -175,7 +178,7 @@ pub fn build_runtime_config(
                 || (!bind.chars().any(|c| c.is_whitespace() || c.is_control())
                     && !bind.contains('|')));
         if bind_valid {
-            put!("bind-address", serde_yaml::Value::from(bind.to_string()));
+            put!("bind-address", serde_norway::Value::from(bind.to_string()));
         }
         let allowed: Vec<String> = app
             .general
@@ -186,12 +189,12 @@ pub fn build_runtime_config(
             .filter(|s| s.parse::<ipnet::IpNet>().is_ok() || s.parse::<std::net::IpAddr>().is_ok())
             .collect();
         if !allowed.is_empty() {
-            put!("lan-allowed-ips", serde_yaml::to_value(&allowed)?);
+            put!("lan-allowed-ips", serde_norway::to_value(&allowed)?);
         }
     }
     put!(
         "mode",
-        serde_yaml::Value::from(app.general.proxy_mode.clone())
+        serde_norway::Value::from(app.general.proxy_mode.clone())
     );
     // 日志级别：设置页的 log-level 真正写入运行时配置，
     // 不再固定 info。非法值/空值归一到 info（mihomo 官方模板默认值）。
@@ -205,26 +208,29 @@ pub fn build_runtime_config(
             "info".to_string()
         }
     };
-    put!("log-level", serde_yaml::Value::from(log_level));
-    put!("ipv6", serde_yaml::Value::from(app.general.ipv6));
+    put!("log-level", serde_norway::Value::from(log_level));
+    put!("ipv6", serde_norway::Value::from(app.general.ipv6));
     put!(
         "find-process-mode",
-        serde_yaml::Value::from(app.general.find_process_mode.clone())
+        serde_norway::Value::from(app.general.find_process_mode.clone())
     );
     put!(
         "external-controller",
-        serde_yaml::Value::from(app.proxy.external_controller.clone())
+        serde_norway::Value::from(app.proxy.external_controller.clone())
     );
-    put!("secret", serde_yaml::Value::from(app.proxy.secret.clone()));
-    put!("tun", serde_yaml::to_value(&app.tun)?);
+    put!(
+        "secret",
+        serde_norway::Value::from(app.proxy.secret.clone())
+    );
+    put!("tun", serde_norway::to_value(&app.tun)?);
     // 域名嗅探（可选）：应用自己的 sniffer 配置；订阅里的 sniffer 仍一律不透传。
     if app.general.sniffer {
         put!(
             "sniffer",
-            serde_yaml::from_str::<serde_yaml::Value>(SNIFFER_YAML)?
+            serde_norway::from_str::<serde_norway::Value>(SNIFFER_YAML)?
         );
     }
-    put!("dns", serde_yaml::to_value(&app.dns)?);
+    put!("dns", serde_norway::to_value(&app.dns)?);
 
     // geodata-mode：仅透传 mihomo 语义值（bool / "metax" / "v2ray"）；
     // 应用级值（manual / use-external / remote）与空值不写给 mihomo。
@@ -255,11 +261,11 @@ pub fn build_runtime_config(
     // 3) 解析激活 Profile 内容（空/缺失 → 空映射）
     let profile_map = match profile_content {
         Some(c) if !c.trim().is_empty() => {
-            let value: serde_yaml::Value = serde_yaml::from_str(c)
+            let value: serde_norway::Value = serde_norway::from_str(c)
                 .map_err(|e| Error::ConfigParse(format!("Invalid profile YAML: {}", e)))?;
             value.as_mapping().cloned().unwrap_or_default()
         }
-        _ => serde_yaml::Mapping::new(),
+        _ => serde_norway::Mapping::new(),
     };
     // 空 `proxies:` 列表视为"未提供"：Some([]) 会遮蔽 AppConfig.extra 里
     // 用户通过「导入配置」显式带入的节点，导致导入后运行时拿零节点
@@ -320,7 +326,7 @@ pub fn build_runtime_config(
                     if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
                         plist.clear();
                         for n in &node_names {
-                            plist.push(serde_yaml::Value::from(n.clone()));
+                            plist.push(serde_norway::Value::from(n.clone()));
                         }
                     }
                 } else if gname == "人工优选" {
@@ -328,13 +334,13 @@ pub fn build_runtime_config(
                     if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
                         plist.clear();
                         for n in &node_names {
-                            plist.push(serde_yaml::Value::from(n.clone()));
+                            plist.push(serde_norway::Value::from(n.clone()));
                         }
                     }
                 }
             }
         }
-        put!("proxies", serde_yaml::to_value(proxies)?);
+        put!("proxies", serde_norway::to_value(proxies)?);
     }
 
     // 6) 零节点兜底：mihomo 拒绝 proxies 为空的代理组。
@@ -393,25 +399,25 @@ pub fn build_runtime_config(
                     .unwrap_or(true);
                 if is_empty {
                     gmap.insert(
-                        serde_yaml::Value::from("proxies"),
-                        serde_yaml::Value::Sequence(vec![serde_yaml::Value::from("DIRECT")]),
+                        serde_norway::Value::from("proxies"),
+                        serde_norway::Value::Sequence(vec![serde_norway::Value::from("DIRECT")]),
                     );
                 }
             }
         }
     }
-    put!("proxy-groups", serde_yaml::to_value(groups)?);
-    put!("rules", serde_yaml::to_value(app.rules.clone())?);
+    put!("proxy-groups", serde_norway::to_value(groups)?);
+    put!("rules", serde_norway::to_value(app.rules.clone())?);
 
     // rule-providers 兜底：订阅未提供时用 AppConfig 内置 5 组
     if !map.contains_key("rule-providers") {
         put!(
             "rule-providers",
-            serde_yaml::to_value(app.rule_providers.clone())?
+            serde_norway::to_value(app.rule_providers.clone())?
         );
     }
 
-    Ok(serde_yaml::Value::Mapping(map))
+    Ok(serde_norway::Value::Mapping(map))
 }
 
 #[cfg(test)]
@@ -868,7 +874,7 @@ proxies:
     #[test]
     fn build_runtime_config_imported_extra_proxies_inject_into_leaf_groups() {
         let mut app = Config::default();
-        let nodes: serde_yaml::Value = serde_yaml::from_str(
+        let nodes: serde_norway::Value = serde_norway::from_str(
             r#"
 proxies:
   - name: Imported
@@ -924,7 +930,7 @@ proxies:
     #[test]
     fn build_runtime_config_empty_profile_proxies_fall_back_to_extra() {
         let mut app = Config::default();
-        let nodes: serde_yaml::Value = serde_yaml::from_str(
+        let nodes: serde_norway::Value = serde_norway::from_str(
             "proxies:\n  - name: Imported\n    type: ss\n    server: 1.1.1.1\n    port: 8388\n    cipher: aes-128-gcm\n    password: x\n",
         )
         .unwrap();
@@ -951,7 +957,7 @@ proxies:
     #[test]
     fn build_runtime_config_profile_proxies_still_win_over_extra() {
         let mut app = Config::default();
-        let nodes: serde_yaml::Value = serde_yaml::from_str(
+        let nodes: serde_norway::Value = serde_norway::from_str(
             "proxies:\n  - name: Imported\n    type: ss\n    server: 1.1.1.1\n    port: 8388\n    cipher: aes-128-gcm\n    password: x\n",
         )
         .unwrap();
@@ -1020,12 +1026,12 @@ proxies:
     #[test]
     fn merge_rules_migrates_builtin_http_rule_providers() {
         let mut app = Config::default();
-        let old: serde_yaml::Value = serde_yaml::from_str(
+        let old: serde_norway::Value = serde_norway::from_str(
             "type: http\nbehavior: classical\nurl: https://raw.githubusercontent.com/akaspyrean/external/main/rules/ai.yaml\npath: ./rules/ai.yaml\ninterval: 86400\n",
         )
         .unwrap();
         app.rule_providers.insert("ai".into(), old);
-        let custom: serde_yaml::Value = serde_yaml::from_str(
+        let custom: serde_norway::Value = serde_norway::from_str(
             "type: http\nbehavior: domain\nurl: https://example.com/mine.yaml\npath: ./rules/mine.yaml\n",
         )
         .unwrap();

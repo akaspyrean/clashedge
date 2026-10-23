@@ -193,12 +193,12 @@ pub(super) async fn normalize_subscription_body(
     for w in &norm.warnings {
         warn!("Subscription normalization: {}", w);
     }
-    let mut m = serde_yaml::Mapping::new();
+    let mut m = serde_norway::Mapping::new();
     m.insert(
-        serde_yaml::Value::String("proxies".into()),
-        serde_yaml::Value::Sequence(norm.proxies),
+        serde_norway::Value::String("proxies".into()),
+        serde_norway::Value::Sequence(norm.proxies),
     );
-    let doc = serde_yaml::to_string(&serde_yaml::Value::Mapping(m))?;
+    let doc = serde_norway::to_string(&serde_norway::Value::Mapping(m))?;
     Ok((doc, norm.warnings))
 }
 

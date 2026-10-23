@@ -124,7 +124,7 @@ pub fn validate_content(rel: &str, path: &Path) -> Result<()> {
     if rel.ends_with(".yaml") {
         let text = std::fs::read_to_string(path)
             .map_err(|e| Error::Other(format!("{}: not valid UTF-8 text: {}", rel, e)))?;
-        let doc: serde_yaml::Value = serde_yaml::from_str(&text)
+        let doc: serde_norway::Value = serde_norway::from_str(&text)
             .map_err(|e| Error::Other(format!("{}: invalid YAML: {}", rel, e)))?;
         let ok = doc
             .get("payload")

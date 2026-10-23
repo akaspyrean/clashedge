@@ -68,7 +68,7 @@ pub fn read_active_profile(data_dir: &Path, config: &Config) -> Option<String> {
 pub fn write_runtime_config(data_dir: &Path, config: &Config) -> Result<(PathBuf, String)> {
     let profile = read_active_profile(data_dir, config);
     let runtime = build_runtime_config(config, profile.as_deref())?;
-    let yaml = serde_yaml::to_string(&runtime)?;
+    let yaml = serde_norway::to_string(&runtime)?;
     let path = runtime_config_path(data_dir);
     crate::util::atomic::atomic_write(&path, yaml.as_bytes())?;
     let digest = Sha256::digest(yaml.as_bytes());
