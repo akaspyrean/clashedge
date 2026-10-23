@@ -141,6 +141,7 @@ if (-not $Fast) {
   Set-Location $scaff
   npm run build
   Set-Location $repoRoot
+  }
 }
 
 # The C# launcher used to be compiled only at release time, so a compile error or
