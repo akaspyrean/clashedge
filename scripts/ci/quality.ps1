@@ -138,9 +138,11 @@ Invoke-Step 'npm test (Vitest unit + component tests)' {
 
 if (-not $Fast) {
   Invoke-Step 'npm run build' {
-  Set-Location $scaff
+    Set-Location $scaff
   npm run build
   Set-Location $repoRoot
+  }
+}
 }
 
 # The C# launcher used to be compiled only at release time, so a compile error or
