@@ -397,7 +397,7 @@ jobs:
           UNSIGNED="ClashEdge-android-$ver-unsigned.apk"
           SIGNED="ClashEdge-android-$ver.apk"
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > keystore.jks
-          apksigner sign --ks keystore.jks --ks-pass env:ANDROID_STORE_PASSWORD \
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign --ks keystore.jks --ks-pass env:ANDROID_STORE_PASSWORD \
             --ks-key-alias "$ANDROID_KEY_ALIAS" --key-pass env:ANDROID_KEY_PASSWORD \
             --out "$SIGNED" "$UNSIGNED"
           echo "Signed APK: $SIGNED"
