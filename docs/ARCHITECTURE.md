@@ -150,7 +150,6 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
 
 ## 已知债务（有意推迟，非遗忘）
 
-- `serde_yaml` 已归档（解析不可信订阅）：迁移需要统一的 YAML 封装层，单独排期。
 - 控制器仍走回环 TCP（已做：每次启动端口冲突自动改选、随机 secret、`no_proxy`）；Windows 命名管道
   需要自定义 hyper connector，后续评估。
 - 订阅 URL（含 token）仍明文保存在 `profiles/*.yaml` 头注释：DPAPI 加密会破坏"整体迁移到另一台机器"

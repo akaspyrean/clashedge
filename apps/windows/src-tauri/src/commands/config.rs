@@ -242,11 +242,11 @@ pub async fn export_config(app: AppHandle, state: State<'_, crate::AppState>) ->
     // 注意：节点密码（proxies 内 password/uuid 等）仍是敏感信息，导出后需妥善保管。
     if let Some(map) = runtime.as_mapping_mut() {
         map.insert(
-            serde_yaml::Value::String("secret".to_string()),
-            serde_yaml::Value::String("********".to_string()),
+            serde_norway::Value::String("secret".to_string()),
+            serde_norway::Value::String("********".to_string()),
         );
     }
-    let yaml = serde_yaml::to_string(&runtime)?;
+    let yaml = serde_norway::to_string(&runtime)?;
     let data_dir = crate::util::paths::get_app_data_dir(&app)?;
     let export_path = data_dir.join("config-export.yaml");
     crate::util::atomic::atomic_write(&export_path, yaml.as_bytes())?;
@@ -377,8 +377,8 @@ mod tests {
 
     fn config_with_extra(extra_yaml: &str) -> Config {
         let mut config = Config::default();
-        let value: serde_yaml::Value = serde_yaml::from_str(extra_yaml).unwrap();
-        if let serde_yaml::Value::Mapping(map) = value {
+        let value: serde_norway::Value = serde_norway::from_str(extra_yaml).unwrap();
+        if let serde_norway::Value::Mapping(map) = value {
             for (k, v) in map {
                 config.extra.insert(k, v);
             }

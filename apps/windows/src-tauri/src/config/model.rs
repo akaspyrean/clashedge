@@ -38,13 +38,13 @@ pub struct Config {
     /// 规则提供者（订阅来源；默认内置基线 5 组 direct/ai/media/proxy/ad，
     /// 保证无订阅时也有完整分流所需的 provider 定义，随包附带规则文件可离线加载）
     #[serde(default = "default_rule_providers")]
-    pub rule_providers: HashMap<String, serde_yaml::Value>,
+    pub rule_providers: HashMap<String, serde_norway::Value>,
 
     /// 代理组（内置基线 6 组：GLOBAL + 扶梯出行/人工智能/影音视听/人工优选/自动优选；
     /// GLOBAL 为全局模式专用组，仅在配置中存在、不参与代理页面展示；
     /// 订阅导入后由前端/导入流程填充具体节点）
     #[serde(default = "default_proxy_groups")]
-    pub proxy_groups: Vec<serde_yaml::Value>,
+    pub proxy_groups: Vec<serde_norway::Value>,
 
     /// 内置路由规则（内置基线，
     /// 保证无订阅时也有完整分流规则而非空配置；订阅规则由导入流程前置插入）
@@ -56,7 +56,7 @@ pub struct Config {
     /// 保存时原样写回，保证"导入 → 保存 → 重启"过程中未知字段不丢失。
     /// 这是 AppConfig 与 MihomoConfig 分离的字段保真基石。
     #[serde(default, flatten)]
-    pub extra: serde_yaml::Mapping,
+    pub extra: serde_norway::Mapping,
 }
 
 impl Default for Config {
@@ -71,7 +71,7 @@ impl Default for Config {
             rule_providers: default_rule_providers(),
             proxy_groups: default_proxy_groups(),
             rules: default_rules(),
-            extra: serde_yaml::Mapping::new(),
+            extra: serde_norway::Mapping::new(),
         }
     }
 }
@@ -110,12 +110,12 @@ pub struct GeneralConfig {
     pub ipv6: bool,
 
     /// GeoData 更新来源模式（应用级：manual / use-external / remote）。
-    /// 用 `serde_yaml::Value` 承载：订阅 / 导入的 mihomo 配置里 `geodata-mode`
+    /// 用 `serde_norway::Value` 承载：订阅 / 导入的 mihomo 配置里 `geodata-mode`
     /// 常是 bool（true/false）或 "metax"/"v2ray" 字符串——若建模为 String，
     /// `geodata-mode: true` 会使整份配置反序列化失败、触发迁移并丢配置。
     /// Value 类型可同时保真应用级字符串与 mihomo 语义值；应用读取用 `.as_str()`。
     #[serde(default = "default_geodata_mode")]
-    pub geodata_mode: serde_yaml::Value,
+    pub geodata_mode: serde_norway::Value,
 
     /// GeoData / 签名规则清单自动更新（启动后 90s 单次检查，>24h 才执行；
     /// 更新流先拉签名规则清单再补 GeoData）。默认开启。
@@ -162,8 +162,8 @@ fn default_mixed_port() -> u16 {
 fn default_log_level() -> String {
     "error".to_string()
 }
-pub(crate) fn default_geodata_mode() -> serde_yaml::Value {
-    serde_yaml::Value::String("manual".to_string())
+pub(crate) fn default_geodata_mode() -> serde_norway::Value {
+    serde_norway::Value::String("manual".to_string())
 }
 fn default_find_process_mode() -> String {
     "off".to_string()
@@ -512,15 +512,15 @@ pub const BUILTIN_RULE_SETS: &[&str] = &["direct", "ai", "media", "proxy", "ad"]
 /// 随包附带这些文件，离线也能加载；刷新由 `geodata::rules` 的**签名清单更新器**
 /// 负责（验签 + 逐文件 SHA256 + 回滚保护），不再让 mihomo 自行从 `main` 分支
 /// 浮动拉取未经校验的内容（审计 A4）。
-pub fn default_rule_providers() -> HashMap<String, serde_yaml::Value> {
+pub fn default_rule_providers() -> HashMap<String, serde_norway::Value> {
     BUILTIN_RULE_SETS
         .iter()
         .map(|name| (name.to_string(), builtin_rule_provider(name)))
         .collect()
 }
 
-fn builtin_rule_provider(name: &str) -> serde_yaml::Value {
-    serde_yaml::from_str(&format!(
+fn builtin_rule_provider(name: &str) -> serde_norway::Value {
+    serde_norway::from_str(&format!(
         "type: file\nbehavior: classical\npath: ./rules/{}.yaml\n",
         name
     ))
@@ -530,7 +530,9 @@ fn builtin_rule_provider(name: &str) -> serde_yaml::Value {
 /// 把旧配置里持久化的内置 `type: http` 规则集（指向外部仓库 main 分支）迁移为本地
 /// `type: file`。用户自定义的其它规则集、以及指向别处的同名 provider 保持原样。
 /// 返回是否发生了迁移。
-pub fn migrate_builtin_rule_providers(providers: &mut HashMap<String, serde_yaml::Value>) -> bool {
+pub fn migrate_builtin_rule_providers(
+    providers: &mut HashMap<String, serde_norway::Value>,
+) -> bool {
     let mut changed = false;
     for name in BUILTIN_RULE_SETS {
         let Some(v) = providers.get(*name) else {
@@ -567,7 +569,7 @@ pub fn migrate_builtin_rule_providers(providers: &mut HashMap<String, serde_yaml
 /// 永久霸占自动组，所有真实节点永远拿不到流量。故订阅注入时只放真实节点名。
 /// mihomo（v1.19.x）拒绝 proxies 为空的代理组，无订阅时的空列表由
 /// `build_runtime_config` 在生成运行时配置时补 DIRECT 占位（仅零节点状态）。
-pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
+pub fn default_proxy_groups() -> Vec<serde_norway::Value> {
     const YAML: &str = r#"
 - name: GLOBAL
   type: select
@@ -598,7 +600,7 @@ pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
   timeout: 5000
   proxies: []
 "#;
-    serde_yaml::from_str(YAML).unwrap_or_default()
+    serde_norway::from_str(YAML).unwrap_or_default()
 }
 
 /// 内置代理组迁移：把持久化配置里的六个内置组重置为当前基线定义。
@@ -606,7 +608,7 @@ pub fn default_proxy_groups() -> Vec<serde_yaml::Value> {
 /// 旧版本持久化的过时骨架（如 扶梯出行=[人工优选, 自动优选]）会使默认选中项
 /// 偏离规格（扶梯出行应默认自动优选），一律以当前 `default_proxy_groups` 覆盖。
 /// 同名自定义组不受影响；缺失的内置组补回列表尾部。返回是否发生了迁移。
-pub fn migrate_builtin_proxy_groups(groups: &mut Vec<serde_yaml::Value>) -> bool {
+pub fn migrate_builtin_proxy_groups(groups: &mut Vec<serde_norway::Value>) -> bool {
     let mut changed = false;
     for d in default_proxy_groups() {
         let Some(name) = d.get("name").and_then(|n| n.as_str()).map(str::to_string) else {
@@ -658,7 +660,7 @@ mod tests {
     /// 缺失的内置组补回，同名自定义组不受影响，且迁移幂等。
     #[test]
     fn migrate_builtin_proxy_groups_restores_current_baseline() {
-        let mut groups: Vec<serde_yaml::Value> = serde_yaml::from_str(
+        let mut groups: Vec<serde_norway::Value> = serde_norway::from_str(
             r#"
 - name: 扶梯出行
   type: select
@@ -716,11 +718,11 @@ secret: b1616fdd-63a8-44e9-b196-c63b68307a9b
 log-level: error
 "#;
 
-        let config: Config = serde_yaml::from_str(legacy_yaml).expect("parse legacy yaml");
+        let config: Config = serde_norway::from_str(legacy_yaml).expect("parse legacy yaml");
         assert_eq!(config.proxy.external_controller, "127.0.0.1:50715");
         assert_eq!(config.proxy.secret, "b1616fdd-63a8-44e9-b196-c63b68307a9b");
 
-        let yaml = serde_yaml::to_string(&config).expect("serialize");
+        let yaml = serde_norway::to_string(&config).expect("serialize");
         assert!(
             yaml.contains("external-controller: 127.0.0.1:50715"),
             "expected top-level external-controller in:\n{}",
@@ -740,7 +742,7 @@ log-level: error
         );
 
         // 再解析一次，验证可循环（应用重载/重启路径）
-        let again: Config = serde_yaml::from_str(&yaml).expect("re-parse round-tripped yaml");
+        let again: Config = serde_norway::from_str(&yaml).expect("re-parse round-tripped yaml");
         assert_eq!(again.proxy.external_controller, "127.0.0.1:50715");
         assert_eq!(again.proxy.secret, "b1616fdd-63a8-44e9-b196-c63b68307a9b");
     }
@@ -769,7 +771,7 @@ hosts:
   example.com: 1.2.3.4
 "#;
 
-        let config: Config = serde_yaml::from_str(yaml).expect("parse");
+        let config: Config = serde_norway::from_str(yaml).expect("parse");
         assert!(
             config.extra.contains_key("proxies"),
             "proxies must be caught by extra"
@@ -788,8 +790,8 @@ hosts:
         );
 
         // 往返：保存后再解析，未知键与内容完整
-        let out = serde_yaml::to_string(&config).expect("serialize");
-        let again: Config = serde_yaml::from_str(&out).expect("re-parse");
+        let out = serde_norway::to_string(&config).expect("serialize");
+        let again: Config = serde_norway::from_str(&out).expect("re-parse");
         let proxies = again.extra.get("proxies").unwrap().as_sequence().unwrap();
         assert_eq!(proxies.len(), 1);
         assert_eq!(
@@ -803,10 +805,10 @@ hosts:
     #[test]
     fn legacy_proxy_mode_alias_parses() {
         let yaml = "proxy-mode: global\nmixed-port: 7890\n";
-        let config: Config = serde_yaml::from_str(yaml).expect("parse alias");
+        let config: Config = serde_norway::from_str(yaml).expect("parse alias");
         assert_eq!(config.general.proxy_mode, "global");
         // 序列化应写出新键 `mode`，而非旧的 `proxy-mode`
-        let out = serde_yaml::to_string(&config).expect("serialize");
+        let out = serde_norway::to_string(&config).expect("serialize");
         assert!(
             out.lines().any(|l| l == "mode: global"),
             "writes mode key:\n{}",
@@ -824,16 +826,16 @@ hosts:
     #[test]
     fn geodata_mode_tolerates_mihomo_bool() {
         let yaml = "geodata-mode: true\nmixed-port: 7890\n";
-        let config: Config = serde_yaml::from_str(yaml).expect("parse bool geodata-mode");
+        let config: Config = serde_norway::from_str(yaml).expect("parse bool geodata-mode");
         assert_eq!(config.general.geodata_mode.as_bool(), Some(true));
 
-        let out = serde_yaml::to_string(&config).expect("serialize");
-        let again: Config = serde_yaml::from_str(&out).expect("re-parse");
+        let out = serde_norway::to_string(&config).expect("serialize");
+        let again: Config = serde_norway::from_str(&out).expect("re-parse");
         assert_eq!(again.general.geodata_mode.as_bool(), Some(true));
 
         // 应用级字符串值
         let yaml2 = "geodata-mode: manual\n";
-        let config2: Config = serde_yaml::from_str(yaml2).expect("parse string geodata-mode");
+        let config2: Config = serde_norway::from_str(yaml2).expect("parse string geodata-mode");
         assert_eq!(config2.general.geodata_mode.as_str(), Some("manual"));
     }
 
@@ -875,7 +877,7 @@ hosts:
     #[test]
     fn tun_missing_dns_hijack_fills_default_but_preserves_existing() {
         // 缺字段：填充默认
-        let config: TunConfig = serde_yaml::from_str("enable: true\nstack: mixed\n").unwrap();
+        let config: TunConfig = serde_norway::from_str("enable: true\nstack: mixed\n").unwrap();
         assert_eq!(
             config.dns_hijack,
             vec!["any:53".to_string(), "tcp://any:53".to_string()]
@@ -883,7 +885,7 @@ hosts:
 
         // 已有自定义值：保留
         let config: TunConfig =
-            serde_yaml::from_str("enable: true\nstack: gvisor\ndns-hijack:\n  - 1.1.1.1:53\n")
+            serde_norway::from_str("enable: true\nstack: gvisor\ndns-hijack:\n  - 1.1.1.1:53\n")
                 .unwrap();
         assert_eq!(config.dns_hijack, vec!["1.1.1.1:53".to_string()]);
     }
@@ -921,7 +923,7 @@ hosts:
         );
 
         // 序列化到 config.yaml 的键必须是 mihomo 顶层键
-        let yaml = serde_yaml::to_string(&config).unwrap();
+        let yaml = serde_norway::to_string(&config).unwrap();
         for key in ["rules:", "proxy-groups:", "rule-providers:"] {
             assert!(
                 yaml.lines().any(|l| l == key),
