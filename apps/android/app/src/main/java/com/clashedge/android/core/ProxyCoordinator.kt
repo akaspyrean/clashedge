@@ -13,6 +13,7 @@ import com.clashedge.android.model.ProxyGroup
 import com.clashedge.android.repository.ProfileRepository
 import com.clashedge.android.service.ProxyForegroundService
 import com.clashedge.android.util.Logger
+import com.clashedge.android.vpn.ClashVpnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

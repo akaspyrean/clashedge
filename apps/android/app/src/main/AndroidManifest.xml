@@ -8,8 +8,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- VPN setup confirmation is requested by the UI before the service starts. -->
-    <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
+    <!-- NOTE: BIND_VPN_SERVICE is NOT declared here on purpose - it is a
+         signature/privileged permission and lint errors on <uses-permission>;
+         the VpnService binding right is granted by declaring
+         android:permission="android.permission.BIND_VPN_SERVICE" on
+         .vpn.ClashVpnService below (see https://developer.android.com/guide/topics/connectivity/vpn). -->
 
     <application
         android:name=".ClashEdgeApp"
