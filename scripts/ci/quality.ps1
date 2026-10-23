@@ -143,7 +143,6 @@ if (-not $Fast) {
   Set-Location $repoRoot
   }
 }
-}
 
 # The C# launcher used to be compiled only at release time, so a compile error or
 # a recovery regression was discovered while cutting a release. Build it and run
