@@ -52,7 +52,10 @@ class ProfileRepository(
             ?: _profiles.value.firstOrNull()
     }
 
-    suspend fun select(id: String) = appConfig.setActiveProfile(id)
+    suspend fun select(id: String): Result<Unit> = runCatching {
+        appConfig.setActiveProfile(id)
+        Logger.info("selected profile $id")
+    }
 
     suspend fun activeNodes(): List<Node> = activeProfile()?.nodes().orEmpty()
 
