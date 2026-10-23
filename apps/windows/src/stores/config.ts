@@ -28,6 +28,8 @@ export const useConfigStore = defineStore("config", {
     systemProxy: (s) => s.config?.["system-proxy"] ?? false,
     locale: (s) => s.config?.locale ?? "zh-CN",
     tunEnabled: (s) => s.config?.tun?.enable ?? false,
+    /** 激活中的 Profile 名（空 = 内置 DIRECT 预设）。 */
+    activeProfile: (s) => s.config?.profile ?? "DIRECT",
   },
   actions: {
     async load() {

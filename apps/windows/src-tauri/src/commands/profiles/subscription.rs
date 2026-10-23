@@ -193,12 +193,12 @@ pub(super) async fn normalize_subscription_body(
     for w in &norm.warnings {
         warn!("Subscription normalization: {}", w);
     }
-    let mut m = serde_yaml::Mapping::new();
+    let mut m = serde_norway::Mapping::new();
     m.insert(
-        serde_yaml::Value::String("proxies".into()),
-        serde_yaml::Value::Sequence(norm.proxies),
+        serde_norway::Value::String("proxies".into()),
+        serde_norway::Value::Sequence(norm.proxies),
     );
-    let doc = serde_yaml::to_string(&serde_yaml::Value::Mapping(m))?;
+    let doc = serde_norway::to_string(&serde_norway::Value::Mapping(m))?;
     Ok((doc, norm.warnings))
 }
 
@@ -468,6 +468,87 @@ fn select_stale_subscriptions(
         .collect()
 }
 
+/// 立即刷新**全部**带订阅地址的 Profile（忽略 mtime / 24h 过期阈值）。
+///
+/// 用于「所有节点都超时 → 立即拉取最新订阅」的自愈路径：
+/// 节点全挂通常是订阅过期（机场换端口/清空节点）所致，等 24h 太慢。
+///
+/// 逐个串行刷新（对上游友好，不并发打爆订阅服务器）；单个失败仅记 warn
+/// 不中断其余。返回成功刷新的数量。
+pub async fn refresh_all_subscriptions(app: &AppHandle) -> usize {
+    let profiles_dir = match get_profiles_dir(app) {
+        Ok(dir) => dir,
+        Err(e) => {
+            warn!(
+                "Forced subscription refresh skipped: cannot resolve profiles dir: {}",
+                e
+            );
+            return 0;
+        }
+    };
+    if !profiles_dir.exists() {
+        return 0;
+    }
+    let entries = match std::fs::read_dir(&profiles_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(
+                "Forced subscription refresh skipped: cannot read {:?}: {}",
+                profiles_dir, e
+            );
+            return 0;
+        }
+    };
+
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        // 只刷新"有订阅地址"的 Profile（本地配置没有可拉取的源）
+        if extract_subscribe_url(&read_profile_head(&path)).is_none() {
+            continue;
+        }
+        names.push(name);
+    }
+    names.sort();
+
+    let mut ok_count = 0usize;
+    for name in names {
+        info!(
+            "Forced subscription refresh (all nodes timed out): {}",
+            name
+        );
+        let outcome = refresh_subscription(app, &name).await;
+        match &outcome {
+            Ok(()) => ok_count += 1,
+            Err(e) => warn!("Forced subscription refresh failed for '{}': {}", name, e),
+        }
+        if let Ok(data_dir) = crate::util::paths::get_app_data_dir(app) {
+            let (ok, err) = match &outcome {
+                Ok(()) => (true, String::new()),
+                Err(e) => (false, e.to_string()),
+            };
+            crate::util::update_status::record(
+                &data_dir,
+                &crate::util::update_status::subscription_key(&name),
+                ok,
+                &err,
+            );
+        }
+    }
+    ok_count
+}
+
 /// 启动时一次性静默刷新过期订阅：遍历 profiles 目录，mtime 距今超过 24h
 /// 且含订阅头的 .yaml 逐个串行刷新；单个失败仅 warn 不中断其他。
 /// 无常驻定时器/循环——本函数执行完即返回，由调用方在启动流程末尾
@@ -529,8 +610,22 @@ pub async fn auto_refresh_stale_subscriptions(app: &AppHandle) {
     let stale = select_stale_subscriptions(candidates, std::time::SystemTime::now());
     for name in stale {
         info!("Auto refreshing stale subscription: {}", name);
-        if let Err(e) = refresh_subscription(app, &name).await {
+        let outcome = refresh_subscription(app, &name).await;
+        if let Err(e) = &outcome {
             warn!("Auto subscription refresh failed for '{}': {}", name, e);
+        }
+        // 记录每个订阅的自动刷新结果（成功/失败 + 时间），供首页展示。
+        if let Ok(data_dir) = crate::util::paths::get_app_data_dir(app) {
+            let (ok, err) = match &outcome {
+                Ok(()) => (true, String::new()),
+                Err(e) => (false, e.to_string()),
+            };
+            crate::util::update_status::record(
+                &data_dir,
+                &crate::util::update_status::subscription_key(&name),
+                ok,
+                &err,
+            );
         }
     }
 }

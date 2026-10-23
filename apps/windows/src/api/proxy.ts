@@ -8,6 +8,8 @@ export interface ProxyGroup {
   type: string;
   now: string;
   all: string[];
+  /** 节点名 → 地区（后端按节点名推断；识别不到的节点不会出现在表里）。 */
+  regions?: Record<string, string>;
 }
 
 export interface DelayResult {
@@ -27,4 +29,12 @@ export const proxyApi = {
   getGroups: () => invoke<ProxyGroup[]>("get_proxy_groups"),
   select: (group: string, proxy: string) =>
     invoke<void>("select_proxy_group", { group, proxy }),
+  /**
+   * 通知后端"所有节点都超时了" → 立即拉取全部订阅（自愈）。
+   * 后端自带冷却限流，重复调用不会打爆订阅服务器。
+   */
+  reportAllNodesTimeout: () =>
+    invoke<{ triggered: boolean; refreshed: number; reason: string }>(
+      "trigger_subscription_refresh",
+    ),
 };

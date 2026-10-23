@@ -288,6 +288,15 @@ fn mihomo_missing_error(app_handle: &tauri::AppHandle) -> Error {
     Error::NotFound(mihomo_missing_hint(app_handle))
 }
 
+/// 测试用：返回当前由环境变量解析出的数据目录（无则 None）。
+///
+/// 供 `util::elevation` 的回归测试断言「提权重启携带的数据目录确实被
+/// 路径模块识别」，避免提权实例退化成安装版判定（配置/订阅看似丢失）。
+#[cfg(test)]
+pub fn get_app_data_dir_for_test() -> Option<PathBuf> {
+    env_data_dir()
+}
+
 /// 获取配置文件目录
 pub fn get_profiles_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
     let data_dir = get_app_data_dir(app_handle)?;

@@ -210,6 +210,7 @@ pub fn verify_manifest_signature(
 /// 下载 `.minisig` 签名文件文本。缺失（HTTP 失败/非成功码）一律 Err——
 /// 未签名清单不可接受。
 async fn fetch_signature_text(app: &tauri::AppHandle) -> Result<String> {
+    const MAX_SIGNATURE_BYTES: u64 = 4096; // minisig 签名通常 < 1 KB
     let sig_url = format!("{}.minisig", UPDATE_ENDPOINT);
     let resp = crate::util::fetch::get_direct_first(app, &sig_url).await?;
     if !resp.status().is_success() {
@@ -218,8 +219,18 @@ async fn fetch_signature_text(app: &tauri::AppHandle) -> Result<String> {
             resp.status()
         )));
     }
-    resp.text()
+    let sig_bytes = resp
+        .bytes()
         .await
+        .map_err(|e| Error::Other(format!("invalid update manifest signature read: {}", e)))?;
+    if sig_bytes.len() as u64 > MAX_SIGNATURE_BYTES {
+        return Err(Error::Other(format!(
+            "update manifest signature too large: {} bytes (limit {} bytes)",
+            sig_bytes.len(),
+            MAX_SIGNATURE_BYTES
+        )));
+    }
+    String::from_utf8(sig_bytes.to_vec())
         .map_err(|e| Error::Other(format!("invalid update manifest signature: {}", e)))
 }
 
@@ -240,10 +251,19 @@ pub async fn check_for_update(app: &tauri::AppHandle) -> Result<CheckOutcome> {
             resp.status()
         )));
     }
+    // 限制 manifest body 大小（清单通常 < 10 KB）
+    const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
     let manifest_bytes = resp
         .bytes()
         .await
         .map_err(|e| Error::Other(format!("update manifest read failed: {}", e)))?;
+    if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(Error::Other(format!(
+            "update manifest too large: {} bytes (limit {} bytes)",
+            manifest_bytes.len(),
+            MAX_MANIFEST_BYTES
+        )));
+    }
 
     // 先验签，再解析内容——未通过信任链的 manifest 内容一律不看。
     let sig_text = fetch_signature_text(app).await?;
@@ -254,6 +274,12 @@ pub async fn check_for_update(app: &tauri::AppHandle) -> Result<CheckOutcome> {
     if manifest.url.is_empty() || manifest.sha256.len() != 64 {
         return Err(Error::Other(
             "update manifest missing url or sha256".to_string(),
+        ));
+    }
+    // sha256 必须是纯十六进制（0-9a-f），防止非十六进制字符串仅靠长度绕过
+    if !manifest.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Error::Other(
+            "update manifest sha256 is not valid hexadecimal".to_string(),
         ));
     }
     if !manifest.url.starts_with(DOWNLOAD_URL_PREFIX) {
@@ -317,7 +343,7 @@ fn guard_against_rollback(app: &tauri::AppHandle, version: &str) -> Result<()> {
         _ => version.to_string(),
     };
     let body = serde_json::json!({ "highest_version": record });
-    let _ = crate::util::atomic::atomic_write(&path, body.to_string().as_bytes());
+    crate::util::atomic::atomic_write(&path, body.to_string().as_bytes())?;
     Ok(())
 }
 

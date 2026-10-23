@@ -66,6 +66,7 @@ fun HomeScreen(
         }
 
         val running = state == ConnectionState.RUNNING
+        val busy = state == ConnectionState.STARTING || state == ConnectionState.STOPPING
         if (running) {
             Button(
                 onClick = onStopProxy,
@@ -77,7 +78,7 @@ fun HomeScreen(
                 Text(stringResource(R.string.stop_proxy))
             }
         } else {
-            CePrimaryButton(onClick = onStartProxy) {
+            CePrimaryButton(onClick = onStartProxy, enabled = !busy) {
                 Text(stringResource(R.string.start_proxy))
             }
         }
