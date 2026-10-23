@@ -420,10 +420,8 @@ jobs:
           ver="${{ needs.prepare.outputs.version }}"
           cd release
           src="ClashEdge-android-$ver.apk"
-          dst="ClashEdge-android-$ver.apk"
-          cp "$src" "$dst"
-          sha256sum "$dst" | awk '{print $1}' > "$dst.sha256"
-          echo "APK (signed): $dst ($(du -h "$dst" | cut -f1))"
+          sha256sum "$src" | awk '{print $1}' > "$src.sha256"
+          echo "APK (signed): $src ($(du -h "$src" | cut -f1))"
 
       - name: Upload signed Android artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
