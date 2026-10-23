@@ -4,11 +4,12 @@
 #   lint-test  — fast gate for every push/PR (fmt, clippy, test, npm test,
 #                design tokens, colour check, npm audit, android guard).
 #                Skips cargo-audit/deny install, npm build, launcher compile.
-#   build      — full gate only on push to main (everything in quality.ps1).
+#   build      — full gate on push to main and on PRs (everything in quality.ps1).
 #                Release uses its own quality job (release.yml calls quality.ps1
 #                without -Fast).
 #
 # push 仅限分支触发（branches: ["**"]）——tag push 不重复跑 CI。
+# concurrency 以 head_ref/ref_name 归组，PR 事件取消同分支 push 的重复 run。
 
 name: CI
 
@@ -21,12 +22,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   lint-test:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -52,7 +53,7 @@ jobs:
         run: .\scripts\ci\quality.ps1 -Fast
 
   build:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request'
     needs: lint-test
     runs-on: windows-latest
     timeout-minutes: 30
