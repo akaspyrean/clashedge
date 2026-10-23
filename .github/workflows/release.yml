@@ -297,18 +297,31 @@ jobs:
           "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null
 
       # Stage the pinned rule set (direct/proxy/media/ai/ad) into the Android
-      # app assets. These are the same URLs pinned in assets.lock.json; we
-      # download them directly because scripts/assets/prepare.ps1 uses
-      # Windows-style path separators that break on Linux.
-      - name: Stage rule assets into Android app
+      # app assets. Commit and SHA256 pins come from assets.lock.json (the same
+      # single source the Windows lane uses through prepare.ps1); raw URLs with
+      # a commit sha are immutable. Windows-style path separators inside
+      # prepare.ps1 break on Linux, so staging + verification are inlined here
+      # instead of calling it.
+      - name: Stage rule assets into Android app (hash-verified)
         run: |
           set -e
           dst="apps/android/app/src/main/assets/rules"
           mkdir -p "$dst"
-          base="https://raw.githubusercontent.com/akaspyrean/external/cbee39d359c3e466f03cf485ecd112fd63a5872c/rules"
+          commit=$(jq -r '.assets[] | select(.name == "rule-direct") | .version' assets.lock.json | sed 's/^external@//')
+          if [ -z "$commit" ]; then echo "rule-direct commit missing from assets.lock.json"; exit 1; fi
+          base="https://raw.githubusercontent.com/akaspyrean/external/$commit/rules"
           for f in direct proxy media ai ad; do
+            expected=$(jq -r --arg key "rule-$f" '.assets[] | select(.name == $key) | .sha256' assets.lock.json)
+            if [ -z "$expected" ]; then echo "sha256 pin missing for rule-$f in assets.lock.json"; exit 1; fi
             curl -fsSL "$base/$f.yaml" -o "$dst/$f.yaml"
-            echo "  staged: $dst/$f.yaml ($(wc -c < "$dst/$f.yaml") bytes)"
+            actual=$(sha256sum "$dst/$f.yaml" | awk '{print $1}')
+            if [ "$actual" != "$expected" ]; then
+              echo "  MISMATCH $dst/$f.yaml ($base/$f.yaml)"
+              echo "    expected: $expected"
+              echo "    actual:   $actual"
+              exit 1
+            fi
+            echo "  staged: $dst/$f.yaml ($(wc -c < "$dst/$f.yaml") bytes, sha256 verified)"
           done
 
       - name: Build unsigned release APK
