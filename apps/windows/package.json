@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "tokens": "node ../../scripts/tokens/build.mjs"
+    "tokens": "node ../../scripts/tokens/build.mjs",
+    "i18n": "node ../../scripts/i18n/build.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

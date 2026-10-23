@@ -117,6 +117,25 @@ Invoke-Step 'design tokens are up to date (npm run tokens)' {
   }
 }
 
+# Android strings share the same single-source contract: resources/i18n/*.yaml
+# (android: section) is the only editable source; values{,-zh}/strings.xml are
+# generated output and hand edits must be rejected by this drift check.
+Invoke-Step 'android strings are up to date (npm run i18n)' {
+  $generated = @(
+    (Join-Path $repoRoot 'apps\android\app\src\main\res\values\strings.xml'),
+    (Join-Path $repoRoot 'apps\android\app\src\main\res\values-zh\strings.xml')
+  )
+  Set-Location $scaff
+  npm run i18n
+  Set-Location $repoRoot
+  if ($LASTEXITCODE -ne 0) { return }
+  git diff --exit-code -- $generated
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Generated strings.xml changed after npm run i18n. Commit the regenerated output (do not edit values*/strings.xml by hand)." -ForegroundColor Red
+    $global:LASTEXITCODE = 1
+  }
+}
+
 # Views and components may only reference --ce-* tokens: no hex or rgb()/rgba() literals.
 Invoke-Step 'no colour literals in views / components' {
   $src = Join-Path $scaff 'src'

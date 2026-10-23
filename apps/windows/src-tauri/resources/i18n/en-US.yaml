@@ -450,6 +450,53 @@ common:
   success: "Success"
   warning: "Warning"
   info: "Info"
+# Android-only strings: scripts/i18n/build.mjs generates
+# apps/android/.../values{,-zh}/strings.xml from this section
+# (CI drift gate rejects hand edits to the generated files).
+# Dotted keys map mechanically to resource names (a.b -> a_b, dots
+# dropped): status.disconnected -> status_disconnected. Leaf key names
+# are the second half of the resource name — when renaming here,
+# check the R.string.* references in apps/android accordingly.
+android:
+  app_name: "ClashEdge"
+
+  status:
+    disconnected: "Disconnected"
+    connecting: "Connecting…"
+    connected: "Connected"
+    stopping: "Stopping…"
+    error: "Error"
+  start_proxy: "Start"
+  stop_proxy: "Stop"
+
+  nav:
+    home: "Home"
+    proxies: "Proxies"
+    profiles: "Subscriptions"
+    more: "More"
+    logs: "Logs"
+    settings: "Settings"
+
+  mode:
+    rule: "Rule"
+    global: "Global"
+    direct: "Direct"
+
+  # These keys mirror the existing R.string.* resource names exactly;
+  # renaming requires updating Android references in lockstep.
+  import_subscription: "Add Subscription"
+  update_subscription: "Update"
+  subscription:
+    url_hint: "https://…"
+    imported: "Subscription imported"
+    import_failed: "Import failed: %1$s"
+
+  vpn_permission_required: "VPN permission is required to start the proxy"
+  service_killed: "The proxy core was stopped by the system"
+  core_start_failed: "Failed to start the proxy core"
+  config_corrupt: "Configuration is damaged and has been restored"
+  network_changed: "Network changed, restarting proxy"
+
 errors:
   network: "Network request failed. Check your network or proxy and try again"
   port_busy: "Port is already in use. Change the mixed port in Settings and try again"
