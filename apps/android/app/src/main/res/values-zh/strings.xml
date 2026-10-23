@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- AUTO-GENERATED — do not edit.
+     Source: apps/windows/src-tauri/resources/i18n/zh-CN.yaml (android:)  ·  Generator: scripts/i18n/build.mjs  ·  Run: npm run i18n (apps/windows) -->
 <resources>
     <string name="app_name">ClashEdge</string>
-
-    <!-- Status -->
     <string name="status_disconnected">已断开</string>
     <string name="status_connecting">连接中…</string>
     <string name="status_connected">已连接</string>
@@ -10,28 +10,20 @@
     <string name="status_error">错误</string>
     <string name="start_proxy">启动</string>
     <string name="stop_proxy">停止</string>
-
-    <!-- Navigation -->
     <string name="nav_home">首页</string>
     <string name="nav_proxies">代理</string>
     <string name="nav_profiles">订阅</string>
     <string name="nav_more">更多</string>
     <string name="nav_logs">日志</string>
     <string name="nav_settings">设置</string>
-
-    <!-- Mode -->
     <string name="mode_rule">规则</string>
     <string name="mode_global">全局</string>
     <string name="mode_direct">直连</string>
-
-    <!-- Subscription -->
     <string name="import_subscription">添加订阅</string>
     <string name="update_subscription">更新</string>
     <string name="subscription_url_hint">https://…</string>
     <string name="subscription_imported">订阅导入成功</string>
     <string name="subscription_import_failed">导入失败：%1$s</string>
-
-    <!-- Errors / safety -->
     <string name="vpn_permission_required">启动代理需要 VPN 权限</string>
     <string name="service_killed">代理核心已被系统停止</string>
     <string name="core_start_failed">代理核心启动失败</string>

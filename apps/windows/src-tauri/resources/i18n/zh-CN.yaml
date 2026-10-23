@@ -450,6 +450,50 @@ common:
   success: "成功"
   warning: "警告"
   info: "信息"
+# Android 端专用文案：scripts/i18n/build.mjs 以此生成
+# apps/android/.../values{,-zh}/strings.xml（CI 漂移门拒绝手改生成物）。
+# 点分 key 机械映射为资源名（a.b → a_b，点删除），如 status.disconnected
+# → status_disconnected；叶子键名即资源名的后半段——重命名此处应
+# 同步检视 apps/android 的 R.string.* 引用。文案统一改此段。
+android:
+  app_name: "ClashEdge"
+
+  status:
+    disconnected: "已断开"
+    connecting: "连接中…"
+    connected: "已连接"
+    stopping: "停止中…"
+    error: "错误"
+  start_proxy: "启动"
+  stop_proxy: "停止"
+
+  nav:
+    home: "首页"
+    proxies: "代理"
+    profiles: "订阅"
+    more: "更多"
+    logs: "日志"
+    settings: "设置"
+
+  mode:
+    rule: "规则"
+    global: "全局"
+    direct: "直连"
+
+  # 以下 key 与现有 R.string.* 资源名严格对应；改名需同步 Android 引用。
+  import_subscription: "添加订阅"
+  update_subscription: "更新"
+  subscription:
+    url_hint: "https://…"
+    imported: "订阅导入成功"
+    import_failed: "导入失败：%1$s"
+
+  vpn_permission_required: "启动代理需要 VPN 权限"
+  service_killed: "代理核心已被系统停止"
+  core_start_failed: "代理核心启动失败"
+  config_corrupt: "配置已损坏，已自动恢复"
+  network_changed: "网络已切换，正在重启代理"
+
 errors:
   network: "网络请求失败。请检查网络或代理后重试"
   port_busy: "端口被占用。请在设置中更换混合端口后重试"
