@@ -15,7 +15,8 @@
 [CmdletBinding()]
 param(
   [switch]$SkipCargoAudit,
-  [switch]$SkipLauncher
+  [switch]$SkipLauncher,
+  [switch]$Fast
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,7 +67,7 @@ Invoke-Step 'cargo test' {
   Set-Location $repoRoot
 }
 
-if (-not $SkipCargoAudit) {
+if (-not $SkipCargoAudit -and -not $Fast) {
   Invoke-Step 'cargo audit (known vulnerabilities)' {
     Set-Location $srcTauri
     # Install only when missing (a fresh `cargo install` on every run costs minutes).
@@ -78,7 +79,7 @@ if (-not $SkipCargoAudit) {
   }
 }
 
-if (-not $SkipCargoAudit) {
+if (-not $SkipCargoAudit -and -not $Fast) {
   Invoke-Step 'cargo deny (licenses / bans / sources)' {
     Set-Location $srcTauri
     if (-not (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {
@@ -135,16 +136,18 @@ Invoke-Step 'npm test (Vitest unit + component tests)' {
   Set-Location $repoRoot
 }
 
-Invoke-Step 'npm run build' {
+if (-not $Fast) {
+  Invoke-Step 'npm run build' {
   Set-Location $scaff
   npm run build
   Set-Location $repoRoot
+  }
 }
 
 # The C# launcher used to be compiled only at release time, so a compile error or
 # a recovery regression was discovered while cutting a release. Build it and run
 # its fault-injection tests in the same gate as everything else.
-if (-not $SkipLauncher) {
+if (-not $SkipLauncher -and -not $Fast) {
   Invoke-Step 'launcher compile + recovery tests' {
     $csc = Get-ChildItem "C:\Windows\Microsoft.NET\Framework64" -Filter "csc.exe" -Recurse -ErrorAction SilentlyContinue |
            Sort-Object FullName -Descending | Select-Object -First 1

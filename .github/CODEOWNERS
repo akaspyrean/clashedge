@@ -1,0 +1,25 @@
+# CODEOWNERS — automatic reviewer assignment.
+# Currently a solo project; update as collaborators join.
+
+# Default: repo owner reviews everything
+* @akaspyrean
+
+# CI and release pipeline changes deserve extra scrutiny
+/.github/workflows/ @akaspyrean
+
+# Release scripts (signing, manifest, build)
+/scripts/release/ @akaspyrean
+/scripts/windows/  @akaspyrean
+/scripts/ci/       @akaspyrean
+
+# Android-specific
+/apps/android/ @akaspyrean
+
+# Windows Rust core
+/apps/windows/src-tauri/src/ @akaspyrean
+
+# Design system (tokens source of truth)
+/design/ @akaspyrean
+
+# Security policy
+/SECURITY.md @akaspyrean
