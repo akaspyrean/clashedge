@@ -64,7 +64,7 @@ directories = "5"
 once_cell = "1.19"
 parking_lot = "0.12"
 ipnet = "2"
-base64 = "0.21"
+base64 = "0.22"
 rand = "0.8"
 # Portable Updater 更新包完整性校验（SHA256，Cargo.lock 锁 0.10.9）
 sha2 = "0.10"
