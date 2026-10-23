@@ -1,0 +1,61 @@
+香港	hong kong,hongkong,hkg,hk,港,香港
+澳门	macao,macau,mof,mo,澳门,澳門
+台湾	taiwan,tw,台,台湾,臺灣
+日本	japan,tokyo,osaka,nagoya,fukuoka,sapporo,nrt,hnd,kix,fuk,cts,itm,jp,日,日本,东京,大阪,名古屋,福冈,札幌
+韩国	korea,south korea,seoul,busan,incheon,icn,kr,韩,韩国,首尔,釜山,仁川
+新加坡	singapore,sin,sg,新,新加坡
+美国	united states,united states of america,usa,los angeles,san francisco,new york,seattle,chicago,dallas,houston,miami,atlanta,boston,washington,phoenix,denver,las vegas,san jose,san diego,portland,buffalo,tucson,philadelphia,honolulu,lax,sfo,jfk,ord,dfw,atl,mia,sea,iad,bos,den,phx,las,mco,dtw,ewr,clt,sjd,us,美,美国,洛杉矶,圣何塞,旧金山,纽约,西雅图,芝加哥,达拉斯,休斯顿,迈阿密,亚特兰大,波士顿,华盛顿,凤凰城,丹佛,拉斯维加斯,圣迭戈,波特兰,费利蒙
+英国	united kingdom,great britain,england,scotland,london,manchester,edinburgh,lhr,lgw,stn,ltn,edi,uk,gb,英,英国,伦敦,曼彻斯特,爱丁堡
+德国	germany,frankfurt,munich,berlin,hamburg,fra,muc,dus,ber,ham,de,德,德国,法兰克福,慕尼黑,柏林,汉堡
+法国	france,paris,lyon,marseille,cdg,ory,nce,fr,法,法国,巴黎,里昂,马赛
+加拿大	canada,toronto,vancouver,montreal,ottawa,calgary,yyz,yvr,yul,ca,加,加拿大,多伦多,温哥华,蒙特利尔,渥太华,卡尔加里
+澳大利亚	australia,sydney,melbourne,brisbane,perth,adelaide,canberra,syd,mel,bne,per,adl,au,澳,澳大利亚,悉尼,墨尔本,布里斯班,珀斯,阿德莱德,堪培拉
+新西兰	new zealand,auckland,wellington,christchurch,akl,wlg,nz,新西兰,奥克兰,惠灵顿,基督城
+俄罗斯	russia,moscow,saint petersburg,ru,俄,俄罗斯,莫斯科,圣彼得堡
+印度	india,mumbai,delhi,bangalore,chennai,new delhi,bom,del,blr,maa,in,印,印度,孟买,新德里,班加罗尔,金奈
+泰国	thailand,bangkok,chiang mai,phuket,pattaya,bkk,dmk,cnx,hkt,th,泰,泰国,曼谷,清迈,普吉,芭提雅
+马来西亚	malaysia,kuala lumpur,penang,johor bahru,kul,pen,jhb,my,马来,马来西亚,吉隆坡,槟城,新山
+印度尼西亚	indonesia,jakarta,bali,cgk,dps,sub,id,印尼,印度尼西亚,雅加达,巴厘岛
+菲律宾	philippines,manila,cebu,makati,mnl,ceb,crk,ph,菲律,菲律宾,马尼拉,宿务,马卡蒂
+越南	vietnam,ho chi minh,hanoi,da nang,sgn,han,dad,vn,越南,胡志明,河内,岘港
+巴西	brazil,sao paulo,rio de janeiro,gru,gig,bsb,cnf,br,巴西,圣保罗,里约热内卢
+阿根廷	argentina,buenos aires,eze,aep,ar,阿根廷,布宜诺斯艾利斯
+墨西哥	mexico,mexico city,mex,cun,mx,墨西哥,墨西哥城
+智利	chile,santiago,scl,cl,智利,圣地亚哥
+南非	south africa,johannesburg,cape town,jnb,cpt,za,南非,约翰内斯堡,开普敦
+阿联酋	united arab emirates,dubai,dxb,ae,阿联酋,迪拜
+沙特阿拉伯	saudi arabia,riyadh,jeddah,ruh,jed,sa,沙特,沙特阿拉伯,利雅得,吉达
+土耳其	turkey,turkiye,istanbul,ist,tr,土耳其,伊斯坦布尔
+以色列	israel,tel aviv,tlv,il,以色列,特拉维夫
+荷兰	netherlands,holland,amsterdam,rotterdam,ams,nl,荷兰,阿姆斯特丹,鹿特丹
+瑞士	switzerland,zurich,geneva,zrh,gva,brn,ch,瑞士,苏黎世,日内瓦
+瑞典	sweden,stockholm,gothenburg,arn,got,sto,se,瑞典,斯德哥尔摩,哥德堡
+挪威	norway,oslo,bergen,osl,trd,svg,no,挪威,奥斯陆,卑尔根
+芬兰	finland,helsinki,hel,tmp,fi,芬兰,赫尔辛基
+丹麦	denmark,copenhagen,cph,bll,dk,丹麦,哥本哈根
+波兰	poland,warsaw,krakow,waw,krk,pl,波兰,华沙,克拉科夫
+捷克	czech republic,czechia,prague,prg,cz,捷克,布拉格
+奥地利	austria,vienna,vie,at,奥地利,维也纳
+比利时	belgium,brussels,bru,crl,be,比利时,布鲁塞尔
+爱尔兰	ireland,dublin,dub,ork,ie,爱尔兰,都柏林
+葡萄牙	portugal,lisbon,lis,opo,pt,葡萄牙,里斯本
+西班牙	spain,madrid,barcelona,mad,bcn,es,西班牙,马德里,巴塞罗那
+意大利	italy,milan,rome,fco,mxp,it,意大利,米兰,罗马
+罗马尼亚	romania,bucharest,otp,ro,罗马尼亚,布加勒斯特
+匈牙利	hungary,budapest,bud,hu,匈牙利,布达佩斯
+保加利亚	bulgaria,sofia,sof,bg,保加利亚,索非亚
+克罗地亚	croatia,zagreb,zag,hr,克罗地亚,萨格勒布
+斯洛文尼亚	slovenia,ljubljana,lju,si,斯洛文尼亚,卢布尔雅那
+斯洛伐克	slovakia,bratislava,bts,sk,斯洛伐克,布拉迪斯拉发
+立陶宛	lithuania,vilnius,vno,lt,立陶宛,维尔纽斯
+拉脱维亚	latvia,riga,rix,lv,拉脱维亚,里加
+爱沙尼亚	estonia,tallinn,tll,ee,爱沙尼亚,塔林
+马耳他	malta,valletta,mla,mt,马耳他,瓦莱塔
+塞浦路斯	cyprus,nicosia,lca,pfo,cy,塞浦路斯,尼科西亚
+卢森堡	luxembourg,lux,lu,卢森堡
+冰岛	iceland,reykjavik,kef,is,冰岛,雷克雅未克
+列支敦士登	liechtenstein,vaduz,li,列支敦士登,瓦都兹
+摩纳哥	monaco,mc,摩纳哥
+圣马力诺	san marino,sm,圣马力诺
+梵蒂冈	vatican,vatican city,va,梵蒂冈,梵蒂冈城
+中国	china,mainland china,beijing,shanghai,shenzhen,guangzhou,hangzhou,nanjing,chengdu,wuhan,xian,chongqing,tianjin,suzhou,xiamen,qingdao,changsha,zhengzhou,cn,中,中国,北京,上海,深圳,广州,杭州,南京,成都,武汉,西安,重庆,天津,苏州,厦门,青岛,长沙,郑州

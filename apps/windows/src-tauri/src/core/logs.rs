@@ -13,6 +13,12 @@ use tauri::{AppHandle, Emitter};
 /// SSE 单行缓冲上限（1 MiB）
 const MAX_LINE_BUFFER: usize = 1024 * 1024;
 
+/// 重连退避：断开后从 2s 起指数翻倍，封顶 30s；
+/// 每次 HTTP 200 连接成功后重置回初始值。核心长时间不可达时
+/// 不再以固定 2s 频率空转重试。
+const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_secs(2);
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
 /// 事件名（后端 → 前端）
 pub const EVENT_LOG_LINE: &str = "log-line";
 pub const EVENT_LOG_CONNECTED: &str = "log-connected";
@@ -21,7 +27,8 @@ pub const EVENT_LOG_ERROR: &str = "log-error";
 /// 启动日志流任务：连接 `{base}/logs`，逐行解析 SSE，emit 事件。
 ///
 /// - 连接成功 → emit `log-connected`，随后每行 `log-line {level, message}`；
-/// - 断开后以 2s 间隔自动重连（核心重启/退出期间持续重试）；
+/// - 断开后按指数退避自动重连（2s → 翻倍 → 上限 30s；连接成功后重置），
+///   核心重启/退出期间持续重试；
 /// - 仅在"连通 → 断开"转换时上报一次 `log-error`，避免断线期间刷屏。
 ///
 /// 返回的 JoinHandle 由命令层持有；前端离开日志页时调用 `stop_log_stream`
@@ -49,6 +56,8 @@ pub fn spawn_log_stream(
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         let mut down = false;
+        // 退避时长随连续失败翻倍，成功建立 HTTP 200 会话后重置。
+        let mut backoff = RECONNECT_BACKOFF_INITIAL;
         // 与 CoreManager 同源构造 Authorization 头；非法密钥字符显式上报
         // （log-error 事件 + warn），不再静默省略导致 401 被误读为控制器不可达。
         let mut headers = reqwest::header::HeaderMap::new();
@@ -61,9 +70,12 @@ pub fn spawn_log_stream(
         }
 
         loop {
+            // 本轮 outcome：HTTP 200 建立了会话（不关心流多久）视为成功。
+            let mut session_up = false;
             match client.get(&url).headers(headers.clone()).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     down = false;
+                    session_up = true;
                     let _ = app.emit(EVENT_LOG_CONNECTED, ());
                     let mut stream = resp;
                     let mut buffer = Vec::new();
@@ -100,7 +112,17 @@ pub fn spawn_log_stream(
                     emit_error(&app, &mut down, &e.to_string());
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // 成功路径重置退避；失败路径翻倍封顶，
+            // 避免核心不可达时以 2s 常频空转。
+            if session_up {
+                backoff = RECONNECT_BACKOFF_INITIAL;
+            } else {
+                backoff = backoff.saturating_mul(2);
+                if backoff > RECONNECT_BACKOFF_MAX {
+                    backoff = RECONNECT_BACKOFF_MAX;
+                }
+            }
+            tokio::time::sleep(backoff).await;
         }
     })
 }
