@@ -89,10 +89,18 @@ pub fn relaunch_elevated(enable_tun: bool, data_dir: Option<&std::path::Path>) -
         params.push_str(" --clash-edge-enable-tun");
     }
     // 显式携带数据目录，避免提权实例因环境变量丢失而"丢失配置与订阅"。
+    // 路径含空格/特殊字符时需加引号，否则 std::env::args() 会按空格分割导致路径被截断。
     if let Some(dir) = data_dir {
         params.push(' ');
         params.push_str(RELAUNCH_DATA_DIR_ARG);
-        params.push_str(&dir.to_string_lossy());
+        let path_str = dir.to_string_lossy();
+        if path_str.contains(|c: char| c.is_whitespace() || c == '"') {
+            params.push('"');
+            params.push_str(&path_str.replace('"', r#"\""#));
+            params.push('"');
+        } else {
+            params.push_str(&path_str);
+        }
     }
     let w = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let verb = w("runas");

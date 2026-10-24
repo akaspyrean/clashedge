@@ -259,28 +259,43 @@ pub fn run() {
                 });
             }
 
-            // 启动时一次性订阅静默刷新——延迟 60s（给核心启动与网络就绪
-            // 留时间）后执行一次即结束：无常驻定时器、无循环、不占驻留内存。
-            // 仅在用户显式开启"自动更新订阅"时执行（可预期性与隐私：避免
-            // 用户只是打开应用、60s 后却静默访问订阅服务器）。
+            // 订阅（节点数据）自动更新——间隔 6 小时：
+            // 1. 启动 60s 后先刷一次"过期"订阅（mtime 距今 >6h 才刷，避免
+            //    频繁重启应用时重复拉取；给核心启动与网络就绪留时间）；
+            // 2. 此后每 6 小时全量刷新一次（refresh_all_subscriptions 串行
+            //    拉取并逐个记录更新结果，供首页"节点数据"展示）。
+            // 每轮检查开关：运行中关闭则本轮跳过、重新开启后下一轮恢复。
+            // 仅在用户显式开启"自动更新订阅"时才访问订阅服务器（可预期性与隐私）。
             {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let enabled = app_handle
-                        .state::<crate::AppState>()
-                        .config_manager
-                        .lock()
-                        .unwrap()
-                        .get_config()
-                        .general
-                        .auto_update_subscription;
-                    if !enabled {
-                        info!("Startup subscription auto-refresh disabled by setting");
-                        return;
-                    }
+                    let enabled = |app: &tauri::AppHandle| {
+                        app.state::<crate::AppState>()
+                            .config_manager
+                            .lock()
+                            .unwrap()
+                            .get_config()
+                            .general
+                            .auto_update_subscription
+                    };
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                    crate::commands::profiles::auto_refresh_stale_subscriptions(&app_handle).await;
-                    info!("Startup subscription auto-refresh finished");
+                    if enabled(&app_handle) {
+                        crate::commands::profiles::auto_refresh_stale_subscriptions(&app_handle).await;
+                        info!("Startup subscription auto-refresh finished");
+                    } else {
+                        info!("Startup subscription auto-refresh disabled by setting");
+                    }
+                    const SUBSCRIPTION_AUTO_UPDATE_INTERVAL: std::time::Duration =
+                        std::time::Duration::from_secs(6 * 60 * 60);
+                    loop {
+                        tokio::time::sleep(SUBSCRIPTION_AUTO_UPDATE_INTERVAL).await;
+                        if !enabled(&app_handle) {
+                            info!("Subscription auto-update skipped: disabled by setting");
+                            continue;
+                        }
+                        let n = crate::commands::profiles::refresh_all_subscriptions(&app_handle).await;
+                        info!("Periodic subscription auto-update: {} profile(s) refreshed", n);
+                    }
                 });
             }
 

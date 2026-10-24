@@ -43,19 +43,21 @@ function onSelect() {
       <span class="ce-tile__name">{{ name }}</span>
       <span v-if="protocol" class="ce-tile__proto">{{ protocol }}</span>
     </button>
-    <!-- 地区标签：位于延迟标签左侧（延迟标签绝对定位在右下角） -->
-    <span v-if="region" class="ce-tile__region" :title="region">{{ region }}</span>
-    <CeLatencyTag
-      class="ce-tile__lat"
-      clickable
-      :name="name"
-      :ms="ms"
-      :testing="testing"
-      :timeout="timeout"
-      :good="good"
-      :bad="bad"
-      @retest="emit('retest')"
-    />
+    <!-- 地区与延迟同行：地区在延迟标签左侧 -->
+    <div class="ce-tile__meta">
+      <span v-if="region" class="ce-tile__region" :title="region">{{ region }}</span>
+      <CeLatencyTag
+        class="ce-tile__lat"
+        clickable
+        :name="name"
+        :ms="ms"
+        :testing="testing"
+        :timeout="timeout"
+        :good="good"
+        :bad="bad"
+        @retest="emit('retest')"
+      />
+    </div>
     <span v-if="selected" class="ce-tile__check" aria-hidden="true"><Check :size="12" :stroke-width="2.5" /></span>
   </div>
 </template>
@@ -144,17 +146,24 @@ function onSelect() {
   z-index: 1;
 }
 
-/* 地区标签：与右下角延迟标签同一行，位于其左侧。 */
-.ce-tile__region {
+/* 地区与延迟同行容器：绝对定位在右下角，内部 flex 布局 */
+.ce-tile__meta {
   position: absolute;
-  left: var(--ce-space-4);
+  right: var(--ce-space-4);
   bottom: var(--ce-space-3);
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: var(--ce-space-2);
+  z-index: 1;
+}
+
+.ce-tile__region {
   font: var(--ce-type-caption);
   color: var(--ce-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 .ce-tile.is-unavailable .ce-tile__region {

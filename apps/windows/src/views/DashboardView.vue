@@ -214,6 +214,25 @@ const sessionLine = computed(() =>
         </div>
       </section>
 
+      <!-- 自动更新状态：何时更新、成功还是失败 -->
+      <section class="ce-card autoupdate-card" :aria-label="$t('dashboard.autoupdate_title')">
+        <h3 class="autoupdate-title">{{ $t("dashboard.autoupdate_title") }}</h3>
+        <dl class="autoupdate-list">
+          <div class="autoupdate-row">
+            <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_node") }}</dt>
+            <dd class="autoupdate-value" :class="{ 'is-failed': subUpdateFailed }" :title="subUpdateError">
+              {{ subscriptionUpdateLine }}
+            </dd>
+          </div>
+          <div class="autoupdate-row">
+            <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_geo") }}</dt>
+            <dd class="autoupdate-value" :class="{ 'is-failed': geoUpdateFailed }" :title="geoUpdateError">
+              {{ geoUpdateLine }}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
       <!-- 实时流量 -->
       <section class="ce-card traffic-card" :aria-label="$t('dashboard.traffic_title')">
         <div class="rates">
@@ -239,25 +258,6 @@ const sessionLine = computed(() =>
           :label="$t('dashboard.traffic_chart_label')"
         />
       </section>
-
-      <!-- 自动更新状态：何时更新、成功还是失败 -->
-      <section class="ce-card autoupdate-card" :aria-label="$t('dashboard.autoupdate_title')">
-        <h3 class="autoupdate-title">{{ $t("dashboard.autoupdate_title") }}</h3>
-        <dl class="autoupdate-list">
-          <div class="autoupdate-row">
-            <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_geo") }}</dt>
-            <dd class="autoupdate-value" :class="{ 'is-failed': geoUpdateFailed }" :title="geoUpdateError">
-              {{ geoUpdateLine }}
-            </dd>
-          </div>
-          <div class="autoupdate-row">
-            <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_sub") }}</dt>
-            <dd class="autoupdate-value" :class="{ 'is-failed': subUpdateFailed }" :title="subUpdateError">
-              {{ subscriptionUpdateLine }}
-            </dd>
-          </div>
-        </dl>
-      </section>
     </div>
   </div>
 </template>
@@ -270,13 +270,17 @@ const sessionLine = computed(() =>
   gap: var(--ce-space-4);
 }
 
-/* 自动更新卡片：占满整行（信息量少但需要可读）。 */
+/* 自动更新卡片：紧跟状态核心之后（第 2 位），与核心同排右列。 */
 .autoupdate-card {
-  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   gap: var(--ce-space-3);
   min-width: 0;
+}
+
+/* 实时流量（活动）卡片：第 3 位，占满整行。 */
+.traffic-card {
+  grid-column: 1 / -1;
 }
 
 .autoupdate-title {
