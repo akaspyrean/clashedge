@@ -442,10 +442,12 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     Ok(())
 }
 
-// 启动时一次性订阅静默刷新
+// 订阅自动刷新（节点数据）
 //
-/// 订阅静默刷新的过期阈值：mtime 距今超过 24h 才刷新
-const SUBSCRIPTION_REFRESH_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// 订阅静默刷新的过期阈值：mtime 距今超过 6h（自动更新间隔）才刷新。
+/// 仅作用于启动后的首轮刷新——避免频繁重启应用时重复拉取；此后由
+/// `main.rs` 的周期任务每 6h 全量刷新（`refresh_all_subscriptions`）。
+const SUBSCRIPTION_REFRESH_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// 纯函数：从候选列表筛选需要静默刷新的 profile 名单（可测的阈值逻辑）。
 ///
@@ -468,13 +470,12 @@ fn select_stale_subscriptions(
         .collect()
 }
 
-/// 立即刷新**全部**带订阅地址的 Profile（忽略 mtime / 24h 过期阈值）。
+/// 立即刷新**全部**带订阅地址的 Profile（忽略 mtime / 过期阈值）。
 ///
-/// 用于「所有节点都超时 → 立即拉取最新订阅」的自愈路径：
-/// 节点全挂通常是订阅过期（机场换端口/清空节点）所致，等 24h 太慢。
-///
-/// 逐个串行刷新（对上游友好，不并发打爆订阅服务器）；单个失败仅记 warn
-/// 不中断其余。返回成功刷新的数量。
+/// 用于两条路径：周期性自动更新（main.rs 每 6h 触发，即"自动更新间隔 6 小时"）
+/// 与「所有节点都超时 → 立即拉取最新订阅」的自愈路径。逐个串行刷新
+/// （对上游友好，不并发打爆订阅服务器）；单个失败仅记 warn 不中断其余。
+/// 返回成功刷新的数量。
 pub async fn refresh_all_subscriptions(app: &AppHandle) -> usize {
     let profiles_dir = match get_profiles_dir(app) {
         Ok(dir) => dir,
@@ -549,10 +550,10 @@ pub async fn refresh_all_subscriptions(app: &AppHandle) -> usize {
     ok_count
 }
 
-/// 启动时一次性静默刷新过期订阅：遍历 profiles 目录，mtime 距今超过 24h
+/// 启动首轮静默刷新过期订阅：遍历 profiles 目录，mtime 距今超过 6h
 /// 且含订阅头的 .yaml 逐个串行刷新；单个失败仅 warn 不中断其他。
-/// 无常驻定时器/循环——本函数执行完即返回，由调用方在启动流程末尾
-/// 延迟触发一次。
+/// 本函数执行完即返回——由调用方（main.rs 启动流程）延迟触发一次；
+/// 此后的周期性全量刷新走 [`refresh_all_subscriptions`]。
 pub async fn auto_refresh_stale_subscriptions(app: &AppHandle) {
     let profiles_dir = match get_profiles_dir(app) {
         Ok(dir) => dir,
@@ -788,14 +789,15 @@ mod tests {
         );
     }
 
-    // ---- 启动时一次性订阅静默刷新 ----
+    // ---- 订阅自动刷新（节点数据）----
 
-    /// 阈值逻辑：仅「含订阅头 + mtime 超过 24h」入选；本地配置与 mtime 未知跳过
+    /// 阈值逻辑：仅「含订阅头 + mtime 超过 6h（SUBSCRIPTION_REFRESH_AGE）」入选；
+    /// 本地配置与 mtime 未知跳过
     #[test]
     fn select_stale_filters_by_url_and_age() {
         let now = std::time::SystemTime::now();
         let fresh = now - std::time::Duration::from_secs(3600); // 1h 前：新鲜
-        let stale = now - std::time::Duration::from_secs(25 * 3600); // 25h 前：过期
+        let stale = now - std::time::Duration::from_secs(7 * 3600); // 7h 前：过期
         let candidates = vec![
             ("fresh-sub".to_string(), true, Some(fresh)),
             ("stale-sub".to_string(), true, Some(stale)),
@@ -806,9 +808,9 @@ mod tests {
         assert_eq!(out, vec!["stale-sub".to_string()]);
     }
 
-    /// 边界：恰好 24h（等于阈值）不刷新，超过 1 秒才刷新；未来 mtime 不刷新
+    /// 边界：恰好到达阈值（等于阈值）不刷新，超过 1 秒才刷新；未来 mtime 不刷新
     #[test]
-    fn select_stale_boundary_at_24h() {
+    fn select_stale_boundary_at_threshold() {
         let now = std::time::SystemTime::now();
         let exact = now - SUBSCRIPTION_REFRESH_AGE;
         let over = now - SUBSCRIPTION_REFRESH_AGE - std::time::Duration::from_secs(1);
