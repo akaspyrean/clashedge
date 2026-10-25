@@ -25,7 +25,7 @@ const config = {
   "auto-check-update": true,
   "find-process-mode": "off",
   tun: { enable: false, stack: "mixed", "auto-route": true, "auto-detect-interface": true },
-  advanced: { "geoip-url": "", "geosite-url": "" },
+  advanced: { "geoip-url": "", "geosite-url": "", "tcp-concurrent": false, "unified-delay": false },
 };
 
 let SettingsView: Component;
