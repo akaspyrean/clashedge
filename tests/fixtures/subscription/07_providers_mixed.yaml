@@ -1,0 +1,24 @@
+proxies:
+  - name: "top-ss"
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: "pwd1"
+proxy-providers:
+  inline-provider:
+    type: inline
+    proxies:
+      - name: "inline-trojan"
+        type: trojan
+        server: 2.2.2.2
+        port: 443
+        password: "pwd2"
+  another-inline:
+    type: inline
+    proxies:
+      - name: "deep-hy2"
+        type: hysteria2
+        server: 3.3.3.3
+        port: 8443
+        password: "pwd3"

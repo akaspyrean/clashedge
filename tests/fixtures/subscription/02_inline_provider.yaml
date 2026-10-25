@@ -1,0 +1,12 @@
+proxy-providers:
+  provider1:
+    type: inline
+    proxies:
+      - name: "inline-node"
+        type: vless
+        server: 9.9.9.9
+        port: 443
+        uuid: "abcdef12-3456-7890-abcd-ef1234567890"
+        flow: xtls-rprx-vision
+        tls: true
+        servername: "vless.example.com"

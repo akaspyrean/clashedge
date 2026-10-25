@@ -39,7 +39,7 @@ function mockBackend() {
         "auto-update-subscription": false,
         "find-process-mode": "off",
         tun: { enable: false, stack: "mixed", "auto-route": true, "auto-detect-interface": true },
-        advanced: { "geox-url": "", "geoip-url": "", "geosite-url": "" },
+        advanced: { "geoip-url": "", "geosite-url": "", "tcp-concurrent": false, "unified-delay": false },
       });
     if (cmd === "get_supported_locales") return Promise.resolve(["zh-CN", "en-US"]);
     if (cmd === "get_geodata_status")

@@ -30,7 +30,7 @@ function baseConfig(extra: Partial<Record<string, unknown>> = {}): ClashConfig {
     secret: "********",
     tun: { enable: false, stack: "gvisor", "auto-route": true, "auto-detect-interface": true, "interface-name": null },
     dns: { enable: false, listen: "0.0.0.0:1053", ipv6: false, "enhanced-mode": "fake-ip", "fake-ip-range": "198.18.0.1/16", "fake-ip-filter": [], "default-nameserver": [], nameserver: [] },
-    advanced: { "geoip-url": "", "geosite-url": "" },
+    advanced: { "geoip-url": "", "geosite-url": "", "tcp-concurrent": false, "unified-delay": false },
     "auto-check-update": true,
     sniffer: false,
     locale: "zh-CN",

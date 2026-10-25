@@ -123,8 +123,10 @@ pub fn current_version() -> &'static str {
     option_env!("CLASHEDGE_RELEASE_VERSION").unwrap_or("dev")
 }
 
-/// 解析 "x.y.z" 为 (x, y, z)；解析失败返回 None
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+/// 解析 "x.y.z" 为 (x, y, z)；解析失败返回 None。
+/// pub(crate)：geodata::rules 的 min_client_version 前向兼容校验复用同一实现，
+/// 避免两处版本比较逻辑漂移。
+pub(crate) fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let mut it = v.trim().trim_start_matches('v').split('.');
     let a = it.next()?.parse().ok()?;
     let b = it.next()?.parse().ok()?;

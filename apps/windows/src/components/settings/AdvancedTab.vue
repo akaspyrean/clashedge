@@ -79,6 +79,12 @@ onUnmounted(() => unlisten?.());
         <el-input v-model="cfg.advanced['geosite-url']" :aria-label="label" clearable />
       </template>
     </PrefRow>
+    <PrefRow :title="t('advanced.tcp_concurrent')" :hint="t('advanced.tcp_concurrent_hint')">
+      <el-switch v-model="cfg.advanced['tcp-concurrent']" :aria-label="t('advanced.tcp_concurrent')" />
+    </PrefRow>
+    <PrefRow :title="t('advanced.unified_delay')" :hint="t('advanced.unified_delay_hint')">
+      <el-switch v-model="cfg.advanced['unified-delay']" :aria-label="t('advanced.unified_delay')" />
+    </PrefRow>
     <PrefRow :title="t('geodata.title')">
       <div class="geo-row">
         <span v-if="geoStore.status" class="geo-status" role="status">

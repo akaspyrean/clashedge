@@ -1,0 +1,18 @@
+[
+ {
+  "name": "A",
+  "type": "trojan",
+  "server": "a.example",
+  "port": 443,
+  "password": "p",
+  "udp": true
+ },
+ {
+  "name": "B",
+  "type": "trojan",
+  "server": "b.example",
+  "port": 443,
+  "password": "p",
+  "udp": true
+ }
+]

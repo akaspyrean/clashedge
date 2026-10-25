@@ -46,6 +46,8 @@ function baseConfig(): ClashConfig {
     advanced: {
       "geoip-url": "",
       "geosite-url": "",
+      "tcp-concurrent": false,
+      "unified-delay": false,
     },
     "auto-check-update": true,
     sniffer: false,

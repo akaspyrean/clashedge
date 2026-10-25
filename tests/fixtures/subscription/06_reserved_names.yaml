@@ -1,0 +1,17 @@
+proxies:
+  - name: "DIRECT"
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-128-gcm
+    password: "pwd"
+  - name: "人工优选"
+    type: trojan
+    server: 2.2.2.2
+    port: 443
+    password: "pwd"
+  - name: "normal-node"
+    type: vless
+    server: 3.3.3.3
+    port: 443
+    uuid: "11111111-1111-1111-1111-111111111111"

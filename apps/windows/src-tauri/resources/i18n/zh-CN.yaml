@@ -230,6 +230,10 @@ advanced:
   override_destination: "覆盖目标地址"
   rule_providers: "规则提供者"
   rules: "规则"
+  tcp_concurrent: "TCP 并发连接"
+  tcp_concurrent_hint: "mihomo tcp-concurrent：同时向全部解析 IP 发起连接取最快者，降低多出口 / 跨境链路建连时间"
+  unified_delay: "统一延迟计量"
+  unified_delay_hint: "mihomo unified-delay：url-test 延迟去掉握手差异，不同协议间横向可比"
 
 profiles:
   title: "订阅"

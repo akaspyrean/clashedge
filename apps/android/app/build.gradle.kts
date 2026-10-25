@@ -88,6 +88,15 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // D4-3: shared golden fixtures (repo root tests/fixtures/subscription) are
+    // visible to JVM unit tests via file paths rooted at the module dir
+    // (Gradle runs Android unit tests with working dir = this module).
+    testOptions {
+        unitTests.all {
+            it.systemProperty("clashedge.repoRoot", rootProject.projectDir.parentFile.parentFile.absolutePath)
+        }
+    }
 }
 
 dependencies {
@@ -110,4 +119,6 @@ dependencies {
     // implementation(libs.mihomo.core)
     debugImplementation(libs.androidx.compose.ui.tooling)
     coreLibraryDesugaring(libs.desugar)
+
+    testImplementation(libs.junit)
 }

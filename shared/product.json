@@ -1,0 +1,31 @@
+{
+  "$comment": "Product-level constants shared across platforms (Windows / Android). Group names and built-in rule-set names must stay in lockstep: a change here flows into both platforms at build time (Windows: build.rs -> OUT_DIR/product_data.rs; Android: CI injects res/values). Do not duplicate these literals in platform code.",
+  "version": 1,
+  "proxy_groups": {
+    "global": "GLOBAL",
+    "ladder": "扶梯出行",
+    "ai": "人工智能",
+    "media": "影音视听",
+    "manual": "人工优选",
+    "auto": "自动优选"
+  },
+  "rule_sets": [
+    "direct",
+    "proxy",
+    "media",
+    "ai",
+    "ad"
+  ],
+  "rules_chain": [
+    "GEOSITE,private,DIRECT",
+    "RULE-SET,direct,DIRECT",
+    "RULE-SET,ad,REJECT",
+    "GEOSITE,category-ads-all,REJECT",
+    "RULE-SET,ai,{GROUP_AI}",
+    "RULE-SET,media,{GROUP_MEDIA}",
+    "RULE-SET,proxy,{GROUP_LADDER}",
+    "GEOSITE,cn,DIRECT",
+    "GEOIP,CN,DIRECT",
+    "MATCH,{GROUP_LADDER}"
+  ]
+}

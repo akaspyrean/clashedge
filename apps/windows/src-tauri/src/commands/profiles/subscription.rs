@@ -365,6 +365,9 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         .ok_or_else(|| Error::NotFound("Profile has no subscription URL".to_string()))?;
     // 单个订阅的自定义 UA（审计 B7）：头注释携带，随刷新持久保留
     let custom_ua = extract_subscribe_user_agent(&content);
+    // 旧 Subscription-Userinfo：新响应不携带该头（CDN/中间代理剥离）时沿用旧值，
+    // 避免"刷新订阅后流量条消失"。
+    let old_userinfo = extract_subscription_userinfo(&content);
 
     // 校验 scheme（与导入一致）
     let parsed = reqwest::Url::parse(&url)
@@ -421,7 +424,12 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     }
     let final_text = format!(
         "{}{}",
-        build_header(parsed.as_str(), userinfo.as_deref(), custom_ua.as_deref()),
+        build_header(
+            parsed.as_str(),
+            // 新响应携带 userinfo 则用新值，否则沿用旧值（防 CDN 剥离导致流量条消失）
+            userinfo.as_deref().or(old_userinfo.as_deref()),
+            custom_ua.as_deref()
+        ),
         normalized
     );
     if let Err(e) = validate_profile_strict(&final_text) {
@@ -822,5 +830,44 @@ mod tests {
         ];
         let out = select_stale_subscriptions(candidates, now);
         assert_eq!(out, vec!["over".to_string()]);
+    }
+
+    // ---- 刷新保留旧 Subscription-Userinfo（D2）----
+
+    /// 旧 profile 含 userinfo、新响应无 userinfo 头 → 沿用旧值。
+    #[test]
+    fn refresh_preserves_old_userinfo_when_response_omits_header() {
+        let old_header = build_header(
+            "https://h.example/sub",
+            Some("upload=100; download=200; total=300; expire=999"),
+            None,
+        );
+        let old_userinfo = extract_subscription_userinfo(&old_header);
+        assert!(old_userinfo.is_some());
+
+        // 模拟 refresh 的最终头组装：新响应无 userinfo（None），用旧值兜底
+        let final_userinfo = None.or(old_userinfo.as_deref());
+        assert_eq!(
+            final_userinfo,
+            Some("upload=100; download=200; total=300; expire=999")
+        );
+    }
+
+    /// 新旧都有 userinfo → 新值胜出。
+    #[test]
+    fn refresh_prefers_new_userinfo_when_present() {
+        let old_header = build_header(
+            "https://h.example/sub",
+            Some("upload=1; download=2; total=3; expire=4"),
+            None,
+        );
+        let old_userinfo = extract_subscription_userinfo(&old_header);
+
+        let new_userinfo = Some("upload=10; download=20; total=30; expire=40");
+        let final_userinfo = new_userinfo.or(old_userinfo.as_deref());
+        assert_eq!(
+            final_userinfo,
+            Some("upload=10; download=20; total=30; expire=40")
+        );
     }
 }

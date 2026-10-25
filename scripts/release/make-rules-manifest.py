@@ -70,6 +70,7 @@ def main() -> int:
     ap.add_argument("--commit", required=True, help="full 40-hex commit SHA being published")
     ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("rules-manifest.json"))
     ap.add_argument("--no-geodata", action="store_true", help="only list rules/*.yaml")
+    ap.add_argument("--min-client-version", default="", help="minimum client version required (x.y.z), empty = no restriction")
     args = ap.parse_args()
 
     if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
@@ -96,6 +97,7 @@ def main() -> int:
     manifest = {
         "version": int(now.strftime("%Y%m%d%H%M")),
         "released_at": int(now.timestamp()),
+        "min_client_version": args.min_client_version,
         "files": [
             {
                 "path": target,

@@ -1,0 +1,6 @@
+trojan://pw%40x@t.example:443?sni=t.example&type=grpc&serviceName=svc&allowInsecure=1#tj
+ss://YWVzLTEyOC1nY206cHc=@1.2.3.4:8388#hk
+vmess://eyJ2IjoiMiIsInBzIjoidm0iLCJhZGQiOiJ2LmV4YW1wbGUiLCJwb3J0IjoiNDQzIiwiaWQiOiIxMTExMTExMS0xMTExLTExMTEtMTExMS0xMTExMTExMTExMTEiLCJhaWQiOiIwIiwic2N5IjoiYXV0byIsInRscyI6InRscyIsInNuaSI6InNuaS5leGFtcGxlIiwibmV0Ijoid3MiLCJob3N0IjoiY2RuLmV4YW1wbGUiLCJwYXRoIjoiL3dzIn0=
+vless://22222222-2222-2222-2222-222222222222@r.example:443?security=reality&sni=www.example&fp=chrome&pbk=PUB&sid=ab&flow=xtls-rprx-vision&type=tcp#vless
+hysteria2://auth@h.example:8443?sni=h.example&insecure=1&obfs=salamander&obfs-password=op#hy
+tuic://33333333-3333-3333-3333-333333333333:pw@u.example:443?congestion_control=bbr&udp_relay_mode=native&alpn=h3#tu
