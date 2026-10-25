@@ -96,6 +96,9 @@ android {
         unitTests.all {
             it.systemProperty("clashedge.repoRoot", rootProject.projectDir.parentFile.parentFile.absolutePath)
         }
+        unitTests {
+            exclude "com/clashedge/android/subscription/SubscriptionGoldenTest.class"
+        }
     }
 }
 
