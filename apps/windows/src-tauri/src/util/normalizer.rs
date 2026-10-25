@@ -61,6 +61,7 @@ pub async fn normalize_subscription(app: &AppHandle, body: &str) -> Result<Norma
 
 /// 应用内置分组名 / mihomo 保留策略名：节点不得与之同名，否则 mihomo 启动时
 /// 报重名或内置组引用错乱。
+/// 组名来自 shared/product.json（build.rs 生成），与 config::model 同源（D4-4）。
 pub const RESERVED_NODE_NAMES: &[&str] = &[
     "DIRECT",
     "REJECT",
@@ -68,11 +69,11 @@ pub const RESERVED_NODE_NAMES: &[&str] = &[
     "PASS",
     "COMPATIBLE",
     "GLOBAL",
-    "扶梯出行",
-    "人工智能",
-    "影音视听",
-    "人工优选",
-    "自动优选",
+    crate::config::model::product_data::GROUP_LADDER,
+    crate::config::model::product_data::GROUP_AI,
+    crate::config::model::product_data::GROUP_MEDIA,
+    crate::config::model::product_data::GROUP_MANUAL,
+    crate::config::model::product_data::GROUP_AUTO,
     "美国优选",
 ];
 
@@ -582,5 +583,138 @@ proxy-providers:
         assert_eq!(r.proxies.len(), 2);
         let bad = try_uri_list("ftp://x\nss://\n").map(|r| r.is_err());
         assert_eq!(bad, Some(true));
+    }
+
+    // ---- Golden files driven test (D4: shared fixtures) ----
+
+    /// 离线归一化：仅走不需要 AppHandle 的路径（顶层 proxies + inline provider + URI 列表）。
+    /// http / file / compatible provider 需要网络/AppHandle，离线测试跳过。
+    fn normalize_offline(body: &str) -> Result<NormalizedSubscription> {
+        if let Some(r) = try_uri_list(body) {
+            return r;
+        }
+        let value: Value = serde_norway::from_str(body)
+            .map_err(|e| Error::Subscription(format!("Invalid YAML: {}", e)))?;
+        let map = value.as_mapping().ok_or_else(|| {
+            Error::Subscription("Subscription root must be a YAML mapping".to_string())
+        })?;
+        let mut proxies: Vec<Value> = Vec::new();
+        if let Some(seq) = map.get("proxies").and_then(|v| v.as_sequence()) {
+            proxies.extend(seq.iter().cloned());
+        }
+        if let Some(providers) = map.get("proxy-providers").and_then(|v| v.as_mapping()) {
+            for (name_val, prov_val) in providers {
+                let name = name_val.as_str().unwrap_or("");
+                let Some(prov_map) = prov_val.as_mapping() else {
+                    continue;
+                };
+                let ptype = prov_map
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("compatible")
+                    .to_ascii_lowercase();
+                if ptype == "inline" {
+                    let nodes = prov_map
+                        .get("proxies")
+                        .and_then(|v| v.as_sequence())
+                        .cloned()
+                        .unwrap_or_default();
+                    append_prefixed(&mut proxies, name, nodes);
+                }
+                // http / compatible / file 需要网络/ AppHandle，离线跳过
+            }
+        }
+        finalize(proxies, Vec::new())
+    }
+
+    #[test]
+    fn golden_fixtures_match() {
+        // 仓库根目录: CARGO_MANIFEST_DIR = apps/windows/src-tauri
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fixtures_dir = manifest_dir
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("fixtures")
+            .join("subscription");
+        assert!(
+            fixtures_dir.exists(),
+            "fixtures dir not found: {}",
+            fixtures_dir.display()
+        );
+
+        let mut entries: Vec<_> = std::fs::read_dir(&fixtures_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+
+        let mut passed = 0;
+        let mut failed = Vec::new();
+        for entry in entries {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            // 只测试输入文件（.yaml / .txt），不测 .expected.json
+            if !matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("yaml" | "txt")
+            ) {
+                continue;
+            }
+            let stem = path.file_stem().unwrap().to_string_lossy();
+            let expected_path = fixtures_dir.join(format!("{}.expected.json", stem));
+            if !expected_path.exists() {
+                failed.push(format!("{}: missing expected file", name));
+                continue;
+            }
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
+                .trim_start_matches('\u{feff}') // 容忍 BOM
+                .to_string();
+            let expected_text = std::fs::read_to_string(&expected_path)
+                .unwrap_or_else(|e| panic!("read {}: {}", expected_path.display(), e))
+                .trim_start_matches('\u{feff}')
+                .to_string();
+
+            let res = normalize_offline(&body);
+            match res {
+                Ok(norm) => {
+                    // 对比：把 serde_norway::Value -> serde_json::Value（键自动按字母序），再比较
+                    let actual_json: Vec<serde_json::Value> = norm
+                        .proxies
+                        .iter()
+                        .map(|p| serde_json::to_value(p).unwrap())
+                        .collect();
+                    let expected_json: Vec<serde_json::Value> =
+                        serde_json::from_str(&expected_text).unwrap_or_else(|e| {
+                            panic!("parse expected {}: {}", expected_path.display(), e)
+                        });
+                    if actual_json == expected_json {
+                        passed += 1;
+                    } else {
+                        failed.push(format!(
+                            "{}: mismatch\n  actual:   {}\n  expected: {}",
+                            name,
+                            serde_json::to_string_pretty(&actual_json).unwrap(),
+                            serde_json::to_string_pretty(&expected_json).unwrap()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    failed.push(format!("{}: parse error: {}", name, e));
+                }
+            }
+        }
+        if !failed.is_empty() {
+            panic!(
+                "Golden fixtures FAILED ({} passed, {} failed):\n{}",
+                passed,
+                failed.len(),
+                failed.join("\n")
+            );
+        }
+        assert!(passed > 0, "no fixtures tested");
     }
 }

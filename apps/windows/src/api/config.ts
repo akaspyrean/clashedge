@@ -36,10 +36,14 @@ export interface DnsConfig {
   nameserver: string[];
 }
 
-/** 仅保留后端真正消费的两项（其余历史字段已删除，见审计 B9）。 */
+/** 仅保留后端真正消费的字段（其余历史字段已删除，见审计 B9）。
+ *  tcp-concurrent / unified-delay（D5）：mihomo 高级开关，默认 false 保持现网行为；
+ *  变更经 AppController 事务路径写入运行时配置并触发热重载。 */
 export interface AdvancedConfig {
   "geoip-url": string;
   "geosite-url": string;
+  "tcp-concurrent": boolean;
+  "unified-delay": boolean;
 }
 
 export interface ClashConfig {

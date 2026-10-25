@@ -230,6 +230,10 @@ advanced:
   override_destination: "Override Destination"
   rule_providers: "Rule Providers"
   rules: "Rules"
+  tcp_concurrent: "TCP Concurrent Connect"
+  tcp_concurrent_hint: "mihomo tcp-concurrent: connect to all resolved IPs simultaneously and pick the fastest, reducing connection time for multi-egress / cross-border links"
+  unified_delay: "Unified Delay"
+  unified_delay_hint: "mihomo unified-delay: url-test latency excludes handshake differences, making protocols comparable across the board"
 
 profiles:
   title: "Subscriptions"

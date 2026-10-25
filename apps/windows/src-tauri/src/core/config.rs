@@ -232,6 +232,18 @@ pub fn build_runtime_config(
     }
     put!("dns", serde_norway::to_value(&app.dns)?);
 
+    // 高级开关（D5）：tcp-concurrent / unified-delay。true/false 都显式写出——
+    // 订阅 / 用户侧配置渗透不得改变这两个键（应用级开关由应用所有）。
+    // 不调整 url-test interval（300s）/ tolerance（100ms）：上游探测压力红线。
+    put!(
+        "tcp-concurrent",
+        serde_norway::Value::from(app.advanced.tcp_concurrent)
+    );
+    put!(
+        "unified-delay",
+        serde_norway::Value::from(app.advanced.unified_delay)
+    );
+
     // geodata-mode：仅透传 mihomo 语义值（bool / "metax" / "v2ray"）；
     // 应用级值（manual / use-external / remote）与空值不写给 mihomo。
     let geodata_is_app_level = app
@@ -517,6 +529,51 @@ proxies:
             .filter_map(|p| p.as_str())
             .collect();
         assert_eq!(auto_names, vec!["Node1", "Node2"]);
+    }
+
+    // ---- D5: tcp-concurrent / unified-delay ----
+
+    /// 高级开关必须按值显式写入运行时配置（false 也写出——
+    /// 防止订阅 / 用户侧配置渗透 mihomo 顶层键）。
+    #[test]
+    fn build_runtime_config_writes_advanced_switches_explicitly() {
+        let mut app = Config::default();
+        // 默认 false：也要显式写出
+        let runtime = build_runtime_config(&app, None).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        assert_eq!(map.get("tcp-concurrent").unwrap().as_bool(), Some(false));
+        assert_eq!(map.get("unified-delay").unwrap().as_bool(), Some(false));
+
+        // 切到 true：运行时对应字段必须变化（B9：开关变更→运行时可观察效果）
+        app.advanced.tcp_concurrent = true;
+        app.advanced.unified_delay = true;
+        let runtime = build_runtime_config(&app, None).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        assert_eq!(map.get("tcp-concurrent").unwrap().as_bool(), Some(true));
+        assert_eq!(map.get("unified-delay").unwrap().as_bool(), Some(true));
+    }
+
+    /// 订阅配置自带的 tcp-concurrent / unified-delay 不得渗透：
+    /// 应用级开关由应用所有，profile 顶层键白名单不含这两个键。
+    #[test]
+    fn build_runtime_config_subscription_cannot_override_advanced_switches() {
+        let app = Config::default();
+        let profile = r#"
+tcp-concurrent: true
+unified-delay: true
+proxies:
+  - name: Node1
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: pwd
+"#;
+        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let map = runtime.as_mapping().unwrap();
+        // 默认 false 胜出（profile 键在应用键之后被应用值覆盖 / 白名单不含）
+        assert_eq!(map.get("tcp-concurrent").unwrap().as_bool(), Some(false));
+        assert_eq!(map.get("unified-delay").unwrap().as_bool(), Some(false));
     }
 
     #[test]

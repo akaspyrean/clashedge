@@ -1,0 +1,17 @@
+proxies:
+  - name: "same"
+    type: trojan
+    server: a.example
+    port: 443
+    password: "p"
+  - name: "same"
+    type: trojan
+    server: b.example
+    port: 443
+    password: "p"
+  - name: "unique"
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: "pwd"

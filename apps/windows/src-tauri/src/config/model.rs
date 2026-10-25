@@ -501,10 +501,31 @@ pub struct AdvancedConfig {
     /// GeoSite 自定义下载地址（空 = 使用内置源）
     #[serde(default)]
     pub geosite_url: String,
+
+    /// mihomo `tcp-concurrent`（TCP 并发连接）：同时向全部解析出的 IP 发起连接、
+    /// 取最快者，可显著降低多出口 / 跨境高延迟链路的建连时间。默认 false
+    /// 保持现网行为；开关变更直接写入运行时配置（B9：每个开关必须有
+    /// 变更→运行时可观察效果，见 build_runtime_config）。
+    #[serde(default)]
+    pub tcp_concurrent: bool,
+
+    /// mihomo `unified-delay`（统一延迟计量）：url-test 延迟去掉握手差异
+    /// （RTT×2 计量），不同协议间横向可比。默认 false 保持现网行为；
+    /// 不调整 url-test interval（300s）/ tolerance（100ms）——上游压力红线。
+    #[serde(default)]
+    pub unified_delay: bool,
 }
 
-/// 内置规则集名称（顺序无关）
-pub const BUILTIN_RULE_SETS: &[&str] = &["direct", "ai", "media", "proxy", "ad"];
+/// 内置规则集名称（顺序无关）。
+/// 单一来源：shared/product.json（构建期由 build.rs 生成 product_data.rs，D4-4），
+/// 与 Android 端共享同一份数据文件，禁止在本文件手写字面量副本。
+pub const BUILTIN_RULE_SETS: &[&str] = product_data::BUILTIN_RULE_SETS_SHARED;
+
+/// 生成于 build.rs 的产品级共享常量（组名 / 规则集名 / 规则链模板）。
+/// 供 config::model 与 core::config（运行时配置生成）、util::normalizer（保留名）消费。
+pub(crate) mod product_data {
+    include!(concat!(env!("OUT_DIR"), "/product_data.rs"));
+}
 
 /// 内置规则提供者：默认基线的 rule-providers 定义。
 ///
@@ -570,23 +591,25 @@ pub fn migrate_builtin_rule_providers(
 /// mihomo（v1.19.x）拒绝 proxies 为空的代理组，无订阅时的空列表由
 /// `build_runtime_config` 在生成运行时配置时补 DIRECT 占位（仅零节点状态）。
 pub fn default_proxy_groups() -> Vec<serde_norway::Value> {
-    const YAML: &str = r#"
-- name: GLOBAL
+    // 组名来自 shared/product.json（build.rs 生成），与 Android 端同源。
+    let yaml = format!(
+        r#"
+- name: {global}
   type: select
-  proxies: [DIRECT, REJECT, 人工优选, 自动优选]
-- name: 扶梯出行
+  proxies: [DIRECT, REJECT, {manual}, {auto}]
+- name: {ladder}
   type: select
-  proxies: [自动优选, 人工优选, DIRECT]
-- name: 人工智能
+  proxies: [{auto}, {manual}, DIRECT]
+- name: {ai}
   type: select
-  proxies: [人工优选, 自动优选, DIRECT]
-- name: 影音视听
+  proxies: [{manual}, {auto}, DIRECT]
+- name: {media}
   type: select
-  proxies: [人工优选, 自动优选, DIRECT]
-- name: 人工优选
+  proxies: [{manual}, {auto}, DIRECT]
+- name: {manual}
   type: select
   proxies: []
-- name: 自动优选
+- name: {auto}
   type: url-test
   url: https://cp.cloudflare.com/generate_204
   interval: 300
@@ -599,8 +622,15 @@ pub fn default_proxy_groups() -> Vec<serde_norway::Value> {
   expected-status: 204
   timeout: 5000
   proxies: []
-"#;
-    serde_norway::from_str(YAML).unwrap_or_default()
+"#,
+        global = product_data::GROUP_GLOBAL,
+        ladder = product_data::GROUP_LADDER,
+        ai = product_data::GROUP_AI,
+        media = product_data::GROUP_MEDIA,
+        manual = product_data::GROUP_MANUAL,
+        auto = product_data::GROUP_AUTO,
+    );
+    serde_norway::from_str(&yaml).unwrap_or_default()
 }
 
 /// 内置代理组迁移：把持久化配置里的六个内置组重置为当前基线定义。
@@ -635,21 +665,19 @@ pub fn migrate_builtin_proxy_groups(groups: &mut Vec<serde_norway::Value>) -> bo
 
 /// 内置路由规则：内置基线的分流规则段。
 /// 采用经典分流：国内直连、广告拦截、AI/影音走专属组、其余（proxy 规则集 + MATCH）
-/// 走"扶梯出行"主组。广告拦截双保险：内置 ad 规则集（external/ad.yaml，约 21 万条）
+/// 走主组。广告拦截双保险：内置 ad 规则集（external/ad.yaml，约 21 万条）
 /// 优先于 GEOSITE category-ads-all 兜底，确保离线也有基础拦截。
+/// 规则链模板来自 shared/product.json（单一来源），组名占位符在构建时替换。
 pub fn default_rules() -> Vec<String> {
-    vec![
-        "GEOSITE,private,DIRECT".into(),
-        "RULE-SET,direct,DIRECT".into(),
-        "RULE-SET,ad,REJECT".into(),
-        "GEOSITE,category-ads-all,REJECT".into(),
-        "RULE-SET,ai,人工智能".into(),
-        "RULE-SET,media,影音视听".into(),
-        "RULE-SET,proxy,扶梯出行".into(),
-        "GEOSITE,cn,DIRECT".into(),
-        "GEOIP,CN,DIRECT".into(),
-        "MATCH,扶梯出行".into(),
-    ]
+    use product_data as pd;
+    pd::RULES_CHAIN_TEMPLATES
+        .iter()
+        .map(|tpl| {
+            tpl.replace("{GROUP_AI}", pd::GROUP_AI)
+                .replace("{GROUP_MEDIA}", pd::GROUP_MEDIA)
+                .replace("{GROUP_LADDER}", pd::GROUP_LADDER)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -982,5 +1010,55 @@ hosts:
                 addr
             );
         }
+    }
+
+    // ---- D5: advanced.tcp-concurrent / unified-delay ----
+
+    /// 默认值必须为 false（保持现网行为；B9 规则：开关必须有运行时可观察效果）。
+    #[test]
+    fn advanced_defaults_are_false() {
+        let cfg = Config::default();
+        assert!(!cfg.advanced.tcp_concurrent);
+        assert!(!cfg.advanced.unified_delay);
+    }
+
+    /// kebab-case 往返：设置页保存 `tcp-concurrent: true` / `unified-delay: true`
+    /// 后重启必须保留（不能因 serde 键名错位而静默丢失）。
+    #[test]
+    fn advanced_switches_roundtrip_kebab_case() {
+        let yaml = r#"
+tcp-concurrent: true
+unified-delay: true
+advanced:
+  tcp-concurrent: true
+  unified-delay: true
+"#;
+        let cfg: Config = serde_norway::from_str(yaml).expect("parse advanced switches");
+        assert!(cfg.advanced.tcp_concurrent);
+        assert!(cfg.advanced.unified_delay);
+
+        let out = serde_norway::to_string(&cfg).expect("serialize");
+        assert!(
+            out.contains("tcp-concurrent: true"),
+            "must serialize tcp-concurrent:\n{}",
+            out
+        );
+        assert!(
+            out.contains("unified-delay: true"),
+            "must serialize unified-delay:\n{}",
+            out
+        );
+        // 再解析一次，保证幂等往返
+        let again: Config = serde_norway::from_str(&out).expect("re-parse");
+        assert!(again.advanced.tcp_concurrent);
+        assert!(again.advanced.unified_delay);
+    }
+
+    /// 旧配置缺这两个字段时反序列化自动补默认 false（不炸、不误开）。
+    #[test]
+    fn advanced_missing_switches_default_false() {
+        let cfg: Config = serde_norway::from_str("mixed-port: 7890\n").expect("parse legacy");
+        assert!(!cfg.advanced.tcp_concurrent);
+        assert!(!cfg.advanced.unified_delay);
     }
 }

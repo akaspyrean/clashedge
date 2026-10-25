@@ -17,6 +17,8 @@ path = "src/main.rs"
 [build-dependencies]
 # config-json5：tauri.conf.json 按 JSON5 解析，允许在配置里写注释（见 tauri.conf.json 顶部安全说明）。
 tauri-build = { version = "2", features = ["config-json5"] }
+# shared/product.json → product_data.rs 生成（组名/规则链单一来源，D4-4）
+serde_json = "1"
 
 [dependencies]
 # config-json5 与 tauri-build 对应启用，保证 cargo build 阶段与运行时都能解析带注释的配置。

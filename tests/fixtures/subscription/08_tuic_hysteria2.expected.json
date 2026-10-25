@@ -1,0 +1,26 @@
+[
+ {
+  "name": "tuic-full",
+  "type": "tuic",
+  "server": "tu.example",
+  "port": 443,
+  "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "password": "tuic-pass",
+  "sni": "tu.example",
+  "congestion-controller": "bbr",
+  "udp-relay-mode": "native",
+  "alpn": [
+   "h3"
+  ]
+ },
+ {
+  "name": "hy2-full",
+  "type": "hysteria2",
+  "server": "hy.example",
+  "port": 8443,
+  "password": "hy-pass",
+  "sni": "hy.example",
+  "obfs": "salamander",
+  "obfs-password": "obfs-pass"
+ }
+]
