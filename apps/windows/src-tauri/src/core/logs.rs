@@ -12,6 +12,8 @@ use tauri::{AppHandle, Emitter};
 
 /// SSE 单行缓冲上限（1 MiB）
 const MAX_LINE_BUFFER: usize = 1024 * 1024;
+/// 硬性总缓冲上限（4 MiB）：即使有换行也会强制清理，防止长期高频日志无限累积
+const MAX_TOTAL_BUFFER: usize = 4 * 1024 * 1024;
 
 /// 重连退避：断开后从 2s 起指数翻倍，封顶 30s；
 /// 每次 HTTP 200 连接成功后重置回初始值。核心长时间不可达时
@@ -85,6 +87,10 @@ pub fn spawn_log_stream(
                                 buffer.extend_from_slice(&bytes);
                                 // 防御异常长行：缓冲无换行时不无限增长
                                 if buffer.len() > MAX_LINE_BUFFER && !buffer.contains(&b'\n') {
+                                    buffer.clear();
+                                }
+                                // 硬性总缓冲上限：即使有换行也强制清理，防止长期高频日志无限累积
+                                if buffer.len() > MAX_TOTAL_BUFFER {
                                     buffer.clear();
                                 }
                                 // 逐行处理（SSE 事件以 \n 分隔，空行/注释行跳过）

@@ -55,7 +55,9 @@ object Logger {
     private fun safeAppend(file: File, level: String, message: String) {
         try {
             if (file.exists() && file.length() > FILE_CAP_MB * 1024L * 1024L) {
-                file.delete()
+                val oldFile = File(file.parentFile, "${file.name}.old")
+                if (oldFile.exists()) oldFile.delete()
+                file.renameTo(oldFile)
             }
             val line = "[${fmt.get().format(Date())}] [$level] $message${System.lineSeparator()}"
             file.appendText(line)

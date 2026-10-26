@@ -177,9 +177,9 @@ impl AppController {
     }
 
     /// 把"系统代理意图"落回关闭（崩溃自愈 / 启动恢复失败后，使配置与 Windows 实际状态一致）。
-    /// 持事务锁，避免与进行中的配置事务读-改-写互相覆盖；降级模式只改内存不写盘。
+    /// 不持事务锁：仅调用 `set_config_unless_degraded`（已内置降级保护），
+    /// 避免与 CoreSupervisor 持有 lifecycle 锁时的死锁（Supervisor: lifecycle → tx；正常路径: tx → lifecycle）。
     pub async fn disable_system_proxy_intent(&self, app: &AppHandle, reason: &str) {
-        let _tx = self.tx.lock().await;
         crate::core::runtime::mark_system_proxy_failed(app, reason).await;
     }
 
@@ -488,6 +488,10 @@ impl AppController {
             });
         }
 
+        let _ = Ok::<(), crate::util::error::Error>(());
+
+        // 同步 DoH 端点到 fetch 模块（供 SSRF 校验使用）。
+        crate::core::runtime::sync_doh_endpoints(app);
         Ok(())
     }
 }

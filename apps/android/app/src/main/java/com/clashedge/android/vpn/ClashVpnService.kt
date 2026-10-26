@@ -75,6 +75,8 @@ class ClashVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addDnsServer("223.5.5.5")
             .addDnsServer("119.29.29.29")
+            // Exempt this app's own traffic to avoid VPN loop (subscription/geodata updates)
+            .addDisallowedApplication(packageName)
         val iface = builder.establish() ?: return null
         // keep the interface open; the fd is what Mihomo reads from/writes to.
         fileDescriptor = iface

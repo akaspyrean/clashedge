@@ -43,7 +43,7 @@ class ProfileRepository(
     val profiles: StateFlow<List<Profile>> = _profiles.asStateFlow()
 
     init {
-        load()
+        // load() is now a suspend function; caller must invoke on IO dispatcher
     }
 
     suspend fun activeProfile(): Profile? {
@@ -101,11 +101,11 @@ class ProfileRepository(
      * placeholders keep the config loadable. This matches the shared rule set
      * (direct / proxy / media / ai / ad) used by Windows.
      */
-    fun rulesDir(): String {
+    suspend fun rulesDir(): String = withContext(Dispatchers.IO) {
         val dir = File(context.filesDir, "rules")
         if (!dir.exists()) dir.mkdirs()
         ensureRuleFiles(dir)
-        return dir.absolutePath
+        dir.absolutePath
     }
 
     private fun ensureRuleFiles(dir: File) {
@@ -146,14 +146,19 @@ class ProfileRepository(
         _profiles.value = updated
     }
 
-    private fun load() {
+    suspend fun load() = withContext(Dispatchers.IO) {
         val records = runCatching { json.decodeFromString<List<ProfileRecord>>(storeFile.readText()) }
+            .onFailure { e ->
+                Logger.warn("profiles.json parse failed, using empty list: $e")
+            }
             .getOrDefault(emptyList())
         _profiles.value = records.map { it.toProfile() }
     }
 
     private fun Profile.nodes(): List<Node> = runCatching {
         json.decodeFromString<List<Node>>(content)
+    }.onFailure { e ->
+        Logger.warn("profile nodes decode failed, using empty list: $e")
     }.getOrDefault(emptyList())
 
     private fun Profile.toRecord(): ProfileRecord =
