@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyLatency } from "./latency";
+import { classifyLatency, isNodePoolDegraded } from "./latency";
 
 describe("classifyLatency", () => {
   it("grades by the 200 / 500 ms boundaries", () => {
@@ -27,5 +27,31 @@ describe("classifyLatency", () => {
 
   it("honours custom thresholds", () => {
     expect(classifyLatency({ ms: 150, thresholds: { good: 100, bad: 300 } })).toBe("mid");
+  });
+});
+
+describe("isNodePoolDegraded", () => {
+  it("is false for an empty pool or any healthy node", () => {
+    expect(isNodePoolDegraded([])).toBe(false);
+    expect(isNodePoolDegraded([null, 0, 900, 320])).toBe(false);
+    expect(isNodePoolDegraded([86])).toBe(false);
+    expect(isNodePoolDegraded([500])).toBe(false); // 恰好处于「一般」上限，仍算可用
+  });
+
+  it("is true when every node timed out", () => {
+    expect(isNodePoolDegraded([null, null, 0, undefined])).toBe(true);
+  });
+
+  it("is true when every node is slower than the bad threshold", () => {
+    expect(isNodePoolDegraded([501, 610, 929])).toBe(true);
+  });
+
+  it("is true when timeouts and abnormally slow nodes are mixed", () => {
+    expect(isNodePoolDegraded([null, 0, 800, Infinity])).toBe(true);
+  });
+
+  it("honours a custom bad threshold", () => {
+    expect(isNodePoolDegraded([400, 600], { bad: 300 })).toBe(true);
+    expect(isNodePoolDegraded([400, 600], { bad: 700 })).toBe(false);
   });
 });

@@ -65,6 +65,9 @@ function onSelect() {
 <style scoped>
 .ce-tile {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ce-space-2);
   min-width: 200px;
   min-height: 72px;
   padding: var(--ce-space-3) var(--ce-space-4);
@@ -93,6 +96,7 @@ function onSelect() {
   flex-direction: column;
   gap: var(--ce-space-2);
   width: 100%;
+  min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
@@ -139,31 +143,33 @@ function onSelect() {
   color: var(--ce-text-tertiary);
 }
 
-.ce-tile__lat {
-  position: absolute;
-  right: var(--ce-space-4);
-  bottom: var(--ce-space-3);
-  z-index: 1;
-}
-
-/* 地区与延迟同行容器：绝对定位在右下角，内部 flex 布局 */
+/* 地区 + 延迟固定在卡片底部同一行：地区占左侧剩余宽度、延迟靠右对齐。
+   两者都必须参与 flex 流；任何一方再绝对定位都会互相覆盖并压住节点名。 */
 .ce-tile__meta {
-  position: absolute;
-  right: var(--ce-space-4);
-  bottom: var(--ce-space-3);
+  position: relative; /* 保持在 .ce-tile__main::after 点击遮罩之上 */
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: var(--ce-space-2);
-  z-index: 1;
+  margin-top: auto;
+  width: 100%;
+  min-width: 0;
 }
 
 .ce-tile__region {
+  flex: 1 1 auto;
+  min-width: 0;
   font: var(--ce-type-caption);
   color: var(--ce-text-tertiary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
+}
+
+/* 延迟标签作为 meta 行的右侧项参与布局（无地区时也能贴右）。 */
+.ce-tile__lat {
+  flex: none;
+  margin-left: auto;
 }
 
 .ce-tile.is-unavailable .ce-tile__region {

@@ -481,7 +481,7 @@ fn select_stale_subscriptions(
 /// 立即刷新**全部**带订阅地址的 Profile（忽略 mtime / 过期阈值）。
 ///
 /// 用于两条路径：周期性自动更新（main.rs 每 6h 触发，即"自动更新间隔 6 小时"）
-/// 与「所有节点都超时 → 立即拉取最新订阅」的自愈路径。逐个串行刷新
+/// 与「节点池整体不可用（全超时 / 全异常慢）→ 立即拉取最新订阅」的自愈路径。逐个串行刷新
 /// （对上游友好，不并发打爆订阅服务器）；单个失败仅记 warn 不中断其余。
 /// 返回成功刷新的数量。
 pub async fn refresh_all_subscriptions(app: &AppHandle) -> usize {
@@ -533,10 +533,7 @@ pub async fn refresh_all_subscriptions(app: &AppHandle) -> usize {
 
     let mut ok_count = 0usize;
     for name in names {
-        info!(
-            "Forced subscription refresh (all nodes timed out): {}",
-            name
-        );
+        info!("Forced subscription refresh (degraded node pool): {}", name);
         let outcome = refresh_subscription(app, &name).await;
         match &outcome {
             Ok(()) => ok_count += 1,

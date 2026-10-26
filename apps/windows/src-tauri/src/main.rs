@@ -430,7 +430,7 @@ pub fn run() {
             crate::commands::update::restart_and_apply_update,
             // Auto-update status (shown on the dashboard)
             crate::commands::update_status::get_auto_update_status,
-            crate::commands::update_status::trigger_subscription_refresh,
+            crate::commands::update_status::trigger_auto_recovery,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

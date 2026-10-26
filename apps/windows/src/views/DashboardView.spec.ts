@@ -194,4 +194,13 @@ describe("Dashboard 状态核心 / 模式 / 快捷切换", () => {
     await flushPromises();
     expect(invokeMock).toHaveBeenCalledWith("set_tun_mode", { enable: true });
   });
+
+  it("更新状态卡不再渲染「自动更新」标题，只保留两行状态", async () => {
+    const w = await mountDashboard({ running: true, systemProxy: true });
+    const card = w.find(".autoupdate-card");
+    expect(card.exists()).toBe(true);
+    expect(card.find("h3").exists()).toBe(false);
+    expect(card.text()).not.toContain("dashboard.autoupdate_title");
+    expect(card.findAll(".autoupdate-row")).toHaveLength(2);
+  });
 });

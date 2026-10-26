@@ -57,6 +57,25 @@ describe("CeNodeTile", () => {
     expect(withRegion.find(".ce-lat .ce-tile__region").exists()).toBe(false);
   });
 
+  it("keeps region and latency in one meta row, region first", () => {
+    const withRegion = mountTile({ region: "香港" });
+    const meta = withRegion.find(".ce-tile__meta");
+    expect(meta.exists()).toBe(true);
+    const items = meta.findAll(".ce-tile__region, .ce-lat");
+    expect(items).toHaveLength(2);
+    expect(items[0].classes()).toContain("ce-tile__region");
+    expect(items[1].classes()).toContain("ce-lat");
+    // 名称区与 meta 行是同级节点，延迟/地区不再绝对定位压住名称
+    expect(withRegion.find(".ce-tile__main .ce-tile__meta").exists()).toBe(false);
+  });
+
+  it("still renders the meta row with the latency tag when the region is unknown", () => {
+    const meta = mountTile().find(".ce-tile__meta");
+    expect(meta.exists()).toBe(true);
+    expect(meta.findAll(".ce-lat")).toHaveLength(1);
+    expect(meta.find(".ce-tile__region").exists()).toBe(false);
+  });
+
   it("omits the region label when the region is unknown", () => {
     expect(mountTile().find(".ce-tile__region").exists()).toBe(false);
   });
