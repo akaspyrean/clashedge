@@ -496,10 +496,6 @@ impl AppController {
     }
 }
 
-/// 回滚持久化
-
-/// 回滚持久化
-
 /// 回滚持久化（内存 + 磁盘恢复旧值）并尽力把 Mihomo 运行时拉回旧配置。
 /// 持久化回滚失败 → Err；运行时恢复失败 → 记录后返回该错误（不掩盖原始错误）。
 async fn rollback_config_and_runtime(

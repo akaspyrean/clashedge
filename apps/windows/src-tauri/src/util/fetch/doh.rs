@@ -52,13 +52,23 @@ static DOH_CACHE: Lazy<Mutex<std::collections::HashMap<String, CacheEntry>>> =
     Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// 可配置的 DoH 端点列表（默认两个内置 IP 端点，支持运行时覆盖）。
-static DOH_ENDPOINTS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(DEFAULT_DOH_ENDPOINTS.iter().map(|s| s.to_string()).collect()));
+static DOH_ENDPOINTS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| {
+    Mutex::new(
+        DEFAULT_DOH_ENDPOINTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
+});
 
 /// 更新 DoH 端点列表（供配置热重载调用）。空列表 → 恢复默认。
 pub fn set_doh_endpoints(endpoints: Vec<String>) {
     let mut guard = DOH_ENDPOINTS.lock().unwrap();
     if endpoints.is_empty() {
-        *guard = vec!["https://223.5.5.5/resolve".to_string(), "https://1.1.1.1/dns-query".to_string()];
+        *guard = vec![
+            "https://223.5.5.5/resolve".to_string(),
+            "https://1.1.1.1/dns-query".to_string(),
+        ];
     } else {
         *guard = endpoints;
     }
@@ -236,7 +246,7 @@ mod tests {
 
         let mock_endpoint = format!("http://{addr}/dns-query");
         let start = Instant::now();
-        let res = resolve_with_endpoints("example.com", &[&mock_endpoint]).await;
+        let res = resolve_with_endpoints("example.com", &[mock_endpoint]).await;
         let elapsed = start.elapsed();
 
         server.abort();
@@ -285,9 +295,9 @@ mod tests {
 
         let mock_endpoint = format!("http://{addr}/dns-query");
         // 第一次查询（A + AAAA 并行 = 2 个连接）
-        let _ = resolve_with_endpoints("cache.test", &[&mock_endpoint]).await;
+        let _ = resolve_with_endpoints("cache.test", std::slice::from_ref(&mock_endpoint)).await;
         // 立即第二次查询（应命中缓存，不再请求网络）
-        let _ = resolve_with_endpoints("cache.test", &[&mock_endpoint]).await;
+        let _ = resolve_with_endpoints("cache.test", std::slice::from_ref(&mock_endpoint)).await;
 
         server.abort();
         let hits = *hit_count.lock().unwrap();
@@ -322,7 +332,7 @@ mod tests {
         });
 
         let mock_endpoint = format!("http://{addr}/dns-query");
-        let _ = resolve_with_endpoints("fail.test", &[&mock_endpoint]).await;
+        let _ = resolve_with_endpoints("fail.test", &[mock_endpoint]).await;
         server1.await.unwrap();
 
         // 第二阶段：服务器恢复正常
@@ -351,7 +361,7 @@ mod tests {
         });
 
         let mock_endpoint2 = format!("http://{addr2}/dns-query");
-        let res = resolve_with_endpoints("recover.test", &[&mock_endpoint2]).await;
+        let res = resolve_with_endpoints("recover.test", &[mock_endpoint2]).await;
         server2.await.unwrap();
 
         assert!(res.is_ok());
@@ -403,7 +413,7 @@ mod tests {
         });
 
         let mock_endpoint = format!("http://{addr}/dns-query");
-        let res = resolve_with_endpoints("aonly.test", &[&mock_endpoint]).await;
+        let res = resolve_with_endpoints("aonly.test", &[mock_endpoint]).await;
         server.abort();
 
         assert!(res.is_ok());
