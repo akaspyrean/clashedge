@@ -7,11 +7,6 @@ on:
         description: "mihomo version/tag to build (e.g., v1.19.33)"
         required: true
         default: "v1.19.33"
-      upload-to-maven:
-        description: "Upload to Maven Central (requires OSSRH credentials)"
-        type: boolean
-        required: false
-        default: false
   workflow_call:
     inputs:
       mihomo-version:
@@ -21,24 +16,27 @@ on:
 
 permissions:
   contents: read
-  packages: write  # for GitHub Packages Maven repo
 
 jobs:
   build-aar:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       MIHOMO_VERSION: ${{ inputs.mihomo-version }}
-      # Use gomobile from Go 1.22+ (supports Android API 34)
       GO_VERSION: "1.22"
 
     steps:
-      - name: Checkout mihomo
+      - name: Checkout ClashEdge (for wrapper)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: clashedge
+
+      - name: Checkout mihomo source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: MetaCubeX/mihomo
           ref: ${{ env.MIHOMO_VERSION }}
-          path: mihomo
+          path: mihomo-source
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
@@ -50,17 +48,18 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           ~/go/bin/gomobile init -ndk
 
-      - name: Build AAR
-        working-directory: mihomo
+      - name: Build AAR from wrapper
+        working-directory: clashedge/apps/android/mihomo-wrapper
         run: |
-          # Build for all Android architectures
+          # Update go.mod to point to local mihomo source
+          sed -i 's|replace github.com/metacubex/mihomo => .*|replace github.com/metacubex/mihomo => ../../../../mihomo-source|' go.mod
           ~/go/bin/gomobile bind -v -target=android \
             -o mihomo-core.aar \
-            ./adapter
+            .
 
       - name: Verify AAR
         run: |
-          cd mihomo
+          cd clashedge/apps/android/mihomo-wrapper
           unzip -l mihomo-core.aar
           echo "AAR size: $(du -h mihomo-core.aar)"
 
@@ -68,18 +67,10 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mihomo-core-aar
-          path: mihomo/mihomo-core.aar
+          path: clashedge/apps/android/mihomo-wrapper/mihomo-core.aar
           retention-days: 30
 
-      - name: Publish to GitHub Packages (Maven)
-        if: ${{ github.event.inputs.upload-to-maven || github.event_name == 'workflow_call' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        # Alternative: use mvn deploy to GitHub Packages
-        # Requires settings.xml with GitHub token
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Optional: Build mihomo binary for Android (for subprocess approach fallback)
+  # Build mihomo binary for Android (subprocess fallback)
   build-binary:
     runs-on: ubuntu-latest
     timeout-minutes: 30
