@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 60
     env:
       MIHOMO_VERSION: ${{ inputs.mihomo-version }}
-      GO_VERSION: "1.22"
+      GO_VERSION: "1.26"
 
     steps:
       - name: Checkout ClashEdge (for wrapper)
