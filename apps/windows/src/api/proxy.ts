@@ -8,7 +8,7 @@ export interface ProxyGroup {
   type: string;
   now: string;
   all: string[];
-  /** 节点名 → 地区（后端按节点名推断；识别不到的节点不会出现在表里）。 */
+  /** 节点名 → 地区（先按节点名推断；匿名节点名用 server IP + 本地 Country.mmdb 兜底；都失败则不出现）。 */
   regions?: Record<string, string>;
 }
 

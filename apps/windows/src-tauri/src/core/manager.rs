@@ -290,9 +290,141 @@ impl CoreManager {
 
     /// 获取代理组列表（GET /proxies）。
     pub async fn get_proxy_groups(&self) -> Result<Vec<serde_json::Value>> {
-        self.controller.get_proxy_groups().await
+        let mut groups = self.controller.get_proxy_groups().await?;
+        // 节点名不含国家信息时（例如 JMS-1416430@c37s1...），用 server 的 IP
+        // 查本地 Country.mmdb 兜底；失败/数据库缺失时保持名称推断结果。
+        self.enrich_regions_from_geoip(&mut groups).await;
+        Ok(groups)
     }
 
+    /// 为「名称推断不出地区」的节点补充 GeoIP 地区。
+    ///
+    /// 只解析缺失项并按主机名缓存结果，正常轮询不会重复 DNS / 查库。
+    async fn enrich_regions_from_geoip(&self, groups: &mut [serde_json::Value]) {
+        let db = self.data_dir.join("Country.mmdb");
+        if !db.is_file() {
+            return;
+        }
+        let servers = crate::util::node_servers::load(&self.data_dir.join("runtime-config.yaml"));
+        if servers.is_empty() {
+            return;
+        }
+
+        // TUN + fake-ip 时系统解析会返回假地址，需要切到 DoH 取真实 IP。
+        let fake_ip_range = {
+            let cfg = self.config.read();
+            crate::util::fetch::fake_ip_range_from_config(&cfg)
+        };
+
+        // 收集：名称没有地区、但 runtime-config 里有 server 的节点（去重）。
+        let mut pending: Vec<(String, String)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for group in groups.iter() {
+            let Some(all) = group.get("all").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            let regions = group.get("regions").and_then(|v| v.as_object());
+            for node in all {
+                let Some(name) = node.as_str() else {
+                    continue;
+                };
+                if regions.map(|m| m.contains_key(name)).unwrap_or(false) {
+                    continue;
+                }
+                if !seen.insert(name.to_string()) {
+                    continue;
+                }
+                if let Some(server) = servers.get(name) {
+                    pending.push((name.to_string(), server.clone()));
+                }
+            }
+        }
+        if pending.is_empty() {
+            return;
+        }
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(
+            crate::util::geoip::MAX_CONCURRENT_LOOKUPS,
+        ));
+        let mut tasks = tokio::task::JoinSet::new();
+        for (name, server) in pending {
+            let db = db.clone();
+            let semaphore = semaphore.clone();
+            tasks.spawn(async move {
+                let _permit = semaphore.acquire_owned().await.ok()?;
+                let code = crate::util::geoip::country_code_for_server(
+                    &db,
+                    &server,
+                    fake_ip_range.as_ref(),
+                )
+                .await?;
+                let display = crate::util::region::display_for_code(&code)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| code.to_ascii_uppercase());
+                Some((name, display))
+            });
+        }
+
+        let mut resolved = std::collections::HashMap::new();
+        // 总预算：节点很多且 DNS 很慢时，本次先返回已解析的部分，剩余节点
+        // 下次打开页面继续补（成功结果已按主机缓存，不会重复打 DNS）。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+                Ok(Some(Ok(Some((name, display))))) => {
+                    resolved.insert(name, display);
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    tasks.abort_all();
+                    break;
+                }
+            }
+        }
+        if resolved.is_empty() {
+            return;
+        }
+        merge_resolved_regions(groups, &resolved);
+    }
+}
+
+/// 把 GeoIP 解析结果合并进每个组的 `regions`（保留已有的名称推断结果）。
+fn merge_resolved_regions(
+    groups: &mut [serde_json::Value],
+    resolved: &std::collections::HashMap<String, String>,
+) {
+    if resolved.is_empty() {
+        return;
+    }
+    for group in groups.iter_mut() {
+        let Some(all) = group.get("all").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let mut regions = group
+            .get("regions")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let mut changed = false;
+        for node in all {
+            let Some(name) = node.as_str() else {
+                continue;
+            };
+            if let Some(display) = resolved.get(name) {
+                regions.insert(name.to_string(), serde_json::Value::String(display.clone()));
+                changed = true;
+            }
+        }
+        if changed {
+            if let Some(obj) = group.as_object_mut() {
+                obj.insert("regions".to_string(), serde_json::Value::Object(regions));
+            }
+        }
+    }
+}
+
+impl CoreManager {
     /// 选择代理组中的某个代理（PUT /proxies/{group}，组名 URL 编码）
     pub async fn select_proxy_group(&self, group: String, proxy: String) -> Result<()> {
         self.controller.select_proxy_group(group, proxy).await
@@ -332,5 +464,25 @@ mod tests {
         assert_eq!(CoreStatus::Stopped.to_string(), "stopped");
         assert_eq!(CoreStatus::Running.to_string(), "running");
         assert_eq!(CoreStatus::Starting.to_string(), "starting");
+    }
+
+    #[test]
+    fn merges_geoip_regions_and_keeps_name_based_ones() {
+        let mut groups = vec![
+            serde_json::json!({
+                "name": "人工优选",
+                "all": ["JMS-1", "HK-01", "DIRECT"],
+                "regions": { "HK-01": "香港" }
+            }),
+            serde_json::json!({ "name": "自动优选", "all": ["JMS-1"] }),
+        ];
+        let resolved = std::collections::HashMap::from([("JMS-1".to_string(), "美国".to_string())]);
+
+        merge_resolved_regions(&mut groups, &resolved);
+
+        assert_eq!(groups[0]["regions"]["HK-01"], "香港");
+        assert_eq!(groups[0]["regions"]["JMS-1"], "美国");
+        assert!(groups[0]["regions"].get("DIRECT").is_none());
+        assert_eq!(groups[1]["regions"]["JMS-1"], "美国");
     }
 }

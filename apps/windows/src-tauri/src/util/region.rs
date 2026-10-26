@@ -1,4 +1,4 @@
-﻿// src-tauri/src/util/region.rs
+// src-tauri/src/util/region.rs
 //! 节点地区/国家识别（从节点名 / 备注推断所在地）
 //!
 //! 各家机场的节点命名习惯差异很大，本模块采用**多策略匹配**而非单一正则，
@@ -72,6 +72,13 @@ fn code_to_display(code: &str) -> Option<&'static str> {
         .iter()
         .find(|r| r.aliases.iter().any(|a| a.eq_ignore_ascii_case(&upper)))
         .map(|r| r.display)
+}
+
+/// ISO 3166-1 alpha-2 代码 → 中文展示名（GeoIP 回退路径使用）。
+///
+/// 未收录的代码返回 `None`，调用方可回退为原样显示代码（如 `AE`）。
+pub fn display_for_code(code: &str) -> Option<&'static str> {
+    code_to_display(code)
 }
 
 /// 预编译的别名 → 展示名索引（小写英文 + 中文原样）。
@@ -301,5 +308,14 @@ mod tests {
         assert_eq!(detect_region("🇯🇵 VIP"), Some("日本"));
         assert_eq!(detect_region("🇷🇺 节点 x"), Some("俄罗斯"));
         assert_eq!(detect_region("🇬🇧 x"), Some("英国"));
+    }
+
+    /// GeoIP 回退：ISO 代码复用同一张地区表转成中文展示名。
+    #[test]
+    fn geoip_codes_map_to_display_names() {
+        assert_eq!(display_for_code("US"), Some("美国"));
+        assert_eq!(display_for_code("hk"), Some("香港"));
+        assert_eq!(display_for_code("DE"), Some("德国"));
+        assert_eq!(display_for_code("ZZ"), None);
     }
 }
