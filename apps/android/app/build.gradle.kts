@@ -11,8 +11,10 @@ plugins {
 // 本地开发构建回退为 "dev"。
 val releaseVersion: String = System.getenv("CLASHEDGE_RELEASE_VERSION") ?: "dev"
 
-// versionCode 由语义化版本确定性推导（dev 固定为 1）。
-val semver = Regex("""^(\d+)\.(\d+)\.(\d+)$""")
+// versionCode 由语义化版本确定性推导（dev 固定为 1）。预发布 / 构建后缀
+// （-beta.1、-rc.1、+build）只影响 versionName，不参与 versionCode：
+// 否则 beta 包会退回 versionCode=1，无法覆盖安装上一个正式版。
+val semver = Regex("""^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$""")
 val releaseVersionCode: Int = semver.find(releaseVersion)?.destructured?.let { (major, minor, patch) ->
     major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
 } ?: 1
