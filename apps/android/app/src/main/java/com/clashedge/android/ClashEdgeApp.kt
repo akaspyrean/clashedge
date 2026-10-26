@@ -32,5 +32,9 @@ class ClashEdgeApp : Application() {
         subscriptions = SubscriptionRepository(appConfig)
         profiles = ProfileRepository(this, subscriptions, appConfig)
         coordinator = ProxyCoordinator(this, appConfig, profiles)
+        // Load profiles off the main thread
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            profiles.load()
+        }
     }
 }

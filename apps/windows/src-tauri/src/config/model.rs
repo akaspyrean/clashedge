@@ -423,6 +423,11 @@ pub struct DnsConfig {
     #[serde(default = "default_dns_nameserver")]
     pub nameserver: Vec<String>,
 
+    /// DoH 端点列表（自定义 DNS-over-HTTPS 上游）。
+    /// 空 = 使用内置默认（阿里/腾讯 DoH）。仅当 nameserver 包含 https:// 时生效。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doh_endpoints: Vec<String>,
+
     /// proxy-server-nameserver：解析代理节点服务器域名时使用的 DNS。
     /// 必须是明文 IP（非 DoH/DoT），mihomo 要求该字段仅接受明文 DNS。
     /// 避免节点域名解析走 DoH 导致循环依赖（DoH 域名自身需要先解析）。
@@ -443,6 +448,7 @@ impl Default for DnsConfig {
             fake_ip_filter: default_dns_fake_ip_filter(),
             default_nameserver: default_dns_default_nameserver(),
             nameserver: default_dns_nameserver(),
+            doh_endpoints: default_dns_doh_endpoints(),
             proxy_server_nameserver: default_dns_proxy_server_nameserver(),
         }
     }
@@ -479,6 +485,13 @@ fn default_dns_nameserver() -> Vec<String> {
         "https://dns.alidns.com/dns-query".to_string(),
         "https://doh.pub/dns-query".to_string(),
     ]
+}
+/// 自定义 DoH 端点（空 = 使用内置默认）。配置示例：
+/// doh-endpoints:
+///   - https://dns.google/dns-query
+///   - https://cloudflare-dns.com/dns-query
+fn default_dns_doh_endpoints() -> Vec<String> {
+    Vec::new()
 }
 /// proxy-server-nameserver：解析代理节点服务器域名时使用的明文 DNS。
 /// mihomo 要求该字段必须是明文 IP（非 DoH/DoT），否则会报错拒绝启动。

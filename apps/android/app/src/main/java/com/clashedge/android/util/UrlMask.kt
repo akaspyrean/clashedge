@@ -32,7 +32,7 @@ fun maskUrl(url: String): String {
     }
 }
 
-/** 形似 token 的路径段：≥8 字符、仅 `[A-Za-z0-9_-]` 且含数字。 */
+/** 形似 token 的路径段：≥8 字符、仅 `[A-Za-z0-9_-]`（去掉"含数字"限制，防止纯字母 token 泄露）。 */
 private fun isTokenLikeSegment(seg: String): Boolean {
-    return seg.length >= 8 && "^[A-Za-z0-9_-]+\$".toRegex().matches(seg) && seg.contains(Regex("\\d"))
+    return seg.length >= 8 && "^[A-Za-z0-9_-]+$".toRegex().matches(seg)
 }

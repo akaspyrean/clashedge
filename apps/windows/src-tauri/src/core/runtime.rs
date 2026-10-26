@@ -69,6 +69,17 @@ pub(crate) async fn port_alive(port: u16) -> bool {
     )
 }
 
+/// 从共享配置同步 DoH 端点到 fetch 模块（SSRF 校验用）。
+/// 供 DNS 配置变更后调用（如 apply_system_proxy / apply_tun / reload_config 后）。
+pub(crate) fn sync_doh_endpoints(app: &AppHandle) {
+    let state = app.state::<crate::AppState>();
+    let endpoints = {
+        let config = state.config_manager.lock().unwrap().get_config();
+        config.dns.doh_endpoints.clone()
+    };
+    crate::util::fetch::set_doh_endpoints(endpoints);
+}
+
 /// 确认 mihomo 正在运行且 mixed-port 真实可连接。
 ///
 /// 开启系统代理前必须调用——绝不能让 Windows 指向无人监听的代理端口（死代理）。
@@ -192,6 +203,7 @@ pub(crate) async fn apply_proxy_mode_locked(app: &AppHandle, mode: &str) -> Resu
     }
 
     info!("Proxy mode set to {}", mode);
+    sync_doh_endpoints(app);
     refresh_tray(app).await?;
     let _ = app.emit("proxy-mode-changed", serde_json::json!({ "mode": mode }));
     Ok(())
@@ -259,6 +271,7 @@ pub(crate) async fn apply_tun_locked(app: &AppHandle, enable: bool) -> Result<()
     }
 
     info!("TUN mode {}", if enable { "enabled" } else { "disabled" });
+    sync_doh_endpoints(app);
     refresh_tray(app).await?;
     let _ = app.emit("tun-mode-changed", serde_json::json!({ "enable": enable }));
     Ok(())
@@ -396,6 +409,7 @@ pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> 
         "System proxy {}",
         if enable { "enabled" } else { "disabled" }
     );
+    sync_doh_endpoints(app);
     refresh_tray(app).await?;
     let _ = app.emit(
         "system-proxy-changed",
@@ -460,6 +474,7 @@ pub(crate) async fn activate_profile_locked(app: &AppHandle, name: &str) -> Resu
     }
 
     info!("Profile activated: {}", safe);
+    sync_doh_endpoints(app);
     refresh_tray(app).await?;
     let _ = app.emit("profile-activated", serde_json::json!({ "profile": safe }));
     Ok(())

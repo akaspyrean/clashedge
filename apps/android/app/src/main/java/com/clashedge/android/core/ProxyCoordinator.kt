@@ -16,12 +16,14 @@ import com.clashedge.android.util.Logger
 import com.clashedge.android.vpn.ClashVpnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Mutex
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Single source of truth for the proxy lifecycle. UI state must always reflect the
@@ -49,42 +51,84 @@ class ProxyCoordinator(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** Last error message that caused ERROR state; retained until next successful start. */
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    /** Mutex to serialize start/stop and prevent race conditions. */
+    private val lifecycleMutex = Mutex()
+
+    init {
+        // Observe MihomoCore.running/error and keep local state in sync (single source of truth).
+        scope.launch {
+            core.running.distinctUntilChanged().collect { isRunning ->
+                if (isRunning && _state.value != ConnectionState.RUNNING) {
+                    _state.value = ConnectionState.RUNNING
+                    _error.value = null
+                    _lastError.value = null
+                    refreshGroups()
+                } else if (!isRunning && _state.value == ConnectionState.RUNNING) {
+                    _state.value = ConnectionState.STOPPED
+                }
+            }
+        }
+        scope.launch {
+            core.error.distinctUntilChanged().collect { err ->
+                if (err != null) {
+                    _error.value = err
+                    _lastError.value = err
+                    if (_state.value == ConnectionState.RUNNING) {
+                        _state.value = ConnectionState.ERROR
+                    }
+                }
+            }
+        }
+    }
+
     /** Returns an activity result contract's launcher input if VPN permission needed. */
     fun vpnPermissionIntent(): Intent? {
         val p = VpnService.prepare(context)
         return if (p == null) null else p
     }
 
-    suspend fun start() {
+    suspend fun start() = lifecycleMutex.withLock {
         if (_state.value == ConnectionState.RUNNING) return
+        if (_state.value == ConnectionState.STARTING || _state.value == ConnectionState.STOPPING) {
+            Logger.warn("start() called during transition; ignoring")
+            return
+        }
         _state.value = ConnectionState.STARTING
         _error.value = null
         try {
             val settings = appConfig.settings.first()
+            val rulesDir = profiles.rulesDir()
             val config = RuntimeConfigGenerator.build(
                 mode = settings.mode,
                 nodes = profiles.activeNodes(),
-                rulesDir = profiles.rulesDir(),
+                rulesDir = rulesDir,
             )
-            // Start the TUN-owning foreground + VpnService; it hands the fd to the core.
             val svc = Intent(context, ProxyForegroundService::class.java)
                 .putExtra(ProxyForegroundService.EXTRA_CONFIG, config)
                 .putExtra(ProxyForegroundService.EXTRA_MODE, settings.mode)
             context.startForegroundService(svc)
-            // Mihomo start is performed by the service once the TUN fd is ready.
         } catch (t: Throwable) {
             _error.value = t.message
+            _lastError.value = t.message
             _state.value = ConnectionState.ERROR
             Logger.error("proxy start failed: $t")
         }
     }
 
-    private fun stopServices() {
+    private fun stopServices() = lifecycleMutex.withLock {
         scope.launch {
             _state.value = ConnectionState.STOPPING
             core.stop()
             context.stopService(Intent(context, ProxyForegroundService::class.java))
             context.stopService(Intent(context, ClashVpnService::class.java))
+            // Keep _error if it was ERROR, only clear on explicit stop
+            if (_state.value != ConnectionState.ERROR) {
+                _error.value = null
+            }
             _state.value = ConnectionState.STOPPED
         }
     }
@@ -95,6 +139,9 @@ class ProxyCoordinator(
 
     fun onCoreRunning() {
         _state.value = ConnectionState.RUNNING
+        // Clear error on successful start
+        _error.value = null
+        _lastError.value = null
         refreshGroups()
     }
 
@@ -116,13 +163,17 @@ class ProxyCoordinator(
     }
 
     fun onCoreStopped(reason: String?) {
-        if (reason != null) _error.value = reason
+        if (reason != null) {
+            _error.value = reason
+            _lastError.value = reason
+        }
         _state.value = ConnectionState.STOPPED
         refreshGroups()
     }
 
     fun onCoreError(message: String) {
         _error.value = message
+        _lastError.value = message
         _state.value = ConnectionState.ERROR
         stopServices()
     }

@@ -49,8 +49,9 @@ android {
             val storePass = System.getenv("ANDROID_STORE_PASSWORD")
             if (!storeB64.isNullOrBlank() && !alias.isNullOrBlank() &&
                 !keyPass.isNullOrBlank() && !storePass.isNullOrBlank()) {
-                val jksFile = File(layout.buildDirectory.get().asFile, "keystore.jks")
-                jksFile.parentFile.mkdirs()
+                // Write keystore to a temp file that is deleted on exit (not in build/ dir),
+                // preventing CI cache from persisting the decoded keystore.
+                val jksFile = File.createTempFile("keystore", ".jks").apply { deleteOnExit() }
                 jksFile.writeBytes(Base64.getDecoder().decode(storeB64))
                 signingConfig = signingConfigs.create("release") {
                     storeFile = jksFile
@@ -95,7 +96,7 @@ android {
 testOptions {
     unitTests.all {
         it.systemProperty("clashedge.repoRoot", rootProject.projectDir.parentFile.parentFile.absolutePath)
-        it.exclude("**/SubscriptionGoldenTest*")
+        // Red Light test enabled; SubscriptionGoldenTest will fail and expose parser gaps
     }
 }
 }

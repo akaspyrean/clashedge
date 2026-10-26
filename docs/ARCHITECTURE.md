@@ -156,6 +156,11 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
   这一便携核心卖点，暂缓；需要时应提供"导出时脱敏"。
 - Windows ARM64：`assets.lock.json` 仅 amd64 内核与 wintun。
 - Android 冻结，见 `apps/android/README.md`（订阅导入仍是只留 name/type/server 的骨架）。
+  已完成的 Android 预览修复：主线程 I/O（`ProfileRepository.load/rulesDir` 已移至
+  `Dispatchers.IO`）、ERROR 状态保留（`ProxyCoordinator._lastError` + 生命周期互斥锁）、
+  VPN 自流量豁免（`ClashVpnService.establish` 的 `addDisallowedApplication`）、
+  深色/语言响应式生效（`MainActivity` 观测 `AppSettings`）、日志轮转（`Logger.kt`
+  rename → `.old`）、配置损坏日志记录、Red Light 测试恢复、CI keystore 改临时文件。
 - 新增修改状态的功能时，一律加 AppController 方法。**整个 `src/` 里只有 `app_controller.rs`、
   `runtime.rs`（仅在控制器持锁时被调用）、`persistence.rs` 可以直接 `set_config(..)`**，
   由 `main.rs::architecture_guards` 测试强制；崩溃自愈 / 启动恢复这类内部路径用
@@ -164,9 +169,14 @@ push v* tag → quality.ps1（fmt/clippy/test/audit/前端测试/build）
   「覆盖并继续」（`confirm_overwrite_corrupt_config`）是唯一的解除方式。
 - 控制器端口被占用时的改选地址只存在于 `CoreManager::controller_override`（会话级），绝不写回
   共享配置（共享配置会被任意设置保存落盘）。
-- 锁序固定为 `AppController.tx → CoreManager.lifecycle`；持 `lifecycle` 时不得再取 `tx`
-  （看门狗在系统代理恢复前释放 lifecycle 就是为此）。
+- 锁序固定为 `AppController.tx → CoreManager.lifecycle`；持 `lifecycle` 时不得再取 `tx`。
+  `AppController::disable_system_proxy_intent` 因此**不持事务锁**（仅走
+  `set_config_unless_degraded`，降级安全）：Supervisor 持 `lifecycle` 时可能经崩溃自愈
+  调用它，若它再取 `tx`，与「先 `tx` 后 `lifecycle`」的正常路径构成经典 AB-BA 死锁。
 - TUN + fake-ip 下本地 DNS 结果不可信：SSRF 守卫改用 DoH（`util/fetch/doh.rs`）取真实地址，
-  取不到即拒绝（fail-closed）。
+  取不到即拒绝（fail-closed）。DoH 端点可通过 `dns.doh-endpoints` 配置（空 = 内置
+  223.5.5.5 / 1.1.1.1）；配置变更时由 `core::runtime::sync_doh_endpoints` 同步到 fetch 模块。
+- SSE 日志流（`core/logs.rs`）有双层缓冲上限：单行 1 MiB（无换行时清空）+ 总量 4 MiB
+  （硬上限，防长期高频日志累积）。
 - 发布权限拆分：`build`（无私钥、无 rust-cache）→ `publish`（`release` Environment；签名
   证书与 minisign 私钥只在此处，Authenticode 签名与 manifest 生成也在此处）。

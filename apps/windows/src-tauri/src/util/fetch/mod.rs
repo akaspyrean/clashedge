@@ -43,3 +43,4 @@ pub use client::{
     get_direct_first_with_ua, validate_url_app,
 };
 pub use guards::{redact_url_for_log, validate_url_sync, validate_url_with};
+pub use doh::set_doh_endpoints;
