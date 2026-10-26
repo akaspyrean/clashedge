@@ -5,6 +5,13 @@ name: Release
 # tags for v*), not by custom scripts — a pushed tag can never be moved or
 # re-pointed, which removes the need for in-workflow tag guards.
 #
+# Pre-release semantics: SemVer tags with a hyphen suffix (v1.2.3-beta.1,
+# v1.2.3-rc.1, ...) are published with `gh release create --prerelease`. The
+# client updater reads `releases/latest/download/portable-manifest.json`, and
+# GitHub's `/releases/latest` only follows non-prerelease releases — so a beta
+# tag must never become "Latest", otherwise every stable client would be
+# offered a beta.
+#
 # Privilege split (audit B10): everything that runs third-party code (npm ci,
 # cargo build scripts, asset download) lives in `build` with a READ-ONLY token
 # and NO private secrets (only the PUBLIC update-verification key is injected; the
@@ -23,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to cut and release (e.g. v0.2.0); created at main HEAD if missing"
+        description: "Tag to cut and release (e.g. v0.2.0, or v0.2.0-beta.1 for a pre-release); created at main HEAD if missing"
         required: true
 
 permissions:
@@ -54,6 +61,7 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
       version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,16 +71,28 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the input via env, not inline interpolation: a crafted tag must
+          # never be able to inject shell syntax before validation runs.
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ inputs.tag }}"
+          tag="$RELEASE_TAG"
           case "$tag" in
             v[0-9]*) ;;
             *) echo "Tag '$tag' must match v*"; exit 1 ;;
           esac
           version="${tag#v}"
-          case "$version" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "Tag '$tag' must be vx.y.z"; exit 1 ;;
+          # Strict SemVer: X.Y.Z with optional -prerelease and +build metadata.
+          # A hyphen suffix (beta/rc/alpha/...) is a pre-release by definition.
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "Tag '$tag' must be vX.Y.Z or vX.Y.Z-<prerelease> (e.g. v0.2.0, v0.2.0-beta.1)"
+            exit 1
+          fi
+          # Strip +build metadata before checking for the pre-release hyphen
+          # (build metadata itself may contain hyphens).
+          core_version="${version%%+*}"
+          case "$core_version" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
           esac
           if git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null 2>&1; then
             echo "Tag $tag already exists; releasing its commit."
@@ -87,6 +107,8 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Resolved $tag (version=$version, prerelease=$prerelease, sha=$sha)"
 
   # CI and Release share the same quality gate (scripts/ci/quality.ps1):
   # fmt/clippy/test/audit/build + launcher compile & recovery tests.
@@ -511,26 +533,54 @@ jobs:
       # so a failing gate never leaves an empty draft behind. Only a leftover
       # draft from a previous failed run may be deleted and recreated; a
       # published release can never be reached here for the same tag.
+      #
+      # Beta/rc/alpha tags are created as GitHub pre-releases: the client reads
+      # releases/latest, and a pre-release is never selected as "Latest".
       - name: Create draft release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $raw = gh release view ${{ needs.prepare.outputs.tag }} --json isDraft 2>$null
+          $tag = "${{ needs.prepare.outputs.tag }}"
+          $sha = "${{ needs.prepare.outputs.sha }}"
+          $prerelease = "${{ needs.prepare.outputs.prerelease }}" -eq "true"
+
+          $raw = gh release view $tag --json isDraft 2>$null
           if ($LASTEXITCODE -eq 0 -and $raw) {
             $existing = $raw | ConvertFrom-Json
             if ($existing.isDraft) {
               Write-Host "Leftover draft found — deleting and recreating."
-              gh release delete ${{ needs.prepare.outputs.tag }} --yes
+              gh release delete $tag --yes
+              if ($LASTEXITCODE -ne 0) { throw "Failed to delete leftover draft release" }
             } else {
-              throw "Release ${{ needs.prepare.outputs.tag }} already exists and is published — refusing to overwrite."
+              throw "Release $tag already exists and is published — refusing to overwrite."
             }
           }
-          gh release create ${{ needs.prepare.outputs.tag }} `
-            --target ${{ needs.prepare.outputs.sha }} `
-            --title "${{ needs.prepare.outputs.tag }}" `
-            --draft `
-            --generate-notes
+          if ($prerelease) {
+            Write-Host "Creating $tag as a GitHub pre-release (beta/rc/alpha)."
+            gh release create $tag `
+              --target $sha `
+              --title "$tag" `
+              --draft `
+              --prerelease `
+              --generate-notes
+          } else {
+            gh release create $tag `
+              --target $sha `
+              --title "$tag" `
+              --draft `
+              --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed (exit $LASTEXITCODE)" }
+
+          # Fail before any signing/upload if GitHub did not apply the channel
+          # flag: a beta tagged as a normal release would hijack releases/latest.
+          $draft = gh release view $tag --json isPrerelease,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $draft) { throw "Cannot read back draft release $tag" }
+          if (-not $draft.isDraft) { throw "Release $tag was not created as a draft" }
+          if ([bool]$draft.isPrerelease -ne $prerelease) {
+            throw "Draft $tag pre-release flag mismatch (expected $prerelease, got $($draft.isPrerelease))"
+          }
 
       # Sign portable-manifest.json with minisign via the Tauri CLI: it natively
       # supports the TAURI_SIGNING_* key format and password env vars (reliable
@@ -655,4 +705,43 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit ${{ needs.prepare.outputs.tag }} --draft=false
+        run: |
+          $tag = "${{ needs.prepare.outputs.tag }}"
+          $prerelease = "${{ needs.prepare.outputs.prerelease }}" -eq "true"
+          if ($prerelease) {
+            # Re-assert the pre-release flag: releases/latest must stay on the
+            # newest stable release, never on a beta/rc/alpha.
+            gh release edit $tag --draft=false --prerelease
+          } else {
+            gh release edit $tag --draft=false --latest
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh release edit failed (exit $LASTEXITCODE)" }
+
+      # Hard guarantee for the updater: it reads releases/latest, so a beta tag
+      # leaking into "Latest" would be offered to every stable client.
+      - name: Verify release channel (pre-release must not become latest)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ needs.prepare.outputs.tag }}"
+          $prerelease = "${{ needs.prepare.outputs.prerelease }}" -eq "true"
+          $view = gh release view $tag --json isPrerelease,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $view) { throw "gh release view failed for $tag" }
+          if ($view.isDraft) { throw "Release $tag is still a draft" }
+          if ($prerelease -and -not $view.isPrerelease) {
+            throw "Tag $tag is a pre-release but GitHub published it as a normal release"
+          }
+          if (-not $prerelease -and $view.isPrerelease) {
+            throw "Stable tag $tag was unexpectedly published as a pre-release"
+          }
+          $latest = gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name 2>$null
+          if ($LASTEXITCODE -eq 0 -and $latest) {
+            $latestView = gh release view $latest --json isPrerelease | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or -not $latestView) { throw "Cannot read latest release $latest" }
+            if ($latestView.isPrerelease) {
+              throw "releases/latest points at pre-release $latest — stable clients would be offered a beta"
+            }
+            Write-Host "releases/latest: $latest (stable)"
+          }
+          Write-Host "Release channel OK: $tag (prerelease=$prerelease)"
