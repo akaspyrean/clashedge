@@ -169,8 +169,17 @@ jobs:
         run: |
           ./gradlew test --console=plain --no-daemon
 
-  build:
+  # Build mihomo-core AAR for Android (JNI integration)
+  # This job calls the reusable android-mihomo-aar.yml workflow
+  build-mihomo-aar:
     needs: [prepare, quality]
+    uses: ./.github/workflows/android-mihomo-aar.yml
+    with:
+      mihomo-version: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  build:
+    needs: [prepare, quality, build-mihomo-aar]
     runs-on: windows-latest
     # No write access, no signing key: this job runs third-party build code.
     permissions:
@@ -267,7 +276,7 @@ jobs:
   # and the Android SDK. Produces an UNSIGNED release APK; signing happens later
   # in the `android-sign` job which runs in the protected `release` environment.
   android-build-unsigned:
-    needs: [prepare, quality, android-quality]
+    needs: [prepare, quality, android-quality, build-mihomo-aar]
     runs-on: ubuntu-latest
     # No release environment, no signing secrets: this job runs third-party Gradle code.
     permissions:
@@ -323,6 +332,21 @@ jobs:
             fi
             echo "  staged: $dst/$f.yaml ($(wc -c < "$dst/$f.yaml") bytes, sha256 verified)"
           done
+
+      # Download mihomo-core AAR (built by android-mihomo-aar.yml workflow)
+      - name: Download mihomo-core AAR
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mihomo-core-aar
+          path: apps/android/app/libs
+
+      - name: Verify mihomo-core AAR
+        run: |
+          set -e
+          AAR="apps/android/app/libs/mihomo-core.aar"
+          test -f "$AAR" || { echo "AAR not found: $AAR"; exit 1; }
+          echo "mihomo-core AAR: $(du -h "$AAR")"
+          unzip -l "$AAR" | head -20
 
       - name: Build unsigned release APK
         working-directory: apps/android

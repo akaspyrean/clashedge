@@ -1,0 +1,128 @@
+name: Build mihomo Android AAR
+
+on:
+  workflow_dispatch:
+    inputs:
+      mihomo-version:
+        description: "mihomo version/tag to build (e.g., v1.19.33)"
+        required: true
+        default: "v1.19.33"
+      upload-to-maven:
+        description: "Upload to Maven Central (requires OSSRH credentials)"
+        type: boolean
+        required: false
+        default: false
+  workflow_call:
+    inputs:
+      mihomo-version:
+        description: "mihomo version/tag to build (e.g., v1.19.33)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write  # for GitHub Packages Maven repo
+
+jobs:
+  build-aar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MIHOMO_VERSION: ${{ inputs.mihomo-version }}
+      # Use gomobile from Go 1.22+ (supports Android API 34)
+      GO_VERSION: "1.22"
+
+    steps:
+      - name: Checkout mihomo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: MetaCubeX/mihomo
+          ref: ${{ env.MIHOMO_VERSION }}
+          path: mihomo
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          ~/go/bin/gomobile init -ndk
+
+      - name: Build AAR
+        working-directory: mihomo
+        run: |
+          # Build for all Android architectures
+          ~/go/bin/gomobile bind -v -target=android \
+            -o mihomo-core.aar \
+            ./adapter
+
+      - name: Verify AAR
+        run: |
+          cd mihomo
+          unzip -l mihomo-core.aar
+          echo "AAR size: $(du -h mihomo-core.aar)"
+
+      - name: Upload AAR as artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mihomo-core-aar
+          path: mihomo/mihomo-core.aar
+          retention-days: 30
+
+      - name: Publish to GitHub Packages (Maven)
+        if: ${{ github.event.inputs.upload-to-maven || github.event_name == 'workflow_call' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Alternative: use mvn deploy to GitHub Packages
+        # Requires settings.xml with GitHub token
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: Build mihomo binary for Android (for subprocess approach fallback)
+  build-binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MIHOMO_VERSION: ${{ inputs.mihomo-version }}
+
+    steps:
+      - name: Checkout mihomo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: MetaCubeX/mihomo
+          ref: ${{ env.MIHOMO_VERSION }}
+          path: mihomo
+
+      - name: Set up Go
+        uses: actions/setup-go@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # v1
+        with:
+          go-version: "1.22"
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29-beta1
+
+      - name: Build Android binaries
+        working-directory: mihomo
+        run: |
+          for arch in 386 amd64 arm arm64; do
+            case $arch in
+              386) ndk_arch=i686-linux-android34 ;;
+              amd64) ndk_arch=x86_64-linux-android34 ;;
+              arm) ndk_arch=armv7a-linux-androideabi34 ;;
+              arm64) ndk_arch=aarch64-linux-android34 ;;
+            esac
+            CGO_ENABLED=1 CC=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${ndk_arch}-clang \
+              GOOS=android GOARCH=$arch go build -v -tags "with_gvisor" \
+              -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${MIHOMO_VERSION}' -w -s" \
+              -o mihomo-android-$arch .
+          done
+
+      - name: Upload Android binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mihomo-android-binaries
+          path: mihomo/mihomo-android-*
+          retention-days: 30
