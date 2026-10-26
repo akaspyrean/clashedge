@@ -8,6 +8,7 @@
 
 import { defineStore } from "pinia";
 import { proxyApi, type ProxyGroup } from "@/api/proxy";
+import { isNodePoolDegraded } from "@/utils/latency";
 
 export const useProxyStore = defineStore("proxy", {
   state: () => ({
@@ -76,17 +77,17 @@ export const useProxyStore = defineStore("proxy", {
     /** 批量测速指定节点（去重）：分块限并发（每批 10 个）防止一次性全量并发压垮后端；
      *  testingNodes 标志防重入。
      *
-     *  自愈：若**所有**被测节点都超时（节点全挂），立即通知后端拉取最新订阅
-     *  （节点全挂通常是订阅过期/机场换端口所致）。后端自带冷却限流，重复
-     *  触发不会打爆订阅服务器。 */
+     *  自愈：若**所有**被测节点都不可用（全部超时，或全部延迟高于「较差」阈值，
+     *  或两者混合），立即通知后端同时刷新「节点数据」与「地理数据/规则」
+     *  （节点池整体异常通常是订阅过期或 GeoData/规则陈旧所致）。后端自带
+     *  10 分钟冷却限流，重复触发不会打爆上游。 */
     async testNodes(names: string[]) {
       if (this.testingNodes) return;
       this.testingNodes = true;
       try {
         const nodes = [...new Set(names)];
         const CHUNK = 10;
-        let tested = 0;
-        let failed = 0;
+        const testedDelays: Array<number | null | undefined> = [];
         for (let i = 0; i < nodes.length; i += CHUNK) {
           const batch = nodes.slice(i, i + CHUNK);
           await Promise.allSettled(
@@ -99,16 +100,12 @@ export const useProxyStore = defineStore("proxy", {
               }
             })
           );
-          for (const n of batch) {
-            const d = this.nodeDelays[n];
-            tested += 1;
-            if (d === null || d === undefined || d <= 0) failed += 1;
-          }
+          for (const n of batch) testedDelays.push(this.nodeDelays[n]);
         }
-        // 全部超时 → 立即拉取最新订阅（后端限流，不会反复打上游）
-        if (tested > 0 && failed === tested) {
+        // 节点池整体不可用（全超时 / 全异常慢）→ 立即触发两类数据自愈更新
+        if (isNodePoolDegraded(testedDelays)) {
           try {
-            await proxyApi.reportAllNodesTimeout();
+            await proxyApi.triggerAutoRecovery();
           } catch {
             // 自愈失败不影响测速结果
           }

@@ -216,7 +216,6 @@ const sessionLine = computed(() =>
 
       <!-- 自动更新状态：何时更新、成功还是失败 -->
       <section class="ce-card autoupdate-card" :aria-label="$t('dashboard.autoupdate_title')">
-        <h3 class="autoupdate-title">{{ $t("dashboard.autoupdate_title") }}</h3>
         <dl class="autoupdate-list">
           <div class="autoupdate-row">
             <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_node") }}</dt>
@@ -281,12 +280,6 @@ const sessionLine = computed(() =>
 /* 实时流量（活动）卡片：第 3 位，占满整行。 */
 .traffic-card {
   grid-column: 1 / -1;
-}
-
-.autoupdate-title {
-  margin: 0;
-  font: var(--ce-type-title-3);
-  color: var(--ce-text-primary);
 }
 
 .autoupdate-list {

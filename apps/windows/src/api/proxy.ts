@@ -30,11 +30,14 @@ export const proxyApi = {
   select: (group: string, proxy: string) =>
     invoke<void>("select_proxy_group", { group, proxy }),
   /**
-   * 通知后端"所有节点都超时了" → 立即拉取全部订阅（自愈）。
-   * 后端自带冷却限流，重复调用不会打爆订阅服务器。
+   * 节点池整体不可用（全部超时 / 全部异常慢）→ 立即触发「节点数据 + 地理数据/规则」
+   * 自愈更新。后端按两个自动更新开关分别执行，并自带 10 分钟冷却限流。
    */
-  reportAllNodesTimeout: () =>
-    invoke<{ triggered: boolean; refreshed: number; reason: string }>(
-      "trigger_subscription_refresh",
-    ),
+  triggerAutoRecovery: () =>
+    invoke<{
+      triggered: boolean;
+      refreshed: number;
+      geo_updated: boolean;
+      reason: string;
+    }>("trigger_auto_recovery"),
 };
