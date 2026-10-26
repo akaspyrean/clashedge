@@ -6,6 +6,10 @@ import com.clashedge.android.config.AppConfigStore
 import com.clashedge.android.repository.ProfileRepository
 import com.clashedge.android.subscription.SubscriptionRepository
 import com.clashedge.android.util.Logger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * App-scoped dependency container.
@@ -25,6 +29,9 @@ class ClashEdgeApp : Application() {
     lateinit var coordinator: ProxyCoordinator
         private set
 
+    /** App-scoped IO dispatcher for work that must outlive any Activity. */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         super.onCreate()
         Logger.init(this)
@@ -33,8 +40,6 @@ class ClashEdgeApp : Application() {
         profiles = ProfileRepository(this, subscriptions, appConfig)
         coordinator = ProxyCoordinator(this, appConfig, profiles)
         // Load profiles off the main thread
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            profiles.load()
-        }
+        appScope.launch { profiles.load() }
     }
 }

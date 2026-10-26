@@ -16,14 +16,14 @@ import com.clashedge.android.util.Logger
 import com.clashedge.android.vpn.ClashVpnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Mutex
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Single source of truth for the proxy lifecycle. UI state must always reflect the
@@ -119,17 +119,19 @@ class ProxyCoordinator(
         }
     }
 
-    private fun stopServices() = lifecycleMutex.withLock {
+    private fun stopServices() {
         scope.launch {
-            _state.value = ConnectionState.STOPPING
-            core.stop()
-            context.stopService(Intent(context, ProxyForegroundService::class.java))
-            context.stopService(Intent(context, ClashVpnService::class.java))
-            // Keep _error if it was ERROR, only clear on explicit stop
-            if (_state.value != ConnectionState.ERROR) {
-                _error.value = null
+            lifecycleMutex.withLock {
+                _state.value = ConnectionState.STOPPING
+                core.stop()
+                context.stopService(Intent(context, ProxyForegroundService::class.java))
+                context.stopService(Intent(context, ClashVpnService::class.java))
+                // Keep _error if it was ERROR, only clear on explicit stop
+                if (_state.value != ConnectionState.ERROR) {
+                    _error.value = null
+                }
+                _state.value = ConnectionState.STOPPED
             }
-            _state.value = ConnectionState.STOPPED
         }
     }
 

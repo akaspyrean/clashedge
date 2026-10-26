@@ -23,7 +23,9 @@ jobs:
     timeout-minutes: 60
     env:
       MIHOMO_VERSION: ${{ inputs.mihomo-version }}
-      GO_VERSION: "1.22"
+      # gomobile (golang.org/x/mobile@latest) needs a modern Go toolchain; 1.22
+      # fails at `go install golang.org/x/mobile/cmd/gomobile@latest`.
+      GO_VERSION: "1.26"
 
     steps:
       - name: Checkout ClashEdge (for wrapper)
