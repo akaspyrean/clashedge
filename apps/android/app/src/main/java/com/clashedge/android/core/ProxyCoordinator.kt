@@ -17,13 +17,13 @@ import com.clashedge.android.vpn.ClashVpnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Single source of truth for the proxy lifecycle. UI state must always reflect the
@@ -61,7 +61,7 @@ class ProxyCoordinator(
     init {
         // Observe MihomoCore.running/error and keep local state in sync (single source of truth).
         scope.launch {
-            core.running.distinctUntilChanged().collect { isRunning ->
+            core.running.collect { isRunning ->
                 if (isRunning && _state.value != ConnectionState.RUNNING) {
                     _state.value = ConnectionState.RUNNING
                     _error.value = null
@@ -73,7 +73,7 @@ class ProxyCoordinator(
             }
         }
         scope.launch {
-            core.error.distinctUntilChanged().collect { err ->
+            core.error.collect { err ->
                 if (err != null) {
                     _error.value = err
                     _lastError.value = err
@@ -91,31 +91,33 @@ class ProxyCoordinator(
         return if (p == null) null else p
     }
 
-    suspend fun start() = lifecycleMutex.withLock {
-        if (_state.value == ConnectionState.RUNNING) return
-        if (_state.value == ConnectionState.STARTING || _state.value == ConnectionState.STOPPING) {
-            Logger.warn("start() called during transition; ignoring")
-            return
-        }
-        _state.value = ConnectionState.STARTING
-        _error.value = null
-        try {
-            val settings = appConfig.settings.first()
-            val rulesDir = profiles.rulesDir()
-            val config = RuntimeConfigGenerator.build(
-                mode = settings.mode,
-                nodes = profiles.activeNodes(),
-                rulesDir = rulesDir,
-            )
-            val svc = Intent(context, ProxyForegroundService::class.java)
-                .putExtra(ProxyForegroundService.EXTRA_CONFIG, config)
-                .putExtra(ProxyForegroundService.EXTRA_MODE, settings.mode)
-            context.startForegroundService(svc)
-        } catch (t: Throwable) {
-            _error.value = t.message
-            _lastError.value = t.message
-            _state.value = ConnectionState.ERROR
-            Logger.error("proxy start failed: $t")
+    suspend fun start() {
+        lifecycleMutex.withLock {
+            if (_state.value == ConnectionState.RUNNING) return@withLock
+            if (_state.value == ConnectionState.STARTING || _state.value == ConnectionState.STOPPING) {
+                Logger.warn("start() called during transition; ignoring")
+                return@withLock
+            }
+            _state.value = ConnectionState.STARTING
+            _error.value = null
+            try {
+                val settings = appConfig.settings.first()
+                val rulesDir = profiles.rulesDir()
+                val config = RuntimeConfigGenerator.build(
+                    mode = settings.mode,
+                    nodes = profiles.activeNodes(),
+                    rulesDir = rulesDir,
+                )
+                val svc = Intent(context, ProxyForegroundService::class.java)
+                    .putExtra(ProxyForegroundService.EXTRA_CONFIG, config)
+                    .putExtra(ProxyForegroundService.EXTRA_MODE, settings.mode)
+                context.startForegroundService(svc)
+            } catch (t: Throwable) {
+                _error.value = t.message
+                _lastError.value = t.message
+                _state.value = ConnectionState.ERROR
+                Logger.error("proxy start failed: $t")
+            }
         }
     }
 
