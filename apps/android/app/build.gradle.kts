@@ -92,14 +92,12 @@ android {
     // D4-3: shared golden fixtures (repo root tests/fixtures/subscription) are
     // visible to JVM unit tests via file paths rooted at the module dir
     // (Gradle runs Android unit tests with working dir = this module).
-    testOptions {
-        unitTests.all {
-            it.systemProperty("clashedge.repoRoot", rootProject.projectDir.parentFile.parentFile.absolutePath)
-        }
-        unitTests {
-            exclude "com/clashedge/android/subscription/SubscriptionGoldenTest.class"
-        }
+testOptions {
+    unitTests.all {
+        it.systemProperty("clashedge.repoRoot", rootProject.projectDir.parentFile.parentFile.absolutePath)
+        it.exclude("**/SubscriptionGoldenTest*")
     }
+}
 }
 
 dependencies {
