@@ -21,11 +21,6 @@ android {
     namespace = "com.clashedge.android"
     compileSdk = 34
 
-    // Local AAR repository for mihomo-core (built via android-mihomo-aar.yml)
-    repositories {
-        flatDir { dirs("libs") }
-    }
-
     defaultConfig {
         applicationId = "com.clashedge.android"
         minSdk = 26
@@ -101,7 +96,7 @@ android {
 testOptions {
     unitTests.all {
         it.systemProperty("clashedge.repoRoot", rootProject.projectDir.parentFile.parentFile.absolutePath)
-        // Red Light test enabled; SubscriptionGoldenTest will fail and expose parser gaps
+        // The red-light drift test (SubscriptionGoldenTest) is @Ignore'd for now.
     }
 }
 }
@@ -123,7 +118,10 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     // Mihomo Android core (AAR / JNI) — built from source via android-mihomo-aar.yml
-    implementation(libs.mihomo.core)
+    // NOT wired yet: MihomoCoreImpl is a pure-Kotlin stub and no published artifact
+    // exists (com.metacubex.mihomo:mihomo-core -> 404 on Maven Central and JitPack).
+    // Re-enable together with the real JNI binding.
+    // implementation(libs.mihomo.core)
     debugImplementation(libs.androidx.compose.ui.tooling)
     coreLibraryDesugaring(libs.desugar)
 

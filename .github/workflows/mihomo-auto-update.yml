@@ -1,86 +1,113 @@
 name: Auto-update mihomo Android binary
 
+# Manual only: the Android app still ships the pure-Kotlin MihomoCore stub and does
+# not consume the AAR yet, so there is no reason to rebuild it on a schedule.
+# Run this workflow to pin a newer mihomo version and rebuild the AAR.
+#
+# The build itself lives in the reusable workflow android-mihomo-aar.yml; reusable
+# workflows can only be called at JOB level (a step-level `uses:` is invalid).
 on:
-  schedule:
-    - cron: '0 2 * * 1'  # 每周一 02:00 UTC
   workflow_dispatch:
     inputs:
       force:
-        description: "Force rebuild even if version unchanged"
+        description: "Rebuild even if the pinned version is already the latest"
         type: boolean
         default: false
 
 permissions:
   contents: write
-  pull-requests: write
-  actions: read
+  issues: write
 
 jobs:
-  check-and-build:
+  resolve:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    outputs:
+      update_needed: ${{ steps.check.outputs.update_needed }}
+      new_version: ${{ steps.check.outputs.new_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get current mihomo version
+      - name: Read pinned mihomo version
         id: current
         run: |
-          CURRENT=$(grep 'MIHOMO_VERSION' .github/workflows/android-mihomo-aar.yml | head -1 | sed 's/.*"\(v[^"]*\)".*/\1/')
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          # Single source: the workflow_dispatch default in android-mihomo-aar.yml.
+          CURRENT=$(sed -n 's/^ *default: "\(v[0-9][0-9.]*\)".*/\1/p' .github/workflows/android-mihomo-aar.yml | head -1)
+          if [ -z "$CURRENT" ]; then
+            echo "cannot read the pinned mihomo version from android-mihomo-aar.yml"
+            exit 1
+          fi
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
 
       - name: Get latest mihomo release
         id: latest
         run: |
-          LATEST=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r .tag_name)
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          LATEST=$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r .tag_name)
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "cannot resolve the latest mihomo release"
+            exit 1
+          fi
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Check if update needed
         id: check
+        env:
+          FORCE: ${{ inputs.force }}
         run: |
-          if [ "${{ steps.current.outputs.current }}" = "${{ steps.latest.outputs.latest }}" ] && [ "${{ github.event.inputs.force }}" != "true" ]; then
-            echo "update_needed=false" >> $GITHUB_OUTPUT
-            echo "new_version=" >> $GITHUB_OUTPUT
-            echo "No update needed"
+          set -euo pipefail
+          if [ "${{ steps.current.outputs.current }}" = "${{ steps.latest.outputs.latest }}" ] && [ "$FORCE" != "true" ]; then
+            echo "update_needed=false" >> "$GITHUB_OUTPUT"
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+            echo "Already pinned to ${{ steps.latest.outputs.latest }} - nothing to do."
           else
-            echo "update_needed=true" >> $GITHUB_OUTPUT
-            echo "new_version=${{ steps.latest.outputs.latest }}" >> $GITHUB_OUTPUT
+            echo "update_needed=true" >> "$GITHUB_OUTPUT"
+            echo "new_version=${{ steps.latest.outputs.latest }}" >> "$GITHUB_OUTPUT"
             echo "Update available: ${{ steps.current.outputs.current }} -> ${{ steps.latest.outputs.latest }}"
           fi
 
-      - name: Update workflow default version
+      - name: Pin the new version and commit
         if: steps.check.outputs.update_needed == 'true'
         run: |
-          sed -i "s/default: \"${{ steps.current.outputs.current }}\"/default: \"${{ steps.check.outputs.new_version }}\"/" .github/workflows/android-mihomo-aar.yml
-
-      - name: Build Android binaries
-        id: build
-        if: steps.check.outputs.update_needed == 'true'
-        uses: ./.github/workflows/android-mihomo-aar.yml
-        with:
-          mihomo-version: ${{ steps.check.outputs.new_version }}
-        secrets: inherit
-
-      - name: Commit version bump
-        if: steps.check.outputs.update_needed == 'true' && success()
-        run: |
+          set -euo pipefail
+          sed -i "s|default: \"${{ steps.current.outputs.current }}\"|default: \"${{ steps.check.outputs.new_version }}\"|" .github/workflows/android-mihomo-aar.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/android-mihomo-aar.yml
-          git commit -m "chore: update mihomo Android binary to ${{ steps.check.outputs.new_version }} [skip ci]"
-          git push
+          git diff --quiet && { echo "nothing to commit"; exit 0; }
+          git commit -am "chore: pin mihomo Android build to ${{ steps.check.outputs.new_version }} [skip ci]"
+          git push origin "HEAD:${{ github.ref_name }}"
 
-      - name: Create issue on build failure
-        if: steps.check.outputs.update_needed == 'true' && failure()
-        uses: actions/github-script@v7
+  build-aar:
+    needs: resolve
+    if: needs.resolve.outputs.update_needed == 'true'
+    uses: ./.github/workflows/android-mihomo-aar.yml
+    with:
+      mihomo-version: ${{ needs.resolve.outputs.new_version }}
+
+  report-failure:
+    needs: [resolve, build-aar]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
         with:
           script: |
-            github.rest.issues.create({
+            await github.rest.issues.create({
               owner: 'akaspyrean',
               repo: 'clashedge',
-              title: `⚠️ mihomo ${{ steps.check.outputs.new_version }} Android binary build failed`,
-              body: `Automated update to mihomo ${{ steps.check.outputs.new_version }} failed.\n\n**Action required:**\n1. Check build logs for compilation errors\n2. Fix if needed (usually NDK/go version compatibility)\n3. Manually trigger \`Build mihomo Android AAR\` workflow after fix\n\nCurrent version: ${{ steps.current.outputs.current }}\nTarget version: ${{ steps.check.outputs.new_version }}`,
-              labels: ['android', 'mihomo', 'automation-failed']
-            })
+              title: `⚠️ mihomo ${{ needs.resolve.outputs.new_version }} Android AAR build failed`,
+              body: [
+                'The `Build mihomo Android AAR` run triggered by `Auto-update mihomo Android binary` failed.',
+                '',
+                `- Target version: \`${{ needs.resolve.outputs.new_version }}\``,
+                `- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+                '',
+                'Fix the build (usually NDK / Go version compatibility) and re-run the AAR workflow manually.',
+              ].join('\n'),
+              labels: ['android', 'mihomo', 'automation-failed'],
+            });

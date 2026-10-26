@@ -37,7 +37,8 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 # Mihomo Android core (AAR / JNI). Built from source via android-mihomo-aar.yml workflow.
 # For local dev: place mihomo-core.aar in apps/android/app/libs/
 # For CI: download from workflow artifact.
-mihomo-core = { group = "com.metacubex.mihomo", name = "mihomo-core", version = "1.19.33" }
+# Disabled: no such artifact is published (404 on Maven Central / JitPack).
+# mihomo-core = { group = "com.metacubex.mihomo", name = "mihomo-core", version = "1.19.33" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

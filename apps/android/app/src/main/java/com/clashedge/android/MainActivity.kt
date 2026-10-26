@@ -3,19 +3,21 @@ package com.clashedge.android
 import android.app.Activity
 import android.content.Intent
 import android.content.res.Configuration
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.Lifecycle
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.lifecycleScope
+import com.clashedge.android.config.AppSettings
 import com.clashedge.android.ui.MainScreen
 import com.clashedge.android.ui.theme.ClashEdgeTheme
-import kotlinx.coroutines.launch
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -35,32 +37,34 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Observe settings and pass darkTheme/locale to theme
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                appConfig.settings.collect { settings ->
-                    val darkTheme = settings.darkTheme ?: isSystemInDarkTheme()
-                    val config = Configuration().apply {
-                        if (settings.locale != "system" && settings.locale.isNotBlank()) {
-                            val targetLocale = Locale.forLanguageTag(settings.locale)
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                                setLocale(targetLocale)
-                            } else {
-                                locale = targetLocale
-                            }
-                        }
-                    }
-                    resources.updateConfiguration(config, resources.displayMetrics)
-                    setContent {
-                        ClashEdgeTheme(darkTheme = darkTheme) {
-                            MainScreen(
-                                onStartProxy = { requestStart() },
-                                onStopProxy = { coordinator.stop() },
-                            )
-                        }
-                    }
-                }
+        // setContent is called exactly once; settings are observed as Compose state
+        // inside the composition instead of re-invoking setContent from a coroutine.
+        setContent {
+            val settings by appConfig.settings.collectAsState(initial = AppSettings())
+            val darkTheme = settings.darkTheme ?: isSystemInDarkTheme()
+
+            ApplyAppLocale(settings.locale)
+
+            ClashEdgeTheme(darkTheme = darkTheme) {
+                MainScreen(
+                    onStartProxy = { requestStart() },
+                    onStopProxy = { coordinator.stop() },
+                )
             }
+        }
+    }
+
+    @Suppress("DEPRECATION") // resources.updateConfiguration is the only API that applies a locale to a running Activity
+    @Composable
+    private fun ApplyAppLocale(tag: String) {
+        if (tag.isBlank() || tag == "system") return
+        val target = Locale.forLanguageTag(tag)
+        if (resources.configuration.locales[0].language == target.language) return
+        LaunchedEffect(tag) {
+            val config = Configuration(resources.configuration)
+            config.setLocale(target)
+            resources.updateConfiguration(config, resources.displayMetrics)
+            recreate()
         }
     }
 
