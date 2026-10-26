@@ -34,8 +34,10 @@ desugar = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref 
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
-# Mihomo Android core (AAR / JNI). Activate once an artifact is pinned:
-# mihomo-core = { group = "com.github.MetaCubeX.mihomo", name = "mihomo-core", version = "..." }
+# Mihomo Android core (AAR / JNI). Built from source via android-mihomo-aar.yml workflow.
+# For local dev: place mihomo-core.aar in apps/android/app/libs/
+# For CI: download from workflow artifact.
+mihomo-core = { group = "com.metacubex.mihomo", name = "mihomo-core", version = "1.19.33" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

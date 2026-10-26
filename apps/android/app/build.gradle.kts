@@ -21,6 +21,11 @@ android {
     namespace = "com.clashedge.android"
     compileSdk = 34
 
+    // Local AAR repository for mihomo-core (built via android-mihomo-aar.yml)
+    repositories {
+        flatDir { dirs("libs") }
+    }
+
     defaultConfig {
         applicationId = "com.clashedge.android"
         minSdk = 26
@@ -117,8 +122,8 @@ dependencies {
     implementation(libs.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
-    // Mihomo Android core (AAR / JNI) — activate once the artifact is pinned:
-    // implementation(libs.mihomo.core)
+    // Mihomo Android core (AAR / JNI) — built from source via android-mihomo-aar.yml
+    implementation(libs.mihomo.core)
     debugImplementation(libs.androidx.compose.ui.tooling)
     coreLibraryDesugaring(libs.desugar)
 
