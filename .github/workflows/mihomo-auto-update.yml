@@ -1,0 +1,86 @@
+name: Auto-update mihomo Android binary
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # 每周一 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force rebuild even if version unchanged"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get current mihomo version
+        id: current
+        run: |
+          CURRENT=$(grep 'MIHOMO_VERSION' .github/workflows/android-mihomo-aar.yml | head -1 | sed 's/.*"\(v[^"]*\)".*/\1/')
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+      - name: Get latest mihomo release
+        id: latest
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r .tag_name)
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+
+      - name: Check if update needed
+        id: check
+        run: |
+          if [ "${{ steps.current.outputs.current }}" = "${{ steps.latest.outputs.latest }}" ] && [ "${{ github.event.inputs.force }}" != "true" ]; then
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "new_version=" >> $GITHUB_OUTPUT
+            echo "No update needed"
+          else
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "new_version=${{ steps.latest.outputs.latest }}" >> $GITHUB_OUTPUT
+            echo "Update available: ${{ steps.current.outputs.current }} -> ${{ steps.latest.outputs.latest }}"
+          fi
+
+      - name: Update workflow default version
+        if: steps.check.outputs.update_needed == 'true'
+        run: |
+          sed -i "s/default: \"${{ steps.current.outputs.current }}\"/default: \"${{ steps.check.outputs.new_version }}\"/" .github/workflows/android-mihomo-aar.yml
+
+      - name: Build Android binaries
+        id: build
+        if: steps.check.outputs.update_needed == 'true'
+        uses: ./.github/workflows/android-mihomo-aar.yml
+        with:
+          mihomo-version: ${{ steps.check.outputs.new_version }}
+        secrets: inherit
+
+      - name: Commit version bump
+        if: steps.check.outputs.update_needed == 'true' && success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/android-mihomo-aar.yml
+          git commit -m "chore: update mihomo Android binary to ${{ steps.check.outputs.new_version }} [skip ci]"
+          git push
+
+      - name: Create issue on build failure
+        if: steps.check.outputs.update_needed == 'true' && failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: 'akaspyrean',
+              repo: 'clashedge',
+              title: `⚠️ mihomo ${{ steps.check.outputs.new_version }} Android binary build failed`,
+              body: `Automated update to mihomo ${{ steps.check.outputs.new_version }} failed.\n\n**Action required:**\n1. Check build logs for compilation errors\n2. Fix if needed (usually NDK/go version compatibility)\n3. Manually trigger \`Build mihomo Android AAR\` workflow after fix\n\nCurrent version: ${{ steps.current.outputs.current }}\nTarget version: ${{ steps.check.outputs.new_version }}`,
+              labels: ['android', 'mihomo', 'automation-failed']
+            })
