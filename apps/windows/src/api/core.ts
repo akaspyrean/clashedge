@@ -7,6 +7,7 @@ export interface CoreStatus {
   running: boolean;
   status: string;
   version?: string | null;
+  errorMessage?: string | null;
 }
 
 export const coreApi = {

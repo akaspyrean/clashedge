@@ -118,6 +118,14 @@ const coreState = computed<CoreState>(() => {
   if (coreError.value) return "error";
   return running.value ? "running" : "stopped";
 });
+/** 核心错误详情（从状态字符串中提取） */
+const coreErrorMessage = computed(() => {
+  if (!coreError.value) return undefined;
+  const status = core.status.status ?? "";
+  const prefix = "error: ";
+  const idx = status.indexOf(prefix);
+  return idx >= 0 ? status.slice(idx + prefix.length) : undefined;
+});
 /** 「已连接」= 核心运行且系统代理或 TUN 至少开启一个；运行但没接管流量时如实说明。 */
 const coreLabel = computed(() =>
   coreState.value === "running" && !carrying.value ? t("dashboard.status_idle") : undefined,
@@ -172,13 +180,21 @@ const sessionLine = computed(() =>
     <div class="dash-grid">
       <!-- 状态核心 -->
       <section class="ce-card core-card" :aria-label="$t('dashboard.core_status')">
-        <CeStatusCore :state="coreState" :label="coreLabel" @toggle="onToggleCore">
-          <div class="core-meta-grid">
-            <span class="core-meta core-version">mihomo v{{ coreVersion }}</span>
-            <span class="core-meta core-port">混合端口 {{ mixedPort }}</span>
-            <el-button size="small" :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
-            <el-button size="small" plain :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
-          </div>
+        <CeStatusCore :state="coreState" :label="coreLabel" :error-message="coreErrorMessage" @toggle="onToggleCore">
+          <template #info>
+            <div class="core-info">
+              <div class="core-info-line">混合端口 {{ mixedPort }}</div>
+              <div class="core-info-line">mihomo v{{ coreVersion }}</div>
+            </div>
+          </template>
+          <template #actions="{ statusText }">
+            <div class="ce-core__actions">
+              <span class="core-status-label">{{ statusText }}</span>
+              <span v-if="coreLabel" class="core-status-label">{{ coreLabel }}</span>
+              <el-button size="small" :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
+              <el-button size="small" plain :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
+            </div>
+          </template>
         </CeStatusCore>
 
         <div class="core-divider" aria-hidden="true"></div>
@@ -320,46 +336,29 @@ const sessionLine = computed(() =>
 /* ---- 状态核心 ---- */
 .core-card {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--ce-space-5);
+  flex-direction: column;
+  gap: var(--ce-space-4);
 }
 
-.core-card > :first-child {
-  flex: 1 1 320px;
+.core-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.core-meta {
+.core-info-line {
   font: var(--ce-type-callout);
   color: var(--ce-text-secondary);
-  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
 }
 
-.core-meta-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto auto;
-  align-items: center;
-  gap: var(--ce-space-2) var(--ce-space-3);
-  width: 100%;
-  margin-top: var(--ce-space-3);
-}
-
-.core-version {
-  text-align: left;
-}
-
-.core-port {
-  text-align: right;
-}
-
-.core-links {
-  display: flex;
-  gap: var(--ce-space-2);
-  margin-top: var(--ce-space-3);
+.core-status-label {
+  font: var(--ce-type-callout);
+  color: var(--ce-text-secondary);
+  margin-right: var(--ce-space-2);
 }
 
 .core-divider {
-  flex-basis: 100%;
   height: 1px;
   background: var(--ce-divider);
 }

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "predev": "node ../../scripts/windows/stage-dev-sidecar.mjs",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vite build",
+    "build:check": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",

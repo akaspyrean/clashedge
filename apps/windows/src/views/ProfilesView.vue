@@ -49,6 +49,7 @@ function open(kind: "rename" | "edit" | "ua", name: string, ua?: string | null) 
 // 失败集合仅在本次会话内记忆，用于卡片上的「更新失败」状态标签。
 const refreshing = ref(new Set<string>());
 const failed = ref(new Set<string>());
+const failedMessages = ref(new Map<string, string>());
 
 function onExport(name: string | null) {
   exportTarget.value = name;
@@ -70,9 +71,11 @@ async function onRefresh(name: string) {
   try {
     await profiles.refreshSubscription(name);
     failed.value.delete(name);
+    failedMessages.value.delete(name);
     notify.ok();
   } catch (e) {
     failed.value.add(name);
+    failedMessages.value.set(name, String(e instanceof Error ? e.message : e));
     notify.fail(e);
   } finally {
     refreshing.value.delete(name);
@@ -131,6 +134,7 @@ async function onDelete(name: string) {
           :profile="p"
           :busy="refreshing.has(p.name)"
           :failed="failed.has(p.name)"
+          :error-message="failedMessages.get(p.name)"
           @activate="onActivate(p.name)"
           @refresh="onRefresh(p.name)"
           @rename="open('rename', p.name)"
