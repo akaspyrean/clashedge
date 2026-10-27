@@ -12,9 +12,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.clashedge.android.R
 import com.clashedge.android.model.LogEntry
 import kotlinx.coroutines.flow.StateFlow
 
@@ -26,7 +28,7 @@ fun LogsScreen(
 ) {
     val entries by logs.collectAsState()
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
-        Text("Logs", style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.nav_logs), style = MaterialTheme.typography.titleLarge)
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(entries.reversed(), key = { "${it.time}:${it.message.hashCode()}" }) { e ->
                 Text(

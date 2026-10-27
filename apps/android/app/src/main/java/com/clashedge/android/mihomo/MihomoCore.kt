@@ -61,7 +61,16 @@ class MihomoCoreImpl : MihomoCore {
     private fun invokeStatic(methodName: String, vararg args: Any): String? {
         val clazz = mihomoClass ?: return "Mihomo AAR not available"
         try {
-            val method = clazz.getMethod(methodName, *args.map { it.javaClass }.toTypedArray())
+            // gomobile 生成的 Java 方法签名：String 参数用 String，int 用 int（primitive）
+            // 反射查找时需要把 Kotlin Int 映射到 Java int.class
+            val paramTypes = args.map { arg ->
+                when (arg) {
+                    is Int -> Int::class.javaPrimitiveType ?: Int::class.java
+                    is String -> String::class.java
+                    else -> arg.javaClass
+                }
+            }.toTypedArray()
+            val method = clazz.getMethod(methodName, *paramTypes)
             val result = method.invoke(null, *args.toTypedArray())
             return result as? String
         } catch (e: Exception) {
@@ -140,11 +149,21 @@ class MihomoCoreImpl : MihomoCore {
 
     override fun queryGroups(): List<ProxyGroup> {
         try {
-            // The gomobile binding returns a JSON string or list; we'll parse it
-            val result = invokeStatic("getProxies") ?: return emptyList()
-            // TODO: Parse JSON into List<ProxyGroup>
-            // For now, return empty list until parsing is implemented
-            return emptyList()
+            val json = invokeStatic("getProxiesJSON") ?: return emptyList()
+            if (json.isBlank() || json == "Mihomo AAR not available") return emptyList()
+            // 解析 JSON 数组为 ProxyGroup 列表
+            val proxies = kotlinx.serialization.json.Json.decodeFromString<
+                List<com.clashedge.android.model.ProxyInfo>
+            >(json)
+            // 按名称分组为 ProxyGroup（简化版：每个独立节点作为一个可选项）
+            return proxies.map { proxy ->
+                ProxyGroup(
+                    name = proxy.name,
+                    type = proxy.type,
+                    nodes = listOf(proxy.name),
+                    now = proxy.name,
+                )
+            }
         } catch (e: Exception) {
             com.clashedge.android.util.Logger.error("Mihomo queryGroups failed: $e")
             return emptyList()

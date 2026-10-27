@@ -83,7 +83,7 @@ fun HomeScreen(
             }
         }
 
-        Text("Mode / 模式", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.mode_rule), style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
                 selected = settings.mode == AppSettings.MODE_RULE,

@@ -74,3 +74,13 @@ data class LogEntry(
     val level: String,
     val message: String,
 )
+
+/** Mihomo 返回的代理节点信息（JSON 解析用）。 */
+@Serializable
+data class ProxyInfo(
+    val name: String,
+    val type: String,
+    val udp: Boolean = false,
+    val alive: Boolean = false,
+    val delay: Int = 0,
+)

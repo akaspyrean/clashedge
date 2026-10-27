@@ -148,3 +148,30 @@ func IsRunning() bool {
 	defer coreMu.Unlock()
 	return started && core != nil
 }
+
+// GetProxiesJSON returns all proxies as a JSON string for easy JNI parsing.
+// Returns empty string if core is not running.
+func GetProxiesJSON() string {
+	coreMu.Lock()
+	defer coreMu.Unlock()
+
+	if !started || core == nil {
+		return ""
+	}
+
+	proxies := core.Proxies()
+	result := make([]ProxyInfo, 0, len(proxies))
+	for name, p := range proxies {
+		result = append(result, ProxyInfo{
+			Name:  name,
+			Type:  p.Type().String(),
+			UDP:   p.SupportUDP(),
+		})
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}

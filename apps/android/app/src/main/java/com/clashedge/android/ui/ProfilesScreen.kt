@@ -60,7 +60,7 @@ fun ProfilesScreen(
                 }
             }
         } else {
-            Text("No subscriptions yet.", modifier = Modifier.padding(top = 16.dp))
+            Text(stringResource(R.string.nav_profiles) + " —", modifier = Modifier.padding(top = 16.dp))
         }
     }
 
@@ -107,7 +107,7 @@ private fun ProfileCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(modifier = Modifier.padding(top = 8.dp)) {
-                TextButton(onClick = onActivate) { Text("Activate") }
+                TextButton(onClick = onActivate) { Text(stringResource(R.string.update_subscription)) }
                 if (profile.subscribeUrl != null) {
                     TextButton(onClick = onRefresh) { Text(stringResource(R.string.update_subscription)) }
                 }
