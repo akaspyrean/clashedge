@@ -189,7 +189,7 @@ const sessionLine = computed(() =>
           </template>
           <template #actions="{ statusText }">
             <div class="ce-core__actions">
-              <span class="core-status-label">{{ statusText }}</span>
+              <span class="core-status-label" role="status">{{ statusText }}</span>
               <span v-if="coreLabel" class="core-status-label">{{ coreLabel }}</span>
               <el-button size="small" :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
               <el-button size="small" plain :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
