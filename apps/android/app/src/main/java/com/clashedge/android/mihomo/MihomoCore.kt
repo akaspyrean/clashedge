@@ -33,10 +33,8 @@ interface MihomoCore {
 }
 
 /**
- * Default in-memory implementation: real JNI calls must be wired to the Mihomo
- * AAR. Kept as an explicit boundary so the Android project compiles before the
- * artifact is pinned (the no-op keeps functions/logic coordinated by
- * ProxyCoordinator intact).
+ * JNI implementation that calls the Mihomo AAR (gomobile-generated bindings).
+ * The gomobile-generated class is `mihomo.Mihomo` with static methods.
  */
 class MihomoCoreImpl : MihomoCore {
 
@@ -46,25 +44,85 @@ class MihomoCoreImpl : MihomoCore {
     override val error: StateFlow<String?> = _error
 
     override fun start(configYaml: String, tunFd: Int): String {
-        // TODO(aar): call MihomoCore.start(configYaml, tunFd) via JNI
         _error.value = null
-        _running.value = true
-        com.clashedge.android.util.Logger.info("Mihomo core start requested (config ${configYaml.length} bytes, tunFd=$tunFd)")
-        return "" // empty = success
+        try {
+            // Call the gomobile-generated JNI binding
+            val result = mihomo.Mihomo.start(configYaml, tunFd)
+            if (result.isEmpty()) {
+                _running.value = true
+                _error.value = null
+                com.clashedge.android.util.Logger.info("Mihomo core started (config ${configYaml.length} bytes, tunFd=$tunFd)")
+                return ""
+            } else {
+                _error.value = result
+                return result
+            }
+        } catch (e: Exception) {
+            val msg = "JNI start failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo core start failed: $e")
+            return msg
+        }
     }
 
     override fun stop() {
-        _running.value = false
-        com.clashedge.android.util.Logger.info("Mihomo core stop requested")
+        try {
+            val result = mihomo.Mihomo.stop()
+            _running.value = false
+            if (result.isNotBlank()) {
+                _error.value = result
+                com.clashedge.android.util.Logger.warn("Mihomo core stop returned: $result")
+            } else {
+                _error.value = null
+            }
+            com.clashedge.android.util.Logger.info("Mihomo core stopped")
+        } catch (e: Exception) {
+            val msg = "JNI stop failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo core stop failed: $e")
+        }
     }
 
     override fun setMode(mode: String) {
-        com.clashedge.android.util.Logger.info("Mihomo proxy mode -> $mode")
+        try {
+            val result = mihomo.Mihomo.setMode(mode)
+            if (result.isNotBlank()) {
+                _error.value = result
+                com.clashedge.android.util.Logger.warn("Mihomo setMode returned: $result")
+            }
+            com.clashedge.android.util.Logger.info("Mihomo proxy mode -> $mode")
+        } catch (e: Exception) {
+            val msg = "JNI setMode failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo setMode failed: $e")
+        }
     }
 
     override fun selectProxy(group: String, node: String) {
-        com.clashedge.android.util.Logger.info("select $group -> $node")
+        try {
+            val result = mihomo.Mihomo.selectProxy(group, node)
+            if (result.isNotBlank()) {
+                _error.value = result
+                com.clashedge.android.util.Logger.warn("Mihomo selectProxy returned: $result")
+            }
+            com.clashedge.android.util.Logger.info("select $group -> $node")
+        } catch (e: Exception) {
+            val msg = "JNI selectProxy failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo selectProxy failed: $e")
+        }
     }
 
-    override fun queryGroups(): List<ProxyGroup> = emptyList()
+    override fun queryGroups(): List<ProxyGroup> {
+        try {
+            // The gomobile binding returns a JSON string or list; we'll parse it
+            val json = mihomo.Mihomo.getProxies()
+            // TODO: Parse JSON into List<ProxyGroup>
+            // For now, return empty list until parsing is implemented
+            return emptyList()
+        } catch (e: Exception) {
+            com.clashedge.android.util.Logger.error("Mihomo queryGroups failed: $e")
+            return emptyList()
+        }
+    }
 }

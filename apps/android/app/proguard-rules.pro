@@ -7,6 +7,20 @@
 # Mihomo JNI bindings (when the core AAR is wired in)
 -keep class com.clashedge.android.mihomo.** { *; }
 -keep class com.github.metacubex.** { *; }
+-keep class mihomo.** { *; }
+
+# JNI native methods
+-keepclasseswithmembers class * {
+    native <methods>;
+}
+
+# Gomobile generated bindings
+-keep class mihomo.** { *; }
+-keepclassmembers class mihomo.** { *; }
+
+# Keep JSON serialization for config parsing
+-keepattributes Signature
+-keepattributes *Annotation*
 
 # Mihomo core JNI classes
 -keep class com.metacubex.mihomo.** { *; }

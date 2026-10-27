@@ -3,6 +3,7 @@ package com.clashedge.android.subscription
 import com.clashedge.android.config.AppConfigStore
 import com.clashedge.android.model.Node
 import com.clashedge.android.util.Logger
+import java.nio.charset.Charsets
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -61,9 +62,8 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
 
     /**
      * Light normalizer for a Clash `proxies:` section (flow `- { name: a, type: ss, ... }`
-     * and block `- name: a` styles). Keeps only name/type/server — still an MVP: the
-     * credentials are NOT retained, so the generated config cannot connect yet (see README
-     * "Status"). Stops at the next top-level key so `proxy-groups:` etc. are never read as nodes.
+     * and block `- name: a` styles). Extracts all credential fields so generated configs can connect.
+     * Stops at the next top-level key so `proxy-groups:` etc. are never read as nodes.
      */
     fun normalize(body: String): List<Node> {
         val nodes = mutableListOf<Node>()
@@ -75,7 +75,32 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
             val type = cur["type"]
             val server = cur["server"]
             if (name != null && type != null && server != null && nodes.none { it.name == name }) {
-                nodes.add(Node(name = name, type = type, server = server))
+                nodes.add(Node(
+                    name = name,
+                    type = type,
+                    server = server,
+                    port = cur["port"]?.toIntOrNull() ?: 0,
+                    password = cur["password"],
+                    uuid = cur["uuid"],
+                    cipher = cur["cipher"],
+                    udp = cur["udp"]?.toBooleanOrNull() ?: false,
+                    tls = cur["tls"]?.toBooleanOrNull() ?: false,
+                    sni = cur["sni"],
+                    alpn = cur["alpn"]?.split(",").map { it.trim() }.filter { it.isNotBlank() } ?: emptyList(),
+                    fingerprint = cur["fingerprint"],
+                    network = cur["network"] ?: "tcp",
+                    wsPath = cur["ws-path"] ?: cur["ws_path"],
+                    wsHeaders = parseMap(cur["ws-headers"] ?: cur["ws_headers"]),
+                    httpPath = cur["http-path"] ?: cur["http_path"],
+                    httpHeaders = parseMap(cur["http-headers"] ?: cur["http_headers"]),
+                    upMbps = cur["up"]?.toIntOrNull(),
+                    downMbps = cur["down"]?.toIntOrNull(),
+                    authStr = cur["auth-str"] ?: cur["auth_str"],
+                    method = cur["method"],
+                    flow = cur["flow"],
+                    alterId = cur["alter-id"]?.toIntOrNull(),
+                    security = cur["security"],
+                ))
             }
             cur = mutableMapOf()
         }
@@ -105,7 +130,39 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
     /** Parses `k: v` pairs from either a flow mapping (`{ a: 1, b: 2 }`) or a single block line. */
     private fun collectFields(fragment: String, into: MutableMap<String, String>) {
         val inner = fragment.trim().removePrefix("{").removeSuffix("}")
-        for (key in listOf("name", "type", "server")) {
+        val keys = listOf(
+            "name", "type", "server", "port", "password", "uuid", "cipher", "udp",
+            "tls", "sni", "alpn", "fingerprint", "network", "ws-path", "ws_path",
+            "ws-headers", "ws_headers", "http-path", "http_path", "http-headers", "http_headers",
+            "up", "down", "auth-str", "auth_str", "method", "flow", "alter-id", "alter_id", "security"
+        )
+        for (key in keys) {
+            valueOf(inner, key)?.let { into[key] = it }
+        }
+    }
+
+    /** Parse a simple comma-separated key:value map string like "k1:v1,k2:v2" into a Map. */
+    private fun parseMap(str: String?): Map<String, String> {
+        if (str == null || str.isBlank()) return emptyMap()
+        val map = mutableMapOf<String, String>()
+        for (pair in str.split(",")) {
+            val kv = pair.split(":", limit = 2)
+            if (kv.size == 2) {
+                map[kv[0].trim()] = kv[1].trim()
+            }
+        }
+        return map
+    }
+
+    /** Parses `k: v` pairs from either a flow mapping (`{ a: 1, b: 2 }`) or a single block line. */
+    private fun collectFields(fragment: String, into: MutableMap<String, String>) {
+        val inner = fragment.trim().removePrefix("{").removeSuffix("}")
+        for (key in listOf(
+            "name", "type", "server", "port", "password", "uuid", "cipher", "udp",
+            "tls", "sni", "alpn", "fingerprint", "network", "ws-path", "ws_path",
+            "ws-headers", "ws_headers", "http-path", "http_path", "http-headers", "http_headers",
+            "up", "down", "auth-str", "auth_str", "method", "flow", "alter-id", "alter_id", "security"
+        )) {
             valueOf(inner, key)?.let { into[key] = it }
         }
     }
