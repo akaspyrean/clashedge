@@ -236,14 +236,14 @@ const sessionLine = computed(() =>
       <section class="ce-card traffic-card" :aria-label="$t('dashboard.traffic_title')">
         <div class="rates">
           <div class="rate">
-            <span class="rate-label">↓ {{ $t("ui.chart.down") }}</span>
+            <span class="rate-label" style="color: var(--ce-chart-down)">↓ {{ $t("ui.chart.down") }}</span>
             <span class="rate-figures">
               <span class="rate-value">{{ downRate[0] }}</span>
               <span class="rate-unit">{{ downRate[1] }}</span>
             </span>
           </div>
           <div class="rate">
-            <span class="rate-label">↑ {{ $t("ui.chart.up") }}</span>
+            <span class="rate-label" style="color: var(--ce-chart-up)">↑ {{ $t("ui.chart.up") }}</span>
             <span class="rate-figures">
               <span class="rate-value">{{ upRate[0] }}</span>
               <span class="rate-unit">{{ upRate[1] }}</span>

@@ -21,10 +21,15 @@ const store = useConnectionsStore();
 const closing = useAction();
 const confirm = useConfirm();
 
+const chartRef = ref<InstanceType<typeof CeTrafficChart> | null>(null);
 const query = ref("");
 const connectionCount = computed(() => store.count);
 const downRate = computed(() => splitRate(store.rateDown[store.rateDown.length - 1] ?? 0));
 const upRate = computed(() => splitRate(store.rateUp[store.rateUp.length - 1] ?? 0));
+
+function toggleChartTable() {
+  chartRef.value?.toggleTable();
+}
 
 const rows = computed(() => {
   const q = query.value.trim().toLowerCase();
@@ -73,21 +78,26 @@ async function onCloseAll() {
     <section class="ce-card overview" :aria-label="$t('connections.overview')">
       <div class="stats">
         <div class="stat">
-          <span class="stat-label">↓ {{ $t("connections.download_rate") }}</span>
+          <span class="stat-label" style="color: var(--ce-chart-down)">↓ {{ $t("connections.download_rate") }}</span>
           <span class="stat-figures">
             <span class="stat-value">{{ downRate[0] }}</span>
             <span class="stat-unit">{{ downRate[1] }}</span>
           </span>
         </div>
         <div class="stat">
-          <span class="stat-label">↑ {{ $t("connections.upload_rate") }}</span>
+          <span class="stat-label" style="color: var(--ce-chart-up)">↑ {{ $t("connections.upload_rate") }}</span>
           <span class="stat-figures">
             <span class="stat-value">{{ upRate[0] }}</span>
             <span class="stat-unit">{{ upRate[1] }}</span>
           </span>
         </div>
         <div class="stat session">
-          <span class="stat-label">
+          <button
+            type="button"
+            class="stat-label session-summary"
+            :aria-expanded="chartRef?.showTable ? 'true' : 'false'"
+            @click="toggleChartTable"
+          >
             {{
               $t("connections.session_summary", {
                 down: formatBytes(store.downloadTotal),
@@ -95,10 +105,10 @@ async function onCloseAll() {
                 n: connectionCount,
               })
             }}
-          </span>
+          </button>
         </div>
       </div>
-      <CeTrafficChart :down="store.rateDown" :up="store.rateUp" />
+      <CeTrafficChart ref="chartRef" :down="store.rateDown" :up="store.rateUp" :show-legend="false" :show-table-toggle="false" />
     </section>
 
     <div class="list-head">
@@ -127,8 +137,8 @@ async function onCloseAll() {
         <span>{{ $t("connections.host") }}</span>
         <span>{{ $t("connections.rule_chain") }}</span>
         <span>{{ $t("connections.kind") }}</span>
-        <span class="num">↓</span>
-        <span class="num">↑</span>
+        <span class="num" style="color: var(--ce-chart-down)">↓</span>
+        <span class="num" style="color: var(--ce-chart-up)">↑</span>
         <span class="num">{{ $t("connections.time") }}</span>
       </div>
       <ul class="conn-list">
@@ -197,6 +207,28 @@ async function onCloseAll() {
   color: var(--ce-text-tertiary);
   font: var(--ce-type-caption);
   white-space: nowrap;
+}
+
+/* 会话摘要按钮：可点击展开/收起数据表 */
+.session-summary {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ce-text-tertiary);
+  font: var(--ce-type-caption);
+  white-space: nowrap;
+  transition: color var(--ce-dur-fast) var(--ce-ease-standard);
+}
+
+.session-summary:hover {
+  color: var(--ce-text-secondary);
+}
+
+.session-summary:focus-visible {
+  outline: 2px solid var(--ce-accent-bg);
+  outline-offset: 2px;
+  border-radius: var(--ce-radius-xs);
 }
 
 .stat-figures {
