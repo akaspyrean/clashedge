@@ -32,9 +32,17 @@ interface MihomoCore {
     fun queryGroups(): List<ProxyGroup>
 }
 
+/** Minimal serializable box for VpnService.Mtu / address setup passed to the core. */
+data class Box(
+    val mtu: Int,
+    val addresses: List<String>,
+    val routes: List<String>,
+    val dnsServers: List<String>,
+)
+
 /**
  * JNI implementation that calls the Mihomo AAR (gomobile-generated bindings).
- * The gomobile-generated class is `mihomo.Mihomo` with static methods.
+ * Uses reflection to gracefully handle missing AAR at compile/runtime.
  */
 class MihomoCoreImpl : MihomoCore {
 
@@ -43,11 +51,28 @@ class MihomoCoreImpl : MihomoCore {
     private val _error = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override val error: StateFlow<String?> = _error
 
+    // Reflection handles to the gomobile-generated Mihomo class
+    private val mihomoClass: Class<*>? = try {
+        Class.forName("mihomo.Mihomo")
+    } catch (e: ClassNotFoundException) {
+        null
+    }
+
+    private fun invokeStatic(methodName: String, vararg args: Any): String? {
+        val clazz = mihomoClass ?: return "Mihomo AAR not available"
+        try {
+            val method = clazz.getMethod(methodName, *args.map { it.javaClass }.toTypedArray())
+            val result = method.invoke(null, *args.toTypedArray())
+            return result as? String
+        } catch (e: Exception) {
+            return "JNI $methodName failed: ${e.message}"
+        }
+    }
+
     override fun start(configYaml: String, tunFd: Int): String {
         _error.value = null
         try {
-            // Call the gomobile-generated JNI binding
-            val result = mihomo.Mihomo.start(configYaml, tunFd)
+            val result = invokeStatic("start", configYaml, tunFd) ?: return "JNI start returned null"
             if (result.isEmpty()) {
                 _running.value = true
                 _error.value = null
@@ -67,7 +92,7 @@ class MihomoCoreImpl : MihomoCore {
 
     override fun stop() {
         try {
-            val result = mihomo.Mihomo.stop()
+            val result = invokeStatic("stop") ?: return
             _running.value = false
             if (result.isNotBlank()) {
                 _error.value = result
@@ -85,7 +110,7 @@ class MihomoCoreImpl : MihomoCore {
 
     override fun setMode(mode: String) {
         try {
-            val result = mihomo.Mihomo.setMode(mode)
+            val result = invokeStatic("setMode", mode) ?: return
             if (result.isNotBlank()) {
                 _error.value = result
                 com.clashedge.android.util.Logger.warn("Mihomo setMode returned: $result")
@@ -100,7 +125,7 @@ class MihomoCoreImpl : MihomoCore {
 
     override fun selectProxy(group: String, node: String) {
         try {
-            val result = mihomo.Mihomo.selectProxy(group, node)
+            val result = invokeStatic("selectProxy", group, node) ?: return
             if (result.isNotBlank()) {
                 _error.value = result
                 com.clashedge.android.util.Logger.warn("Mihomo selectProxy returned: $result")
@@ -116,7 +141,7 @@ class MihomoCoreImpl : MihomoCore {
     override fun queryGroups(): List<ProxyGroup> {
         try {
             // The gomobile binding returns a JSON string or list; we'll parse it
-            val json = mihomo.Mihomo.getProxies()
+            val result = invokeStatic("getProxies") ?: return emptyList()
             // TODO: Parse JSON into List<ProxyGroup>
             // For now, return empty list until parsing is implemented
             return emptyList()

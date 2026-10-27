@@ -154,19 +154,6 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
         return map
     }
 
-    /** Parses `k: v` pairs from either a flow mapping (`{ a: 1, b: 2 }`) or a single block line. */
-    private fun collectFields(fragment: String, into: MutableMap<String, String>) {
-        val inner = fragment.trim().removePrefix("{").removeSuffix("}")
-        for (key in listOf(
-            "name", "type", "server", "port", "password", "uuid", "cipher", "udp",
-            "tls", "sni", "alpn", "fingerprint", "network", "ws-path", "ws_path",
-            "ws-headers", "ws_headers", "http-path", "http_path", "http-headers", "http_headers",
-            "up", "down", "auth-str", "auth_str", "method", "flow", "alter-id", "alter_id", "security"
-        )) {
-            valueOf(inner, key)?.let { into[key] = it }
-        }
-    }
-
     private fun valueOf(fragment: String, key: String): String? {
         val m = Regex("""(?:^|[\s{,])$key\s*[:=]\s*("[^"]*"|'[^']*'|[^,}]+)""").find(fragment) ?: return null
         val v = m.groupValues[1].trim()
