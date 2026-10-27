@@ -23,13 +23,16 @@ jobs:
     timeout-minutes: 60
     env:
       MIHOMO_VERSION: ${{ inputs.mihomo-version }}
-      GO_VERSION: "1.23"
+      # gomobile works best with Go 1.22; 1.23 has known issues with gomobile init
+      GO_VERSION: "1.22"
       NDK_VERSION: "27.0.12077973"
       ANDROID_API: "34"
 
     steps:
       - name: Checkout ClashEdge (for wrapper)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: clashedge
 
       - name: Checkout mihomo source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,7 +45,8 @@ jobs:
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: false
+          cache: true
+          cache-dependency-path: clashedge/apps/android/mihomo-wrapper/go.mod
 
       - name: Set up Android SDK + NDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204a1ea7dc6b021e8a7 # v3
@@ -58,10 +62,10 @@ jobs:
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
+          gomobile init -ndk
 
       - name: Build AAR from wrapper
-        working-directory: apps/android/mihomo-wrapper
+        working-directory: clashedge/apps/android/mihomo-wrapper
         run: |
           # Point go.mod at the checked-out mihomo source (three levels up to repo root)
           sed -i 's|replace github.com/metacubex/mihomo => .*|replace github.com/metacubex/mihomo => ../../../mihomo-source|' go.mod
@@ -71,7 +75,7 @@ jobs:
             .
 
       - name: Verify AAR
-        working-directory: apps/android/mihomo-wrapper
+        working-directory: clashedge/apps/android/mihomo-wrapper
         run: |
           unzip -l mihomo-core.aar
           echo "AAR size: $(du -h mihomo-core.aar)"
@@ -80,5 +84,5 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mihomo-core-aar
-          path: apps/android/mihomo-wrapper/mihomo-core.aar
+          path: clashedge/apps/android/mihomo-wrapper/mihomo-core.aar
           retention-days: 30
