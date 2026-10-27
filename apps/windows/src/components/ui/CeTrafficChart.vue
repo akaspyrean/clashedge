@@ -14,8 +14,12 @@ const props = withDefaults(
     /** 窗口秒数 */
     window?: number;
     height?: number;
+    /** 是否显示图例（下载/上传标签+色点） */
+    showLegend?: boolean;
+    /** 是否显示"查看数据表"切换按钮 */
+    showTableToggle?: boolean;
   }>(),
-  { window: 60, height: 168 },
+  { window: 60, height: 168, showLegend: true, showTableToggle: true },
 );
 const { t } = useI18n();
 
@@ -112,6 +116,12 @@ const showTable = ref(false);
 const rows = computed(() =>
   props.down.map((d, i) => ({ time: timeText(i), down: d, up: props.up[i] ?? 0 })).reverse(),
 );
+
+// Expose for external control
+defineExpose({
+  showTable,
+  toggleTable: () => { showTable.value = !showTable.value; },
+});
 </script>
 
 <template>
@@ -155,14 +165,15 @@ const rows = computed(() =>
       </div>
     </div>
 
-    <div class="ce-chart__foot">
-      <span class="ce-chart__legend"><i class="ce-chart__dot ce-chart__dot--down" />{{ t("ui.chart.down") }}</span>
-      <span class="ce-chart__legend"><i class="ce-chart__dot ce-chart__dot--up" />{{ t("ui.chart.up") }}</span>
+    <div class="ce-chart__foot" v-if="showLegend || showTableToggle">
+      <span class="ce-chart__legend" v-if="showLegend"><i class="ce-chart__dot ce-chart__dot--down" />{{ t("ui.chart.down") }}</span>
+      <span class="ce-chart__legend" v-if="showLegend"><i class="ce-chart__dot ce-chart__dot--up" />{{ t("ui.chart.up") }}</span>
       <button
         type="button"
         class="ce-chart__toggle"
         :aria-expanded="showTable ? 'true' : 'false'"
         @click="showTable = !showTable"
+        v-if="showTableToggle"
       >
         {{ showTable ? t("ui.chart.hide_table") : t("ui.chart.show_table") }}
       </button>
