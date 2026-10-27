@@ -122,9 +122,6 @@ const coreState = computed<CoreState>(() => {
 const coreLabel = computed(() =>
   coreState.value === "running" && !carrying.value ? t("dashboard.status_idle") : undefined,
 );
-const versionLine = computed(() =>
-  t("dashboard.version_port", { version: core.status.version ?? "—", port: config.config?.["mixed-port"] ?? "—" }),
-);
 const coreVersion = computed(() => core.status.version ?? "—");
 const mixedPort = computed(() => config.config?.["mixed-port"] ?? "—");
 
