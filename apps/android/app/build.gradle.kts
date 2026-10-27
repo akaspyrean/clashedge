@@ -7,13 +7,6 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-// Local AAR repository for mihomo-core (built via android-mihomo-aar.yml)
-repositories {
-    flatDir {
-        dirs("libs")
-    }
-}
-
 // 版本号控制与 Windows 一致（src-tauri/src/update/mod.rs::current_version）：
 // release tag 是唯一版本来源，CI 通过 CLASHEDGE_RELEASE_VERSION 注入；
 // 本地开发构建回退为 "dev"。
@@ -129,7 +122,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // Mihomo Android core (AAR / JNI) — built from source via android-mihomo-aar.yml
     // Place mihomo-core.aar in app/libs/ to enable (auto-detected).
-    val mihomoAar = file("libs/mihomo-core.aar")
+    val mihomoAar = file("app/libs/mihomo-core.aar")
     if (mihomoAar.exists()) {
         implementation(files(mihomoAar))
     }

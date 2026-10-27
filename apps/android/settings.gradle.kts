@@ -21,6 +21,8 @@ dependencyResolutionManagement {
         mavenCentral()
         // Mihomo Android core (AAR / JNI).
         maven { url = uri("https://jitpack.io") }
+        // Local AAR for mihomo-core (built via android-mihomo-aar.yml)
+        flatDir { dirs(":app:libs") }
     }
 }
 
