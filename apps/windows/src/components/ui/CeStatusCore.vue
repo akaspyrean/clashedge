@@ -5,7 +5,7 @@
        - info: 中部两行文本（左对齐），如版本/端口
        - actions: 右侧操作按钮区 -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useSlots } from "vue";
 import { useI18n } from "vue-i18n";
 import { Power, TriangleAlert, AlertCircle } from "lucide-vue-next";
 
@@ -20,6 +20,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ toggle: [] }>();
 const { t } = useI18n();
+const slots = useSlots();
 
 const statusText = computed(() => props.label ?? t(`ui.core.${props.state}`));
 const ariaLabel = computed(() => {
