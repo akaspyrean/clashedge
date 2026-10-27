@@ -1,9 +1,17 @@
+import java.io.File
 import java.util.Base64
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
+}
+
+// Local AAR repository for mihomo-core (built via android-mihomo-aar.yml)
+repositories {
+    flatDir {
+        dirs("libs")
+    }
 }
 
 // 版本号控制与 Windows 一致（src-tauri/src/update/mod.rs::current_version）：
@@ -120,10 +128,11 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     // Mihomo Android core (AAR / JNI) — built from source via android-mihomo-aar.yml
-    // NOT wired yet: MihomoCoreImpl is a pure-Kotlin stub and no published artifact
-    // exists (com.metacubex.mihomo:mihomo-core -> 404 on Maven Central and JitPack).
-    // Re-enable together with the real JNI binding.
-    // implementation(libs.mihomo.core)
+    // Place mihomo-core.aar in app/libs/ to enable (auto-detected).
+    val mihomoAar = file("libs/mihomo-core.aar")
+    if (mihomoAar.exists()) {
+        implementation(files(mihomoAar))
+    }
     debugImplementation(libs.androidx.compose.ui.tooling)
     coreLibraryDesugaring(libs.desugar)
 

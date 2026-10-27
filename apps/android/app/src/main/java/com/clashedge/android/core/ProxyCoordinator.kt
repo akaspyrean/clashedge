@@ -5,7 +5,7 @@ import android.content.Intent
 import android.net.VpnService
 import com.clashedge.android.config.AppConfigStore
 import com.clashedge.android.config.RuntimeConfigGenerator
-import com.clashedge.android.mihomo.Box
+
 import com.clashedge.android.mihomo.MihomoCore
 import com.clashedge.android.mihomo.MihomoCoreImpl
 import com.clashedge.android.model.ConnectionState
@@ -150,13 +150,13 @@ class ProxyCoordinator(
     }
 
     /** Called by ClashVpnService once the TUN fd is ready. */
-    fun onVpnEstablished(fd: Int, box: Box, config: String) {
+    fun onVpnEstablished(fd: Int, config: String) {
         scope.launch {
             try {
-                core.startTun(fd, box)
-                if (core.start(config)) onCoreRunning()
+                val err = core.start(config, fd)
+                if (err.isEmpty()) onCoreRunning()
                 else {
-                    onCoreError("Mihomo core failed to start")
+                    onCoreError("Mihomo core failed to start: $err")
                     stopServices()
                 }
             } catch (t: Throwable) {

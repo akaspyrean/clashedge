@@ -2,8 +2,7 @@ package mihomo
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"fmt"
 	"sync"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -18,37 +17,6 @@ var (
 	started bool
 )
 
-// Config holds simplified configuration for gomobile
-type Config struct {
-	MixedPort     int      `json:"mixed-port"`
-	ExternalUI    string   `json:"external-ui"`
-	ExternalCtrl  string   `json:"external-controller"`
-	Secret        string   `json:"secret"`
-	Mode          string   `json:"mode"`
-	LogLevel      string   `json:"log-level"`
-	AllowLan      bool     `json:"allow-lan"`
-	DNSServers    []string `json:"dns-servers"`
-	Proxies       []ProxyConfig `json:"proxies"`
-	ProxyGroups   []GroupConfig `json:"proxy-groups"`
-	Rules         []string `json:"rules"`
-}
-
-type ProxyConfig struct {
-	Name     string            `json:"name"`
-	Type     string            `json:"type"`
-	Server   string            `json:"server"`
-	Port     int               `json:"port"`
-	Password string            `json:"password"`
-	Options  map[string]string `json:"options,omitempty"`
-}
-
-type GroupConfig struct {
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`
-	Proxies []string `json:"proxies"`
-	Options map[string]string `json:"options,omitempty"`
-}
-
 // ProxyInfo represents a proxy for UI
 type ProxyInfo struct {
 	Name   string `json:"name"`
@@ -58,9 +26,11 @@ type ProxyInfo struct {
 	Delay  int    `json:"delay"`
 }
 
-// Start initializes and starts mihomo core with JSON config
+// Start initializes and starts mihomo core with YAML config
+// configYAML: full mihomo config in YAML format
+// tunFD: file descriptor from Android VpnService (0 if not using TUN)
 // Returns empty string on success, error message on failure
-func Start(configJSON string) string {
+func Start(configYAML string, tunFD int) string {
 	coreMu.Lock()
 	defer coreMu.Unlock()
 
@@ -68,16 +38,19 @@ func Start(configJSON string) string {
 		return "already started"
 	}
 
-	var cfg Config
-	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+	// Parse YAML directly using mihomo's built-in parser
+	mihomoCfg, err := config.Parse([]byte(configYAML))
+	if err != nil {
 		return "parse config: " + err.Error()
 	}
 
-	// Convert to mihomo config
-	mihomoCfg := convertConfig(cfg)
+	// If tunFD provided, inject it via device path (/proc/self/fd/N)
+	if tunFD > 0 {
+		mihomoCfg.Tun.Device = fmt.Sprintf("/proc/self/fd/%d", tunFD)
+	}
 
 	// Initialize logging
-	log.SetLevel(parseLogLevel(cfg.LogLevel))
+	log.SetLevel(log.INFO)
 
 	// Create hub
 	h := hub.New()
@@ -121,7 +94,7 @@ func SetMode(mode string) string {
 	}
 
 	ctx := context.Background()
-	if err := core.SetMode(ctx, mode); err != nil {
+	if err := core.SetMode(ctx, C.Mode(mode)); err != nil {
 		return err.Error()
 	}
 	return ""
@@ -175,36 +148,3 @@ func IsRunning() bool {
 	defer coreMu.Unlock()
 	return started && core != nil
 }
-
-func convertConfig(cfg Config) config.Config {
-	// Minimal conversion - in production, implement full conversion
-	// This is a placeholder that returns a basic config
-	return config.Config{
-		MixedPort:     cfg.MixedPort,
-		ExternalUI:    cfg.ExternalUI,
-		ExternalCtrl:  cfg.ExternalCtrl,
-		Secret:        cfg.Secret,
-		Mode:          cfg.Mode,
-		LogLevel:      cfg.LogLevel,
-		AllowLan:      cfg.AllowLan,
-		// Proxies, Groups, Rules would need full conversion
-	}
-}
-
-func parseLogLevel(level string) log.Level {
-	switch level {
-	case "debug":
-		return log.DEBUG
-	case "info":
-		return log.INFO
-	case "warning":
-		return log.WARNING
-	case "error":
-		return log.ERROR
-	default:
-		return log.INFO
-	}
-}
-
-// Gomobile requires a main package, but we can use a dummy main
-// This file will be built as a library, not executable
