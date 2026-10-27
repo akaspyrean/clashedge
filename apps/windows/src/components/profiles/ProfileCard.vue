@@ -15,6 +15,8 @@ const props = defineProps<{
   busy?: boolean;
   /** 本次会话内上一次更新失败 */
   failed?: boolean;
+  /** 更新失败的错误信息（用于 tooltip） */
+  errorMessage?: string;
 }>();
 const emit = defineEmits<{
   (e: "activate"): void;
@@ -78,7 +80,7 @@ function onPrimary() {
   <article class="ce-card profile-card" :class="{ 'is-active': profile.active }">
     <header class="head">
       <h3 class="name" :title="profile.name">{{ profile.name }}</h3>
-      <span v-for="tag in tags" :key="tag.text" class="tag" :class="`tag-${tag.tone}`">{{ tag.text }}</span>
+      <span v-for="tag in tags" :key="tag.text" class="tag" :class="`tag-${tag.tone}`" :title="tag.tone === 'danger' && errorMessage ? errorMessage : undefined">{{ tag.text }}</span>
       <div class="actions">
         <el-button
           size="small"
@@ -118,6 +120,12 @@ function onPrimary() {
 
     <p class="url" :title="profile.url ? maskUrl(profile.url) : undefined">
       {{ profile.url ? maskUrl(profile.url) : t("profiles.local_file") }}
+    </p>
+    <!-- 更新失败时在 URL 下方显示错误提示 -->
+    <p v-if="failed && profile.url" class="update-failed-hint">
+      <span class="hint-icon" aria-hidden="true">⚠</span>
+      <span>{{ t("profiles.update_failed_hint") }}（{{ t("profiles.update_failed_click_retry") }}）</span>
+      <span v-if="errorMessage" class="error-detail" :title="errorMessage">{{ errorMessage }}</span>
     </p>
 
     <div v-if="info" class="usage">
@@ -278,6 +286,31 @@ function onPrimary() {
 </style>
 
 <style>
+/* 更新失败提示：紧凑的红色提示行 */
+.update-failed-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ce-space-1);
+  margin-top: var(--ce-space-1);
+  padding: var(--ce-space-1) var(--ce-space-2);
+  background: var(--ce-danger-soft);
+  border: 1px solid var(--ce-danger-border, var(--ce-danger-solid));
+  border-radius: var(--ce-radius-sm);
+  color: var(--ce-danger-fg);
+  font: var(--ce-type-caption);
+  line-height: 1.4;
+}
+
+.update-failed-hint .hint-icon {
+  flex-shrink: 0;
+}
+
+.update-failed-hint .error-detail {
+  margin-left: var(--ce-space-1);
+  opacity: 0.8;
+  cursor: help;
+}
+
 /* 下拉菜单被 teleport 到 body，scoped 选择器够不到：删除项语义红但不使用实心底。 */
 .el-dropdown-menu__item.danger-item {
   color: var(--ce-danger-fg);

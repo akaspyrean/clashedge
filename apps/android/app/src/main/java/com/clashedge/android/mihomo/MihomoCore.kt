@@ -32,11 +32,17 @@ interface MihomoCore {
     fun queryGroups(): List<ProxyGroup>
 }
 
+/** Minimal serializable box for VpnService.Mtu / address setup passed to the core. */
+data class Box(
+    val mtu: Int,
+    val addresses: List<String>,
+    val routes: List<String>,
+    val dnsServers: List<String>,
+)
+
 /**
- * Default in-memory implementation: real JNI calls must be wired to the Mihomo
- * AAR. Kept as an explicit boundary so the Android project compiles before the
- * artifact is pinned (the no-op keeps functions/logic coordinated by
- * ProxyCoordinator intact).
+ * JNI implementation that calls the Mihomo AAR (gomobile-generated bindings).
+ * Uses reflection to gracefully handle missing AAR at compile/runtime.
  */
 class MihomoCoreImpl : MihomoCore {
 
@@ -45,26 +51,103 @@ class MihomoCoreImpl : MihomoCore {
     private val _error = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override val error: StateFlow<String?> = _error
 
+    // Reflection handles to the gomobile-generated Mihomo class
+    private val mihomoClass: Class<*>? = try {
+        Class.forName("mihomo.Mihomo")
+    } catch (e: ClassNotFoundException) {
+        null
+    }
+
+    private fun invokeStatic(methodName: String, vararg args: Any): String? {
+        val clazz = mihomoClass ?: return "Mihomo AAR not available"
+        try {
+            val method = clazz.getMethod(methodName, *args.map { it.javaClass }.toTypedArray())
+            val result = method.invoke(null, *args.toTypedArray())
+            return result as? String
+        } catch (e: Exception) {
+            return "JNI $methodName failed: ${e.message}"
+        }
+    }
+
     override fun start(configYaml: String, tunFd: Int): String {
-        // TODO(aar): call MihomoCore.start(configYaml, tunFd) via JNI
         _error.value = null
-        _running.value = true
-        com.clashedge.android.util.Logger.info("Mihomo core start requested (config ${configYaml.length} bytes, tunFd=$tunFd)")
-        return "" // empty = success
+        try {
+            val result = invokeStatic("start", configYaml, tunFd) ?: return "JNI start returned null"
+            if (result.isEmpty()) {
+                _running.value = true
+                _error.value = null
+                com.clashedge.android.util.Logger.info("Mihomo core started (config ${configYaml.length} bytes, tunFd=$tunFd)")
+                return ""
+            } else {
+                _error.value = result
+                return result
+            }
+        } catch (e: Exception) {
+            val msg = "JNI start failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo core start failed: $e")
+            return msg
+        }
     }
 
     override fun stop() {
-        _running.value = false
-        com.clashedge.android.util.Logger.info("Mihomo core stop requested")
+        try {
+            val result = invokeStatic("stop") ?: return
+            _running.value = false
+            if (result.isNotBlank()) {
+                _error.value = result
+                com.clashedge.android.util.Logger.warn("Mihomo core stop returned: $result")
+            } else {
+                _error.value = null
+            }
+            com.clashedge.android.util.Logger.info("Mihomo core stopped")
+        } catch (e: Exception) {
+            val msg = "JNI stop failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo core stop failed: $e")
+        }
     }
 
     override fun setMode(mode: String) {
-        com.clashedge.android.util.Logger.info("Mihomo proxy mode -> $mode")
+        try {
+            val result = invokeStatic("setMode", mode) ?: return
+            if (result.isNotBlank()) {
+                _error.value = result
+                com.clashedge.android.util.Logger.warn("Mihomo setMode returned: $result")
+            }
+            com.clashedge.android.util.Logger.info("Mihomo proxy mode -> $mode")
+        } catch (e: Exception) {
+            val msg = "JNI setMode failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo setMode failed: $e")
+        }
     }
 
     override fun selectProxy(group: String, node: String) {
-        com.clashedge.android.util.Logger.info("select $group -> $node")
+        try {
+            val result = invokeStatic("selectProxy", group, node) ?: return
+            if (result.isNotBlank()) {
+                _error.value = result
+                com.clashedge.android.util.Logger.warn("Mihomo selectProxy returned: $result")
+            }
+            com.clashedge.android.util.Logger.info("select $group -> $node")
+        } catch (e: Exception) {
+            val msg = "JNI selectProxy failed: ${e.message}"
+            _error.value = msg
+            com.clashedge.android.util.Logger.error("Mihomo selectProxy failed: $e")
+        }
     }
 
-    override fun queryGroups(): List<ProxyGroup> = emptyList()
+    override fun queryGroups(): List<ProxyGroup> {
+        try {
+            // The gomobile binding returns a JSON string or list; we'll parse it
+            val result = invokeStatic("getProxies") ?: return emptyList()
+            // TODO: Parse JSON into List<ProxyGroup>
+            // For now, return empty list until parsing is implemented
+            return emptyList()
+        } catch (e: Exception) {
+            com.clashedge.android.util.Logger.error("Mihomo queryGroups failed: $e")
+            return emptyList()
+        }
+    }
 }

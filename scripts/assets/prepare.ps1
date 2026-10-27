@@ -14,7 +14,7 @@
 #   pwsh scripts/assets/prepare.ps1 -Proxy http://127.0.0.1:7890
 #
 # Exit code 0 = all assets staged and verified.
-# ASCII-only; Windows PowerShell 5.1 compatible.
+# ASCII-only; PowerShell 7+ compatible (uses ForEach-Object -Parallel).
 
 [CmdletBinding()]
 param(
@@ -67,10 +67,10 @@ function Invoke-Download {
     }
 }
 
-$failed = 0
-foreach ($asset in $lock.assets) {
+function Process-Asset {
+    param($asset, $Proxy, $cacheDir, $stageDir)
     $name = $asset.name
-    $outPath = Join-Path $stageDir ($asset.out -replace "/", "\")
+    $outPath = Join-Path $stageDir ($asset.out -replace "/", "\\")
 
     # Archives carry a separate extracted_sha256; raw assets (rule YAMLs) are
     # verified and staged as-is via sha256.
@@ -83,7 +83,7 @@ foreach ($asset in $lock.assets) {
     # 1. Already staged and verified -> done.
     if ((Test-Path $outPath) -and ((Get-SHA256 $outPath) -eq $outHash)) {
         Write-Host "  PASS  staged: $outPath"
-        continue
+        return @{ failed = $false }
     }
 
     # 2. Cache the artifact; reuse it when its hash matches the lock
@@ -94,12 +94,14 @@ foreach ($asset in $lock.assets) {
     $haveArtifact = (Test-Path $archivePath) -and ((Get-SHA256 $archivePath) -eq $expectedCacheHash)
     if (-not $haveArtifact) {
         Write-Host "  downloading: $($asset.url)"
-        Invoke-Download -Url $asset.url -Destination $archivePath
+        try {
+            Invoke-Download -Url $asset.url -Destination $archivePath
+        } catch {
+            return @{ failed = $true; error = "Download failed: $_" }
+        }
         $actual = Get-SHA256 $archivePath
         if ($actual -ne $expectedCacheHash) {
-            $failed++
-            Write-Host "  FAIL  hash mismatch for $name`n    expected: $expectedCacheHash`n    actual:   $actual" -ForegroundColor Red
-            continue
+            return @{ failed = $true; error = "Hash mismatch for $($asset.name): expected $expectedCacheHash, actual $actual" }
         }
     }
 
@@ -108,24 +110,24 @@ foreach ($asset in $lock.assets) {
         New-Item -ItemType Directory -Force (Split-Path -Parent $outPath) | Out-Null
         Copy-Item $archivePath $outPath -Force
         Write-Host "  PASS  staged: $outPath"
-        continue
+        return @{ failed = $false }
     }
 
     # 3. Extract the pinned member and re-verify the extracted artifact itself.
     $extractDir = Join-Path $cacheDir ("extract_" + $name)
     if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
-    Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
-    $memberPath = Join-Path $extractDir ($asset.extract -replace "/", "\")
+    try {
+        Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+    } catch {
+        return @{ failed = $true; error = "Failed to extract $($asset.name): $_" }
+    }
+    $memberPath = Join-Path $extractDir ($asset.extract -replace "/", "\\")
     if (-not (Test-Path $memberPath)) {
-        $failed++
-        Write-Host "  FAIL  member not found in archive: $($asset.extract)" -ForegroundColor Red
-        continue
+        return @{ failed = $true; error = "Member not found in archive: $($asset.extract)" }
     }
     $memberHash = Get-SHA256 $memberPath
     if ($memberHash -ne $outHash) {
-        $failed++
-        Write-Host "  FAIL  extracted hash mismatch for $name`n    expected: $outHash`n    actual:   $memberHash" -ForegroundColor Red
-        continue
+        return @{ failed = $true; error = "Extracted hash mismatch for $($asset.name): expected $outHash, actual $memberHash" }
     }
 
     # Optional publisher check: assets that ship an Authenticode signature (wintun.dll is
@@ -136,9 +138,7 @@ foreach ($asset in $lock.assets) {
         $subject = ""
         if ($sig.SignerCertificate) { $subject = $sig.SignerCertificate.Subject }
         if ($sig.Status -ne "Valid" -or $subject -notlike ("*" + $asset.authenticode_subject + "*")) {
-            $failed++
-            Write-Host "  FAIL  Authenticode check for $name : status=$($sig.Status) subject='$subject' (expected publisher '$($asset.authenticode_subject)')" -ForegroundColor Red
-            continue
+            return @{ failed = $true; error = "Authenticode check for $($asset.name) failed: status=$($sig.Status) subject='$subject' (expected publisher '$($asset.authenticode_subject)')" }
         }
         Write-Host "  PASS  Authenticode: $subject"
     }
@@ -146,9 +146,25 @@ foreach ($asset in $lock.assets) {
     New-Item -ItemType Directory -Force (Split-Path -Parent $outPath) | Out-Null
     Copy-Item $memberPath $outPath -Force
     Write-Host "  PASS  staged: $outPath"
+    return @{ failed = $false }
 }
 
-Write-Host ""
+# Parallel download and processing (PowerShell 7+ ForEach-Object -Parallel)
+$lock = Get-Content $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+$results = $lock.assets | ForEach-Object -Parallel -ThrottleLimit 4 {
+    param($asset, $Proxy, $cacheDir, $stageDir)
+    Process-Asset -asset $asset -Proxy $Proxy -cacheDir $cacheDir -stageDir $stageDir
+} -ArgumentList $Proxy, $cacheDir, $stageDir
+
+$failed = 0
+foreach ($result in $results) {
+    if ($result.failed) {
+        $failed++
+        Write-Host "  FAIL  $($result.error)" -ForegroundColor Red
+    }
+}
+
 if ($failed -gt 0) {
     Write-Host "$failed asset(s) failed verification. Do NOT weaken the lock; fix the source or pin a new verified version." -ForegroundColor Red
     exit 1

@@ -32,6 +32,27 @@ object RuntimeConfigGenerator {
                 append(escapeYaml(n.type))
                 append(", server: ")
                 append(escapeYaml(n.server))
+                if (n.port > 0) { append(", port: "); append(n.port.toString()) }
+                n.password?.let { append(", password: "); append(escapeYaml(it)) }
+                n.uuid?.let { append(", uuid: "); append(escapeYaml(it)) }
+                n.cipher?.let { append(", cipher: "); append(escapeYaml(it)) }
+                if (n.udp) append(", udp: true")
+                if (n.tls) append(", tls: true")
+                n.sni?.let { append(", sni: "); append(escapeYaml(it)) }
+                if (n.alpn.isNotEmpty()) { append(", alpn: ["); append(n.alpn.map { escapeYaml(it) }.joinToString(", ")); append("]") }
+                n.fingerprint?.let { append(", fingerprint: "); append(escapeYaml(it)) }
+                if (n.network != "tcp") { append(", network: "); append(escapeYaml(n.network)) }
+                n.wsPath?.let { append(", ws-path: "); append(escapeYaml(it)) }
+                if (n.wsHeaders.isNotEmpty()) { append(", ws-headers: "); append(n.wsHeaders.map { (k, v) -> "${escapeYaml(k)}:${escapeYaml(v)}" }.joinToString(",")) }
+                n.httpPath?.let { append(", http-path: "); append(escapeYaml(it)) }
+                if (n.httpHeaders.isNotEmpty()) { append(", http-headers: "); append(n.httpHeaders.map { (k, v) -> "${escapeYaml(k)}:${escapeYaml(v)}" }.joinToString(",")) }
+                n.upMbps?.let { append(", up: "); append(it.toString()) }
+                n.downMbps?.let { append(", down: "); append(it.toString()) }
+                n.authStr?.let { append(", auth-str: "); append(escapeYaml(it)) }
+                n.method?.let { append(", method: "); append(escapeYaml(it)) }
+                n.flow?.let { append(", flow: "); append(escapeYaml(it)) }
+                n.alterId?.let { append(", alter-id: "); append(it.toString()) }
+                n.security?.let { append(", security: "); append(escapeYaml(it)) }
                 append(" }")
             }
         }.joinToString("\n")

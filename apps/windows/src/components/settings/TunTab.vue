@@ -34,7 +34,7 @@ const onTun = (v: boolean | string | number) => {
 
 <template>
   <PrefList>
-    <PrefRow :title="t('tun.enable')">
+    <PrefRow :title="t('tun.enable')" :hint="t('tun.enable_hint')">
       <template #default="{ label }">
         <el-switch :model-value="cfg.tun.enable" :aria-label="label" :loading="tun.busy.value" @change="onTun" />
       </template>

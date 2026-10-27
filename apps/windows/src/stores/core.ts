@@ -4,7 +4,7 @@
 import { defineStore } from "pinia";
 import { coreApi, type CoreStatus } from "@/api/core";
 
-const IDLE: CoreStatus = { running: false, status: "stopped", version: null };
+const IDLE: CoreStatus = { running: false, status: "stopped", version: null, errorMessage: null };
 
 export const useCoreStore = defineStore("core", {
   state: () => ({

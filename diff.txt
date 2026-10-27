@@ -1,0 +1,149 @@
+warning: in the working copy of 'apps/windows/src/components/ui/CeStatusCore.vue', LF will be replaced by CRLF the next time Git touches it
+diff --git a/apps/windows/src/components/ui/CeStatusCore.vue b/apps/windows/src/components/ui/CeStatusCore.vue
+index 05ca191..4978d2c 100644
+--- a/apps/windows/src/components/ui/CeStatusCore.vue
++++ b/apps/windows/src/components/ui/CeStatusCore.vue
+@@ -1,14 +1,23 @@
+ <!-- src/components/ui/CeStatusCore.vue - 主连接按钮 + 状态文字（直径 72）。
+      状态：stopped / starting / running / error；starting 时禁用并 aria-busy。
+-     默认插槽放状态文字下方的补充信息（版本、端口、操作按钮）。 -->
++     插槽：
++       - default: 兼容旧用法，放在状态文字下方（右对齐）
++       - info: 中部两行文本（左对齐），如版本/端口
++       - actions: 右侧操作按钮区 -->
+ <script setup lang="ts">
+ import { computed } from "vue";
+ import { useI18n } from "vue-i18n";
+-import { Power, TriangleAlert } from "lucide-vue-next";
++import { Power, TriangleAlert, AlertCircle } from "lucide-vue-next";
+ 
+ export type CoreState = "stopped" | "starting" | "running" | "error";
+ 
+-const props = defineProps<{ state: CoreState; /** 覆盖默认状态文字（如「核心运行中，尚未接管流量」） */ label?: string }>();
++const props = defineProps<{
++  state: CoreState;
++  /** 覆盖默认状态文字（如「核心运行中，尚未接管流量」） */
++  label?: string;
++  /** 错误详情（error 状态下显示） */
++  errorMessage?: string;
++}>();
+ const emit = defineEmits<{ toggle: [] }>();
+ const { t } = useI18n();
+ 
+@@ -25,6 +34,10 @@ const ariaLabel = computed(() => {
+       return t("ui.core.aria_start");
+   }
+ });
++
++const hasInfoSlot = computed(() => !!slots.info);
++const hasActionsSlot = computed(() => !!slots.actions);
++const showErrorDetail = computed(() => props.state === "error" && props.errorMessage);
+ </script>
+ 
+ <template>
+@@ -41,9 +54,21 @@ const ariaLabel = computed(() => {
+       <TriangleAlert v-if="state === 'error'" :size="24" :stroke-width="1.75" aria-hidden="true" />
+       <Power v-else :size="24" :stroke-width="1.75" aria-hidden="true" />
+     </button>
++
++    <div class="ce-core__middle" v-if="hasInfoSlot">
++      <slot name="info" />
++    </div>
++
+     <div class="ce-core__text">
+-      <span class="ce-core__status" role="status">{{ statusText }}</span>
+-      <slot />
++      <span v-if="!hasActionsSlot" class="ce-core__status" role="status">{{ statusText }}</span>
++      <slot v-if="!hasInfoSlot && !hasActionsSlot" />
++      <slot name="actions" :statusText="statusText" v-if="hasActionsSlot" />
++    </div>
++
++    <!-- 错误详情：error 状态且有错误信息时显示 -->
++    <div v-if="showErrorDetail" class="ce-core__error-detail" role="alert">
++      <AlertCircle :size="16" :stroke-width="1.75" aria-hidden="true" />
++      <span>{{ errorMessage }}</span>
+     </div>
+   </div>
+ </template>
+@@ -130,6 +155,21 @@ const ariaLabel = computed(() => {
+   color: var(--ce-danger-fg);
+ }
+ 
++/* 中部信息区：两行文本，左对齐 */
++.ce-core__middle {
++  flex: 1;
++  min-width: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  text-align: left;
++}
++
++.ce-core__middle > * {
++  line-height: 1.4;
++}
++
++/* 右侧文字 + 操作区 */
+ .ce-core__text {
+   display: flex;
+   flex-direction: column;
+@@ -151,4 +191,59 @@ const ariaLabel = computed(() => {
+ [data-state="starting"] .ce-core__status {
+   color: var(--ce-pending-fg);
+ }
++
++/* 操作按钮区（actions 插槽） */
++.ce-core__text :slotted(.ce-core__actions) {
++  display: flex;
++  gap: var(--ce-space-2);
++  margin-top: var(--ce-space-2);
++}
++
++/* 错误详情：紧凑的红色提示行 */
++.ce-core__error-detail {
++  display: flex;
++  align-items: center;
++  gap: var(--ce-space-2);
++  padding: var(--ce-space-2) var(--ce-space-3);
++  background: var(--ce-danger-soft);
++  border: 1px solid var(--ce-danger-border, var(--ce-danger-solid));
++  border-radius: var(--ce-radius-md);
++  color: var(--ce-danger-fg);
++  font: var(--ce-type-callout);
++  line-height: 1.4;
++  animation: ce-core__error-slide var(--ce-dur-base) var(--ce-ease-standard);
++}
++
++@keyframes ce-core__error-slide {
++  from {
++    opacity: 0;
++    transform: translateY(-4px);
++  }
++  to {
++    opacity: 1;
++    transform: translateY(0);
++  }
++}
++
++/* 响应式：窄屏堆叠 */
++@media (max-width: 599px) {
++  .ce-core {
++    flex-wrap: wrap;
++    gap: var(--ce-space-4);
++  }
++  .ce-core__button {
++    margin: 0 auto;
++  }
++  .ce-core__middle {
++    order: 1;
++    width: 100%;
++    text-align: center;
++  }
++  .ce-core__text {
++    order: 2;
++    width: 100%;
++    align-items: center;
++    text-align: center;
++  }
++}
+ </style>

@@ -196,8 +196,65 @@ jobs:
   # AAR is not consumed by any Gradle dependency. Build it on demand with the
   # "Build mihomo Android AAR" workflow (workflow_dispatch).
 
-  build:
+  # Prepare third-party assets (parallel with frontend build)
+  prepare-assets:
+    needs: prepare
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      assets-staging: build/assets/staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Prepare third-party assets
+        shell: pwsh
+        run: .\scripts\assets\prepare.ps1
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: staged-assets
+          path: build/assets/staging
+          retention-days: 7
+
+  # Build frontend (parallel with asset preparation)
+  build-frontend:
     needs: [prepare, quality]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      dist: apps/windows/dist
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/windows/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/windows
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/windows
+        run: npm run build:check
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frontend-dist
+          path: apps/windows/dist
+          retention-days: 7
+
+  # Tauri release build (depends on assets + frontend)
+  build:
+    needs: [prepare, quality, prepare-assets, build-frontend]
     runs-on: windows-latest
     # No write access, no signing key: this job runs third-party build code.
     permissions:
@@ -210,18 +267,25 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/download-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/windows/package-lock.json
+          name: staged-assets
+          path: build/assets/staging
+
+      - uses: actions/download-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frontend-dist
+          path: apps/windows/dist
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           toolchain: 1.97.1
 
-      # No rust-cache here: a cache written by an earlier branch/PR run must not
-      # be able to inject build outputs into a release artifact.
+      # Rust cache enabled for release builds (isolated environment, safe to reuse)
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: apps/windows/src-tauri
+          key: release-${{ hashFiles('apps/windows/src-tauri/Cargo.lock') }}
 
       # The client needs only the PUBLIC verification key at build time.
       # A release without it cannot update itself, so fail early.
@@ -234,26 +298,12 @@ jobs:
             throw "CLASHEDGE_UPDATE_PUBKEY is not set — client cannot verify manifests without the embedded public key"
           }
 
-      - name: Install frontend dependencies
-        working-directory: apps/windows
-        run: npm ci
-
-      # Inject the embedded update-verification public key into the client
-      # build (update/mod.rs reads it at compile time).
-      # CLASHEDGE_RELEASE_VERSION stamps the app version from the tag into the
-      # binary (update/mod.rs::current_version); local dev builds report "dev".
       - name: Tauri release build (--no-bundle)
         working-directory: apps/windows
         env:
           CLASHEDGE_UPDATE_PUBKEY: ${{ secrets.CLASHEDGE_UPDATE_PUBKEY }}
           CLASHEDGE_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: node node_modules/@tauri-apps/cli/tauri.js build --no-bundle
-
-      # Download and hash-verify pinned third-party assets (assets.lock.json):
-      # mihomo core, wintun driver, rule sets and geodata -> build/assets/staging/.
-      - name: Prepare third-party assets
-        shell: pwsh
-        run: .\scripts\assets\prepare.ps1
 
       # No signing secrets in this job (it ran third-party code above). The
       # unsigned ZIP is signed in the `publish` job.
