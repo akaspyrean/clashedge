@@ -6,7 +6,6 @@ import android.net.VpnService
 import android.os.IBinder
 import com.clashedge.android.ClashEdgeApp
 import com.clashedge.android.core.ProxyCoordinator
-import com.clashedge.android.mihomo.Box
 import com.clashedge.android.service.ProxyForegroundService
 import com.clashedge.android.util.Logger
 
@@ -39,7 +38,7 @@ class ClashVpnService : VpnService() {
 
         started = true
         return try {
-            coordinator.onVpnEstablished(fd, tundata(), config)
+            coordinator.onVpnEstablished(fd, config)
             Service.START_STICKY
         } catch (t: Throwable) {
             Logger.error("vpn onStart error: $t")
@@ -82,13 +81,6 @@ class ClashVpnService : VpnService() {
         fileDescriptor = iface
         return iface.fd
     }
-
-    private fun tundata(): Box = Box(
-        mtu = 1400,
-        addresses = listOf("172.19.0.1/24"),
-        routes = listOf("0.0.0.0/0"),
-        dnsServers = listOf("223.5.5.5", "119.29.29.29"),
-    )
 
     private var fileDescriptor: android.os.ParcelFileDescriptor? = null
 

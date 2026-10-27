@@ -20,9 +20,8 @@ interface MihomoCore {
     val running: StateFlow<Boolean>
     val error: StateFlow<String?>
 
-    fun startTun(fd: Int, configuredAddresses: Box)
-
-    fun start(configYaml: String): Boolean
+    // Start with full YAML config and TUN fd (0 = no TUN)
+    fun start(configYaml: String, tunFd: Int): String
 
     fun stop()
 
@@ -32,14 +31,6 @@ interface MihomoCore {
 
     fun queryGroups(): List<ProxyGroup>
 }
-
-/** Minimal serializable box for VpnService.Mtu / address setup passed to the core. */
-data class Box(
-    val mtu: Int,
-    val addresses: List<String>,
-    val routes: List<String>,
-    val dnsServers: List<String>,
-)
 
 /**
  * Default in-memory implementation: real JNI calls must be wired to the Mihomo
@@ -54,17 +45,12 @@ class MihomoCoreImpl : MihomoCore {
     private val _error = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override val error: StateFlow<String?> = _error
 
-    override fun startTun(fd: Int, configuredAddresses: Box) {
-        // TODO(aar): hand `fd` to the Mihomo Android core (VpnService.TUN).
-        com.clashedge.android.util.Logger.info("TUN fd=$fd mtu=${configuredAddresses.mtu} handed to core")
-    }
-
-    override fun start(configYaml: String): Boolean {
-        // TODO(aar): parse config, launch core, poll /version + /proxies.
+    override fun start(configYaml: String, tunFd: Int): String {
+        // TODO(aar): call MihomoCore.start(configYaml, tunFd) via JNI
         _error.value = null
         _running.value = true
-        com.clashedge.android.util.Logger.info("Mihomo core start requested (config ${configYaml.length} bytes)")
-        return true
+        com.clashedge.android.util.Logger.info("Mihomo core start requested (config ${configYaml.length} bytes, tunFd=$tunFd)")
+        return "" // empty = success
     }
 
     override fun stop() {
