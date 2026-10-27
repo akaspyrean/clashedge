@@ -122,9 +122,8 @@ const coreState = computed<CoreState>(() => {
 const coreLabel = computed(() =>
   coreState.value === "running" && !carrying.value ? t("dashboard.status_idle") : undefined,
 );
-const versionLine = computed(() =>
-  t("dashboard.version_port", { version: core.status.version ?? "—", port: config.config?.["mixed-port"] ?? "—" }),
-);
+const coreVersion = computed(() => core.status.version ?? "—");
+const mixedPort = computed(() => config.config?.["mixed-port"] ?? "—");
 
 // 动作守卫：restart/reload 无自带 starting 状态，用统一 busy 防连点；start/stop 由 store 兜底。
 const coreActionBusy = ref(false);
@@ -174,11 +173,12 @@ const sessionLine = computed(() =>
       <!-- 状态核心 -->
       <section class="ce-card core-card" :aria-label="$t('dashboard.core_status')">
         <CeStatusCore :state="coreState" :label="coreLabel" @toggle="onToggleCore">
-          <span class="core-meta">{{ versionLine }}</span>
-          <span class="core-links">
+          <div class="core-meta-grid">
+            <span class="core-meta core-version">mihomo v{{ coreVersion }}</span>
+            <span class="core-meta core-port">混合端口 {{ mixedPort }}</span>
             <el-button size="small" :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
             <el-button size="small" plain :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
-          </span>
+          </div>
         </CeStatusCore>
 
         <div class="core-divider" aria-hidden="true"></div>
@@ -212,10 +212,8 @@ const sessionLine = computed(() =>
             />
           </div>
         </div>
-      </section>
 
-      <!-- 自动更新状态：何时更新、成功还是失败 -->
-      <section class="ce-card autoupdate-card" :aria-label="$t('dashboard.autoupdate_title')">
+        <!-- 自动更新状态 -->
         <dl class="autoupdate-list">
           <div class="autoupdate-row">
             <dt class="autoupdate-key">{{ $t("dashboard.autoupdate_node") }}</dt>
@@ -269,17 +267,9 @@ const sessionLine = computed(() =>
   gap: var(--ce-space-4);
 }
 
-/* 自动更新卡片：紧跟状态核心之后（第 2 位），与核心同排右列。 */
-.autoupdate-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ce-space-3);
-  min-width: 0;
-}
-
-/* 实时流量（活动）卡片：第 3 位，占满整行。 */
+/* 实时流量卡片：右列。 */
 .traffic-card {
-  grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .autoupdate-list {
@@ -287,6 +277,8 @@ const sessionLine = computed(() =>
   display: flex;
   flex-direction: column;
   gap: var(--ce-space-2);
+  padding-top: var(--ce-space-3);
+  border-top: 1px solid var(--ce-divider);
 }
 
 .autoupdate-row {
@@ -343,10 +335,27 @@ const sessionLine = computed(() =>
   font-variant-numeric: tabular-nums;
 }
 
+.core-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  align-items: center;
+  gap: var(--ce-space-2) var(--ce-space-3);
+  width: 100%;
+  margin-top: var(--ce-space-3);
+}
+
+.core-version {
+  text-align: left;
+}
+
+.core-port {
+  text-align: right;
+}
+
 .core-links {
   display: flex;
   gap: var(--ce-space-2);
-  margin-top: var(--ce-space-1);
+  margin-top: var(--ce-space-3);
 }
 
 .core-divider {

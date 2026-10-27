@@ -195,12 +195,15 @@ describe("Dashboard 状态核心 / 模式 / 快捷切换", () => {
     expect(invokeMock).toHaveBeenCalledWith("set_tun_mode", { enable: true });
   });
 
-  it("更新状态卡不再渲染「自动更新」标题，只保留两行状态", async () => {
+  it("更新状态合并入核心卡片：无标题，仅两行状态", async () => {
     const w = await mountDashboard({ running: true, systemProxy: true });
-    const card = w.find(".autoupdate-card");
-    expect(card.exists()).toBe(true);
-    expect(card.find("h3").exists()).toBe(false);
-    expect(card.text()).not.toContain("dashboard.autoupdate_title");
-    expect(card.findAll(".autoupdate-row")).toHaveLength(2);
+    const coreCard = w.find(".core-card");
+    expect(coreCard.exists()).toBe(true);
+    const autoupdateList = coreCard.find(".autoupdate-list");
+    expect(autoupdateList.exists()).toBe(true);
+    // 无 h3 标题
+    expect(coreCard.find("h3").exists()).toBe(false);
+    // 两行：订阅 + 规则
+    expect(autoupdateList.findAll(".autoupdate-row")).toHaveLength(2);
   });
 });
