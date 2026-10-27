@@ -134,7 +134,7 @@ const ariaLabel = computed(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: var(--ce-space-1);
+  gap: var(--ce-space-2);
   min-width: 0;
   text-align: right;
 }
