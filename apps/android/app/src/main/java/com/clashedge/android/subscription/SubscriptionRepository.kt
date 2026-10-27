@@ -3,6 +3,7 @@ package com.clashedge.android.subscription
 import com.clashedge.android.config.AppConfigStore
 import com.clashedge.android.model.Node
 import com.clashedge.android.util.Logger
+import java.nio.charset.Charsets
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
