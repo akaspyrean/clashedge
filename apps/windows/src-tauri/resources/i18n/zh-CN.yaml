@@ -503,6 +503,8 @@ android:
   core_start_failed: "代理核心启动失败"
   config_corrupt: "配置已损坏，已自动恢复"
   network_changed: "网络已切换，正在重启代理"
+  restart_core: "重启核心"
+  reload_core: "重载配置"
 
 errors:
   network: "网络请求失败。请检查网络或代理后重试"

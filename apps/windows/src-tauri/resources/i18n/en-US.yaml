@@ -506,6 +506,8 @@ android:
   core_start_failed: "Failed to start the proxy core"
   config_corrupt: "Configuration is damaged and has been restored"
   network_changed: "Network changed, restarting proxy"
+  restart_core: "Restart Core"
+  reload_core: "Reload Config"
 
 errors:
   network: "Network request failed. Check your network or proxy and try again"
