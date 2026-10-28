@@ -108,7 +108,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
         with:
-          go-version: "1.22"
+          # Must match the wrapper's go.mod directive (x/mobile requires 1.26).
+          go-version: "1.26"
           cache: true
           cache-dependency-path: clashedge/apps/android/mihomo-wrapper/go.mod
 

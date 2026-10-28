@@ -64,7 +64,6 @@ jobs:
         run: |
           go install golang.org/x/mobile/cmd/gomobile@${X_MOBILE_VERSION}
           go install golang.org/x/mobile/cmd/gobind@${X_MOBILE_VERSION}
-          gomobile init -ndk
 
       - name: Build AAR from wrapper
         working-directory: clashedge/apps/android/mihomo-wrapper
