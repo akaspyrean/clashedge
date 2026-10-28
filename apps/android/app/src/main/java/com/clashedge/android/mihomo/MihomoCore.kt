@@ -141,7 +141,7 @@ class MihomoCoreImpl : MihomoCore {
     override fun queryGroups(): List<ProxyGroup> {
         try {
             // The gomobile binding returns a JSON string or list; we'll parse it
-            val result = invokeStatic("getProxies") ?: return emptyList()
+            val json = invokeStatic("getProxies") ?: return emptyList()
             // TODO: Parse JSON into List<ProxyGroup>
             // For now, return empty list until parsing is implemented
             return emptyList()
@@ -150,4 +150,5 @@ class MihomoCoreImpl : MihomoCore {
             return emptyList()
         }
     }
+}
 }

@@ -30,7 +30,7 @@ fun ProxiesScreen(
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
         Text(stringResource(R.string.nav_proxies), style = MaterialTheme.typography.titleLarge)
         if (groupList.isEmpty()) {
-            Text("No proxy groups yet.", modifier = Modifier.padding(top = 16.dp))
+            Text(stringResource(R.string.nav_proxies) + " —", modifier = Modifier.padding(top = 16.dp))
         } else {
             LazyColumn(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
                 items(groupList, key = { it.name }) { group ->
