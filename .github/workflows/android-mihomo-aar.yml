@@ -11,7 +11,8 @@ on:
     inputs:
       mihomo-version:
         description: "mihomo version/tag to build (e.g., v1.19.33)"
-        required: true
+        required: false
+        default: "v1.19.33"
         type: string
 
 permissions:
