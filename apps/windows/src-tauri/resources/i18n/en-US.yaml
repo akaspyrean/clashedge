@@ -496,6 +496,7 @@ android:
   # renaming requires updating Android references in lockstep.
   import_subscription: "Add Subscription"
   update_subscription: "Update"
+  activate: "Activate"
   subscription:
     url_hint: "https://…"
     imported: "Subscription imported"
@@ -507,6 +508,9 @@ android:
   config_corrupt: "Configuration is damaged and has been restored"
   network_changed: "Network changed, restarting proxy"
   profiles_empty: "No subscriptions yet. Click Add subscription to start."
+  restart_core: "Restart Core"
+  reload_core: "Reload Config"
+  common_cancel: "Cancel"
 
 errors:
   network: "Network request failed. Check your network or proxy and try again"

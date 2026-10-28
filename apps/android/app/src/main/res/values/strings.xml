@@ -21,6 +21,7 @@
     <string name="mode_direct">Direct</string>
     <string name="import_subscription">Add Subscription</string>
     <string name="update_subscription">Update</string>
+    <string name="activate">Activate</string>
     <string name="subscription_url_hint">https://…</string>
     <string name="subscription_imported">Subscription imported</string>
     <string name="subscription_import_failed">Import failed: %1$s</string>
@@ -30,4 +31,7 @@
     <string name="config_corrupt">Configuration is damaged and has been restored</string>
     <string name="network_changed">Network changed, restarting proxy</string>
     <string name="profiles_empty">No subscriptions yet. Click Add subscription to start.</string>
+    <string name="restart_core">Restart Core</string>
+    <string name="reload_core">Reload Config</string>
+    <string name="common_cancel">Cancel</string>
 </resources>

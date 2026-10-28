@@ -493,6 +493,7 @@ android:
   # 以下 key 与现有 R.string.* 资源名严格对应；改名需同步 Android 引用。
   import_subscription: "添加订阅"
   update_subscription: "更新"
+  activate: "激活"
   subscription:
     url_hint: "https://…"
     imported: "订阅导入成功"
@@ -504,6 +505,9 @@ android:
   config_corrupt: "配置已损坏，已自动恢复"
   network_changed: "网络已切换，正在重启代理"
   profiles_empty: "暂无订阅，点击「添加订阅」开始使用"
+  restart_core: "重启核心"
+  reload_core: "重载配置"
+  common_cancel: "取消"
 
 errors:
   network: "网络请求失败。请检查网络或代理后重试"

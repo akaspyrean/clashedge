@@ -17,7 +17,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.clashedge.android.R
 import com.clashedge.android.config.AppSettings
 
 @Composable
@@ -28,7 +30,7 @@ fun SettingsScreen(
     val settings by viewModel.settings.collectAsState(initial = AppSettings())
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
-        Text("Settings", style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.nav_settings), style = MaterialTheme.typography.titleLarge)
 
         Spacer(modifier = Modifier.height(24.dp))
 

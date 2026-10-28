@@ -21,6 +21,7 @@
     <string name="mode_direct">直连</string>
     <string name="import_subscription">添加订阅</string>
     <string name="update_subscription">更新</string>
+    <string name="activate">激活</string>
     <string name="subscription_url_hint">https://…</string>
     <string name="subscription_imported">订阅导入成功</string>
     <string name="subscription_import_failed">导入失败：%1$s</string>
@@ -30,4 +31,7 @@
     <string name="config_corrupt">配置已损坏，已自动恢复</string>
     <string name="network_changed">网络已切换，正在重启代理</string>
     <string name="profiles_empty">暂无订阅，点击「添加订阅」开始使用</string>
+    <string name="restart_core">重启核心</string>
+    <string name="reload_core">重载配置</string>
+    <string name="common_cancel">取消</string>
 </resources>

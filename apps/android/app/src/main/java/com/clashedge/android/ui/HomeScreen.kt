@@ -83,6 +83,22 @@ fun HomeScreen(
             }
         }
 
+        // 重启/重载按钮
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CePrimaryButton(
+                onClick = { viewModel.restartCore() },
+                enabled = !busy,
+            ) {
+                Text(stringResource(R.string.restart_core))
+            }
+            CePrimaryButton(
+                onClick = { viewModel.reloadCore() },
+                enabled = !busy,
+            ) {
+                Text(stringResource(R.string.reload_core))
+            }
+        }
+
         Text("Mode / 模式", style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
