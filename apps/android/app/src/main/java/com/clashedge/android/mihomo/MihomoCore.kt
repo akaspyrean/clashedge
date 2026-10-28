@@ -61,8 +61,22 @@ class MihomoCoreImpl : MihomoCore {
     private fun invokeStatic(methodName: String, vararg args: Any): String? {
         val clazz = mihomoClass ?: return "Mihomo AAR not available"
         try {
-            val method = clazz.getMethod(methodName, *args.map { it.javaClass }.toTypedArray())
-            val result = method.invoke(null, *args.toTypedArray())
+            // gomobile 的 Java 方法签名：int 参数用 primitive int.class，而不是 Integer.class。
+            val paramTypes = args.map { arg ->
+                when (arg) {
+                    is Int -> Int::class.java
+                    is Boolean -> Boolean::class.java
+                    is Long -> Long::class.java
+                    is Double -> Double::class.java
+                    is Float -> Float::class.java
+                    is Short -> Short::class.java
+                    is Byte -> Byte::class.java
+                    is Char -> Char::class.java
+                    else -> arg.javaClass
+                }
+            }.toTypedArray()
+            val method = clazz.getMethod(methodName, *paramTypes)
+            val result = method.invoke(null, *args)
             return result as? String
         } catch (e: Exception) {
             return "JNI $methodName failed: ${e.message}"
@@ -150,5 +164,4 @@ class MihomoCoreImpl : MihomoCore {
             return emptyList()
         }
     }
-}
 }
