@@ -58,7 +58,7 @@ func Start(configYAML string, tunFD int, homeDir string) string {
 	// missing-file auto-download can write there. Must run before hub.Parse
 	// because rule parsing triggers InitGeoSite/InitGeoIP.
 	if homeDir != "" {
-		C.Path.SetHomeDir(homeDir)
+		C.SetHomeDir(homeDir)
 	}
 
 	// The TUN fd has to be injected into the parsed config before it is applied,
