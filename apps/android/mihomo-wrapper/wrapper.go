@@ -2,7 +2,6 @@ package mihomo
 
 import (
 	"encoding/json"
-	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -53,13 +52,14 @@ func Start(configYAML string, tunFD int) string {
 		return "already started"
 	}
 
-	// The TUN device has to be injected into the parsed config before it is
-	// applied, otherwise mihomo would try to create its own TUN interface.
+	// The TUN fd has to be injected into the parsed config before it is applied,
+	// otherwise mihomo would create its own TUN interface. Passing it as
+	// `file-descriptor` also lets mihomo resolve the real interface name via
+	// TUNGETIFF, instead of taking the fd path as the device name.
 	options := []hub.Option{}
 	if tunFD > 0 {
-		device := fmt.Sprintf("/proc/self/fd/%d", tunFD)
 		options = append(options, func(cfg *config.Config) {
-			cfg.General.Tun.Device = device
+			cfg.General.Tun.FileDescriptor = tunFD
 		})
 	}
 
