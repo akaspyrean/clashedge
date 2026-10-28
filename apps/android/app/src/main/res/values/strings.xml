@@ -29,4 +29,6 @@
     <string name="core_start_failed">Failed to start the proxy core</string>
     <string name="config_corrupt">Configuration is damaged and has been restored</string>
     <string name="network_changed">Network changed, restarting proxy</string>
+<string name="restart_core">Restart Core</string>
+<string name="reload_core">Reload Config</string>
 </resources>

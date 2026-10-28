@@ -55,13 +55,14 @@ private fun ProxyGroupCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             group.nodes.forEach { node ->
-                val isCurrent = node == group.now
+                val isCurrent = node.name == group.now
+                val displayName = if (node.server.isNotEmpty()) "${node.name} (${node.server}:${node.port})" else node.name
                 Text(
-                    node + if (isCurrent) " ✓" else "",
+                    displayName + if (isCurrent) " ✓" else "",
                     modifier = Modifier
                         .padding(top = 4.dp)
                         .fillMaxWidth()
-                        .clickable { onSelect(group.name, node) },
+                        .clickable { onSelect(group.name, node.name) },
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (isCurrent) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurface,

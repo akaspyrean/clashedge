@@ -55,7 +55,7 @@ data class Node(
 data class ProxyGroup(
     val name: String,
     val type: String,
-    val nodes: List<String>,
+    val nodes: List<Node>,
     val now: String? = null,
 )
 
