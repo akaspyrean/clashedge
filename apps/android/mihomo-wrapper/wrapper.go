@@ -43,13 +43,22 @@ type proxyGroupInfo struct {
 // Start initializes and starts mihomo core with YAML config
 // configYAML: full mihomo config in YAML format
 // tunFD: file descriptor from Android VpnService (0 if not using TUN)
+// homeDir: writable directory for mihomo's GeoSite/GeoIP databases and cache
 // Returns empty string on success, error message on failure
-func Start(configYAML string, tunFD int) string {
+func Start(configYAML string, tunFD int, homeDir string) string {
 	coreMu.Lock()
 	defer coreMu.Unlock()
 
 	if started {
 		return "already started"
+	}
+
+	// mihomo's default homeDir (~/.config/mihomo) is not writable on Android;
+	// set it to the app's files dir so GeoSite/GeoIP and cache resolve and the
+	// missing-file auto-download can write there. Must run before hub.Parse
+	// because rule parsing triggers InitGeoSite/InitGeoIP.
+	if homeDir != "" {
+		C.Path.SetHomeDir(homeDir)
 	}
 
 	// The TUN fd has to be injected into the parsed config before it is applied,
