@@ -23,8 +23,10 @@ jobs:
     timeout-minutes: 60
     env:
       MIHOMO_VERSION: ${{ inputs.mihomo-version }}
-      # gomobile works best with Go 1.22; 1.23 has known issues with gomobile init
-      GO_VERSION: "1.22"
+      # golang.org/x/mobile@latest (which provides gomobile) requires Go >= 1.26
+      GO_VERSION: "1.26"
+      # Pinned so a future x/mobile release cannot raise the Go floor again
+      X_MOBILE_VERSION: "v0.0.0-20261011034528-197770444867"
       NDK_VERSION: "27.0.12077973"
       ANDROID_API: "34"
 
@@ -60,8 +62,8 @@ jobs:
 
       - name: Install gomobile
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
+          go install golang.org/x/mobile/cmd/gomobile@${X_MOBILE_VERSION}
+          go install golang.org/x/mobile/cmd/gobind@${X_MOBILE_VERSION}
           gomobile init -ndk
 
       - name: Build AAR from wrapper
