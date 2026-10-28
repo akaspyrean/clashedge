@@ -60,7 +60,7 @@ fun ProfilesScreen(
                 }
             }
         } else {
-            Text(stringResource(R.string.nav_profiles) + " —", modifier = Modifier.padding(top = 16.dp))
+            Text(stringResource(R.string.nav_profiles), modifier = Modifier.padding(top = 16.dp))
         }
     }
 
@@ -86,7 +86,7 @@ fun ProfilesScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDialog = false }) { Text("Cancel") }
+                    TextButton(onClick = { showDialog = false }) { Text(stringResource(R.string.common_cancel)) }
             },
         )
     }

@@ -505,6 +505,7 @@ android:
   network_changed: "网络已切换，正在重启代理"
   restart_core: "重启核心"
   reload_core: "重载配置"
+  common_cancel: "取消"
 
 errors:
   network: "网络请求失败。请检查网络或代理后重试"

@@ -57,6 +57,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun restartCore() = viewModelScope.launch {
+        _operationError.value = null
+        try {
+            app.coordinator.restartCore()
+        } catch (e: Exception) {
+            _operationError.value = e.message ?: "restart failed"
+            Logger.error(e.message ?: "restart failed")
+        }
+    }
+
+    fun reloadCore() = viewModelScope.launch {
+        _operationError.value = null
+        try {
+            app.coordinator.reloadCore()
+        } catch (e: Exception) {
+            _operationError.value = e.message ?: "reload failed"
+            Logger.error(e.message ?: "reload failed")
+        }
+    }
+
     fun setLocale(locale: String) = viewModelScope.launch { app.appConfig.setLocale(locale) }
 
     fun setDarkTheme(enabled: Boolean) = viewModelScope.launch { app.appConfig.setDarkTheme(enabled) }

@@ -508,6 +508,7 @@ android:
   network_changed: "Network changed, restarting proxy"
   restart_core: "Restart Core"
   reload_core: "Reload Config"
+  common_cancel: "Cancel"
 
 errors:
   network: "Network request failed. Check your network or proxy and try again"

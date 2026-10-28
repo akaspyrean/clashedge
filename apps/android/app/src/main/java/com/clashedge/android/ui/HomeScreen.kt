@@ -86,13 +86,13 @@ fun HomeScreen(
         // 重启/重载按钮
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CePrimaryButton(
-                onClick = { viewModel.selectProxy("", "") }, // TODO: 实现重启
+                onClick = { viewModel.restartCore() },
                 enabled = !busy,
             ) {
                 Text(stringResource(R.string.restart_core))
             }
             CePrimaryButton(
-                onClick = {}, // TODO: 实现重载
+                onClick = { viewModel.reloadCore() },
                 enabled = !busy,
             ) {
                 Text(stringResource(R.string.reload_core))

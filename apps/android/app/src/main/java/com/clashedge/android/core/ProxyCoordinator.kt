@@ -91,54 +91,60 @@ class ProxyCoordinator(
         return if (p == null) null else p
     }
 
-    suspend fun start() {
-        lifecycleMutex.withLock {
-            if (_state.value == ConnectionState.RUNNING) return@withLock
-            if (_state.value == ConnectionState.STARTING || _state.value == ConnectionState.STOPPING) {
-                Logger.warn("start() called during transition; ignoring")
-                return@withLock
-            }
-            _state.value = ConnectionState.STARTING
+    suspend fun start() = lifecycleMutex.withLock { startLocked() }
+
+    private suspend fun startLocked() {
+        if (_state.value == ConnectionState.RUNNING) return
+        if (_state.value == ConnectionState.STARTING || _state.value == ConnectionState.STOPPING) {
+            Logger.warn("start() called during transition; ignoring")
+            return
+        }
+        _state.value = ConnectionState.STARTING
+        _error.value = null
+        try {
+            val settings = appConfig.settings.first()
+            val rulesDir = profiles.rulesDir()
+            val config = RuntimeConfigGenerator.build(
+                mode = settings.mode,
+                nodes = profiles.activeNodes(),
+                rulesDir = rulesDir,
+            )
+            val svc = Intent(context, ProxyForegroundService::class.java)
+                .putExtra(ProxyForegroundService.EXTRA_CONFIG, config)
+                .putExtra(ProxyForegroundService.EXTRA_MODE, settings.mode)
+            context.startForegroundService(svc)
+        } catch (t: Throwable) {
+            _error.value = t.message
+            _lastError.value = t.message
+            _state.value = ConnectionState.ERROR
+            Logger.error("proxy start failed: $t")
+        }
+    }
+
+    private suspend fun stopLocked() {
+        _state.value = ConnectionState.STOPPING
+        core.stop()
+        context.stopService(Intent(context, ProxyForegroundService::class.java))
+        context.stopService(Intent(context, ClashVpnService::class.java))
+        // Keep _error if it was ERROR, only clear on explicit stop
+        if (_state.value != ConnectionState.ERROR) {
             _error.value = null
-            try {
-                val settings = appConfig.settings.first()
-                val rulesDir = profiles.rulesDir()
-                val config = RuntimeConfigGenerator.build(
-                    mode = settings.mode,
-                    nodes = profiles.activeNodes(),
-                    rulesDir = rulesDir,
-                )
-                val svc = Intent(context, ProxyForegroundService::class.java)
-                    .putExtra(ProxyForegroundService.EXTRA_CONFIG, config)
-                    .putExtra(ProxyForegroundService.EXTRA_MODE, settings.mode)
-                context.startForegroundService(svc)
-            } catch (t: Throwable) {
-                _error.value = t.message
-                _lastError.value = t.message
-                _state.value = ConnectionState.ERROR
-                Logger.error("proxy start failed: $t")
-            }
         }
+        _state.value = ConnectionState.STOPPED
     }
 
-    private fun stopServices() {
-        scope.launch {
-            lifecycleMutex.withLock {
-                _state.value = ConnectionState.STOPPING
-                core.stop()
-                context.stopService(Intent(context, ProxyForegroundService::class.java))
-                context.stopService(Intent(context, ClashVpnService::class.java))
-                // Keep _error if it was ERROR, only clear on explicit stop
-                if (_state.value != ConnectionState.ERROR) {
-                    _error.value = null
-                }
-                _state.value = ConnectionState.STOPPED
-            }
+    fun stop() = scope.launch { lifecycleMutex.withLock { stopLocked() } }
+
+    suspend fun restartCore() = lifecycleMutex.withLock {
+        when (_state.value) {
+            ConnectionState.RUNNING, ConnectionState.ERROR -> stopLocked()
+            else -> {}
         }
+        startLocked()
     }
 
-    fun stop() {
-        stopServices()
+    suspend fun reloadCore() = lifecycleMutex.withLock {
+        _groups.value = core.queryGroups()
     }
 
     fun onCoreRunning() {
@@ -157,11 +163,11 @@ class ProxyCoordinator(
                 if (err.isEmpty()) onCoreRunning()
                 else {
                     onCoreError("Mihomo core failed to start: $err")
-                    stopServices()
+                    stop()
                 }
             } catch (t: Throwable) {
                 onCoreError("proxy start failed: ${t.message}")
-                stopServices()
+                stop()
             }
         }
     }
@@ -179,7 +185,7 @@ class ProxyCoordinator(
         _error.value = message
         _lastError.value = message
         _state.value = ConnectionState.ERROR
-        stopServices()
+        stop()
     }
 
     fun refreshGroups() {
