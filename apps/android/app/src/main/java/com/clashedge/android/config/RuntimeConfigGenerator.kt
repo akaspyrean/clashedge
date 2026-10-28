@@ -1,6 +1,5 @@
 package com.clashedge.android.config
 
-import com.clashedge.android.model.ProxyGroup
 import com.clashedge.android.model.Node
 
 /**

@@ -1,7 +1,8 @@
 name: Auto-update mihomo Android binary
 
-# Manual only: the Android app still ships the pure-Kotlin MihomoCore stub and does
-# not consume the AAR yet, so there is no reason to rebuild it on a schedule.
+# Manual only: the Android app consumes the AAR through the `mihomo.Mihomo`
+# gomobile class (see MihomoCoreImpl), but the AAR is not yet a pinned Gradle
+# dependency, so there is no reason to rebuild it on a schedule.
 # Run this workflow to pin a newer mihomo version and rebuild the AAR.
 #
 # The build itself lives in the reusable workflow android-mihomo-aar.yml; reusable
