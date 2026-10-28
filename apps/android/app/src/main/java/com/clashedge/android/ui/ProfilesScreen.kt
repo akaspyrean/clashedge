@@ -60,7 +60,7 @@ fun ProfilesScreen(
                 }
             }
         } else {
-            Text(stringResource(R.string.nav_profiles), modifier = Modifier.padding(top = 16.dp))
+            Text(stringResource(R.string.profiles_empty), modifier = Modifier.padding(top = 16.dp))
         }
     }
 
