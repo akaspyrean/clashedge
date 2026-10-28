@@ -3,7 +3,6 @@ package com.clashedge.android.subscription
 import com.clashedge.android.config.AppConfigStore
 import com.clashedge.android.model.Node
 import com.clashedge.android.util.Logger
-import java.nio.charset.Charsets
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -83,10 +82,10 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
                     password = cur["password"],
                     uuid = cur["uuid"],
                     cipher = cur["cipher"],
-                    udp = cur["udp"]?.toBooleanOrNull() ?: false,
-                    tls = cur["tls"]?.toBooleanOrNull() ?: false,
+                    udp = cur["udp"]?.toBoolean() ?: false,
+                    tls = cur["tls"]?.toBoolean() ?: false,
                     sni = cur["sni"],
-                    alpn = cur["alpn"]?.split(",").map { it.trim() }.filter { it.isNotBlank() } ?: emptyList(),
+                    alpn = cur["alpn"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList(),
                     fingerprint = cur["fingerprint"],
                     network = cur["network"] ?: "tcp",
                     wsPath = cur["ws-path"] ?: cur["ws_path"],

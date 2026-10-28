@@ -60,7 +60,7 @@ fun ProfilesScreen(
                 }
             }
         } else {
-            Text("No subscriptions yet.", modifier = Modifier.padding(top = 16.dp))
+            Text(stringResource(R.string.profiles_empty), modifier = Modifier.padding(top = 16.dp))
         }
     }
 
