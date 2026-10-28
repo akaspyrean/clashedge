@@ -2,13 +2,14 @@ package mihomo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
+	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub"
 	"github.com/metacubex/mihomo/log"
-	"github.com/metacubex/mihomo/config"
 )
 
 var (
