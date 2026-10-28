@@ -71,7 +71,13 @@ jobs:
           # go.mod already points at ../../../../mihomo-source, which resolves
           # to the mihomo-source checkout that sits next to the clashedge/ dir.
           go mod tidy
+          # -tags cmfa is required: without it mihomo compiles the
+          # android&&!cmfa variant, whose TUN listener insists on Android's
+          # PackageManager (sing-tun reads /data/system/packages.xml, which
+          # modern Android denies to apps) and whose path safety check rejects
+          # the app's rule-provider files.
           gomobile bind -v -target=android -androidapi ${ANDROID_API} \
+            -tags cmfa \
             -o mihomo-core.aar \
             .
 
