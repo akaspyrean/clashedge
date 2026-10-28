@@ -59,8 +59,8 @@ fun ProfilesScreen(
                     )
                 }
             }
-    } else {
-          Text(stringResource(R.string.profiles_empty), modifier = Modifier.padding(top = 16.dp))
+        } else {
+            Text(stringResource(R.string.profiles_empty), modifier = Modifier.padding(top = 16.dp))
         }
     }
 

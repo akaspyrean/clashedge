@@ -282,7 +282,6 @@ profiles:
   raw_edit: "原始编辑"
   save: "保存"
   cancel: "取消"
-  empty: "暂无订阅或配置，点击「添加订阅」或「新建配置」开始使用"
 
 proxies:
   search_placeholder: "搜索节点"
@@ -504,6 +503,7 @@ android:
   core_start_failed: "代理核心启动失败"
   config_corrupt: "配置已损坏，已自动恢复"
   network_changed: "网络已切换，正在重启代理"
+  profiles_empty: "暂无订阅，点击「添加订阅」开始使用"
 
 errors:
   network: "网络请求失败。请检查网络或代理后重试"

@@ -29,4 +29,5 @@
     <string name="core_start_failed">代理核心启动失败</string>
     <string name="config_corrupt">配置已损坏，已自动恢复</string>
     <string name="network_changed">网络已切换，正在重启代理</string>
+    <string name="profiles_empty">暂无订阅，点击「添加订阅」开始使用</string>
 </resources>

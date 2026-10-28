@@ -277,6 +277,11 @@ profiles:
   traffic_never: "No expiry"
   empty: "No subscriptions yet. Click Add subscription to start."
   name: "Name"
+  content: "Content"
+  edit: "Edit"
+  raw_edit: "Raw Edit"
+  save: "Save"
+  cancel: "Cancel"
 
 proxies:
   search_placeholder: "Search nodes"
@@ -501,6 +506,7 @@ android:
   core_start_failed: "Failed to start the proxy core"
   config_corrupt: "Configuration is damaged and has been restored"
   network_changed: "Network changed, restarting proxy"
+  profiles_empty: "No subscriptions yet. Click Add subscription to start."
 
 errors:
   network: "Network request failed. Check your network or proxy and try again"
