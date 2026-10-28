@@ -23,7 +23,8 @@ interface MihomoCore {
     val error: StateFlow<String?>
 
     // Start with full YAML config and TUN fd (0 = no TUN)
-    fun start(configYaml: String, tunFd: Int): String
+    // homeDir is the writable directory mihomo uses for GeoSite/GeoIP and its cache.
+    fun start(configYaml: String, tunFd: Int, homeDir: String): String
 
     fun stop()
 
@@ -87,14 +88,14 @@ class MihomoCoreImpl : MihomoCore {
         }
     }
 
-    override fun start(configYaml: String, tunFd: Int): String {
+    override fun start(configYaml: String, tunFd: Int, homeDir: String): String {
         _error.value = null
         try {
-            val result = invokeStatic("start", configYaml, tunFd) ?: return "JNI start returned null"
+            val result = invokeStatic("start", configYaml, tunFd, homeDir) ?: return "JNI start returned null"
             if (result.isEmpty()) {
                 _running.value = true
                 _error.value = null
-                com.clashedge.android.util.Logger.info("Mihomo core started (config ${configYaml.length} bytes, tunFd=$tunFd)")
+                com.clashedge.android.util.Logger.info("Mihomo core started (config ${configYaml.length} bytes, tunFd=$tunFd, home=$homeDir)")
                 return ""
             } else {
                 _error.value = result

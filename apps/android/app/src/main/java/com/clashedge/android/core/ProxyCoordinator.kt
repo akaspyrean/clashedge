@@ -159,7 +159,7 @@ class ProxyCoordinator(
     fun onVpnEstablished(fd: Int, config: String) {
         scope.launch {
             try {
-                val err = core.start(config, fd)
+                val err = core.start(config, fd, context.filesDir.absolutePath)
                 if (err.isEmpty()) onCoreRunning()
                 else {
                     onCoreError("Mihomo core failed to start: $err")
