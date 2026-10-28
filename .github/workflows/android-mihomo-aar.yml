@@ -67,8 +67,8 @@ jobs:
       - name: Build AAR from wrapper
         working-directory: clashedge/apps/android/mihomo-wrapper
         run: |
-          # Point go.mod at the checked-out mihomo source (three levels up to repo root)
-          sed -i 's|replace github.com/metacubex/mihomo => .*|replace github.com/metacubex/mihomo => ../../../mihomo-source|' go.mod
+          # go.mod already points at ../../../../mihomo-source, which resolves
+          # to the mihomo-source checkout that sits next to the clashedge/ dir.
           go mod tidy
           gomobile bind -v -target=android -androidapi ${ANDROID_API} \
             -o mihomo-core.aar \

@@ -55,7 +55,7 @@ data class Node(
 data class ProxyGroup(
     val name: String,
     val type: String,
-    val nodes: List<Node>,
+    val nodes: List<ProxyInfo>,
     val now: String? = null,
 )
 
@@ -80,6 +80,8 @@ data class LogEntry(
 data class ProxyInfo(
     val name: String,
     val type: String,
+    val server: String = "",
+    val port: Int = 0,
     val udp: Boolean = false,
     val alive: Boolean = false,
     val delay: Int = 0,

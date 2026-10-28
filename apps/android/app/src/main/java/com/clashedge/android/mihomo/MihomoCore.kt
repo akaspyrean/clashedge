@@ -2,6 +2,8 @@ package com.clashedge.android.mihomo
 
 import com.clashedge.android.model.ProxyGroup
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 
 /**
  * Adapter around the Mihomo Android core (AAR / JNI).
@@ -50,6 +52,8 @@ class MihomoCoreImpl : MihomoCore {
     override val running: StateFlow<Boolean> = _running
     private val _error = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override val error: StateFlow<String?> = _error
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     // Reflection handles to the gomobile-generated Mihomo class
     private val mihomoClass: Class<*>? = try {
@@ -154,11 +158,10 @@ class MihomoCoreImpl : MihomoCore {
 
     override fun queryGroups(): List<ProxyGroup> {
         try {
-            // The gomobile binding returns a JSON string or list; we'll parse it
-            val json = invokeStatic("getProxies") ?: return emptyList()
-            // TODO: Parse JSON into List<ProxyGroup>
-            // For now, return empty list until parsing is implemented
-            return emptyList()
+            // The gomobile binding returns the proxy-group tree as a JSON string.
+            val payload = invokeStatic("getGroupsJSON") ?: return emptyList()
+            if (payload.isBlank()) return emptyList()
+            return json.decodeFromString<List<ProxyGroup>>(payload)
         } catch (e: Exception) {
             com.clashedge.android.util.Logger.error("Mihomo queryGroups failed: $e")
             return emptyList()

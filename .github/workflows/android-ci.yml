@@ -65,3 +65,55 @@ jobs:
       - name: Build unsigned release APK
         working-directory: apps/android
         run: ./gradlew :app:assembleRelease --console=plain --no-daemon
+
+  # The Go wrapper (apps/android/mihomo-wrapper) is the Android half of the
+  # Mihomo core. It is only compiled by the reusable AAR workflow, which runs
+  # on a schedule - so a Go compile error there can reach main unnoticed and
+  # silently break the AAR build (this happened with the missing
+  # "encoding/json" import). This job type-checks the wrapper on every PR
+  # that touches apps/android/**. It needs no Android SDK/NDK: plain
+  # `go build` is enough to catch compile errors.
+  mihomo-wrapper-build:
+    name: Build mihomo wrapper (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Checkout into clashedge/ so that the wrapper's go.mod replace
+      # directive (../../../../mihomo-source) resolves to the sibling
+      # mihomo-source checkout created by the next step.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: clashedge
+
+      # Keep the version in lockstep with the wrapper's go.mod requirement so
+      # the two cannot drift apart.
+      - name: Resolve mihomo version
+        id: mihomo
+        working-directory: clashedge/apps/android/mihomo-wrapper
+        run: |
+          VERSION=$(sed -n 's|.*github.com/metacubex/mihomo v\(.*\)|\1|p' go.mod | head -1)
+          if [ -z "$VERSION" ]; then
+            echo "cannot read the mihomo version from go.mod" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout mihomo source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: MetaCubeX/mihomo
+          ref: v${{ steps.mihomo.outputs.version }}
+          path: mihomo-source
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
+        with:
+          go-version: "1.22"
+          cache: true
+          cache-dependency-path: clashedge/apps/android/mihomo-wrapper/go.mod
+
+      - name: Build wrapper
+        working-directory: clashedge/apps/android/mihomo-wrapper
+        run: |
+          go mod tidy
+          go build ./...
