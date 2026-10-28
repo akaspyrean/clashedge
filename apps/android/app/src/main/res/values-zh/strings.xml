@@ -21,6 +21,7 @@
     <string name="mode_direct">直连</string>
     <string name="import_subscription">添加订阅</string>
     <string name="update_subscription">更新</string>
+    <string name="activate">激活</string>
     <string name="subscription_url_hint">https://…</string>
     <string name="subscription_imported">订阅导入成功</string>
     <string name="subscription_import_failed">导入失败：%1$s</string>

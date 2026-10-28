@@ -21,6 +21,7 @@
     <string name="mode_direct">Direct</string>
     <string name="import_subscription">Add Subscription</string>
     <string name="update_subscription">Update</string>
+    <string name="activate">Activate</string>
     <string name="subscription_url_hint">https://…</string>
     <string name="subscription_imported">Subscription imported</string>
     <string name="subscription_import_failed">Import failed: %1$s</string>

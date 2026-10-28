@@ -496,6 +496,7 @@ android:
   # renaming requires updating Android references in lockstep.
   import_subscription: "Add Subscription"
   update_subscription: "Update"
+  activate: "Activate"
   subscription:
     url_hint: "https://…"
     imported: "Subscription imported"

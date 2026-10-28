@@ -493,6 +493,7 @@ android:
   # 以下 key 与现有 R.string.* 资源名严格对应；改名需同步 Android 引用。
   import_subscription: "添加订阅"
   update_subscription: "更新"
+  activate: "激活"
   subscription:
     url_hint: "https://…"
     imported: "订阅导入成功"

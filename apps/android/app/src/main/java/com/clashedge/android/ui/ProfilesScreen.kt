@@ -82,11 +82,11 @@ fun ProfilesScreen(
                     showDialog = false
                     url = ""
                 }) {
-                    Text(stringResource(R.string.update_subscription))
+                    Text(stringResource(R.string.import_subscription))
                 }
             },
             dismissButton = {
-                    TextButton(onClick = { showDialog = false }) { Text(stringResource(R.string.common_cancel)) }
+                TextButton(onClick = { showDialog = false }) { Text(stringResource(R.string.common_cancel)) }
             },
         )
     }
@@ -107,7 +107,7 @@ private fun ProfileCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(modifier = Modifier.padding(top = 8.dp)) {
-                TextButton(onClick = onActivate) { Text(stringResource(R.string.update_subscription)) }
+                TextButton(onClick = onActivate) { Text(stringResource(R.string.activate)) }
                 if (profile.subscribeUrl != null) {
                     TextButton(onClick = onRefresh) { Text(stringResource(R.string.update_subscription)) }
                 }
