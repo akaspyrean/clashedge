@@ -27,11 +27,11 @@ name: Release
 # scripts plus the Tauri signer (installed with --ignore-scripts). Authenticode
 # signing and manifest generation therefore happen in `publish`, on the ZIP that
 # `build` produced.
-  on:
-    # Primary release flow: run this workflow from the Actions UI and type
-    # a v* tag (e.g. v0.2.0). The tag is created by the `publish` job once
-    # every build/sign/verify step succeeded; this manual input is the ONLY
-    # way the release version is controlled — no source file needs to be bumped.
+on:
+  # Primary release flow: run this workflow from the Actions UI and type
+  # a v* tag (e.g. v0.2.0). The tag is created by the `publish` job once
+  # every build/sign/verify step succeeded; this manual input is the ONLY
+  # way the release version is controlled — no source file needs to be bumped.
   workflow_dispatch:
     inputs:
       tag:
