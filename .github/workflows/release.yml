@@ -191,10 +191,16 @@ jobs:
         run: |
           ./gradlew test --console=plain --no-daemon
 
-  # Build mihomo-core AAR for Android is intentionally NOT part of the release
-  # chain: the Android app still ships the pure-Kotlin MihomoCore stub, so the
-  # AAR is not consumed by any Gradle dependency. Build it on demand with the
-  # "Build mihomo Android AAR" workflow (workflow_dispatch).
+  # Build the mihomo-core AAR as part of the release chain. The reusable
+  # workflow android-mihomo-aar.yml checks out the wrapper + the pinned mihomo
+  # source and runs gomobile bind; its mihomo-version default matches the
+  # wrapper's go.mod. android-build-unsigned downloads the artifact into
+  # app/libs/ so the Gradle auto-detect picks it up.
+  android-build-aar:
+    needs: prepare
+    uses: ./.github/workflows/android-mihomo-aar.yml
+    permissions:
+      contents: read
 
   # Prepare third-party assets (parallel with frontend build)
   prepare-assets:
@@ -344,7 +350,7 @@ jobs:
   # and the Android SDK. Produces an UNSIGNED release APK; signing happens later
   # in the `android-sign` job which runs in the protected `release` environment.
   android-build-unsigned:
-    needs: [prepare, quality, android-quality]
+    needs: [prepare, quality, android-quality, android-build-aar]
     runs-on: ubuntu-latest
     # No release environment, no signing secrets: this job runs third-party Gradle code.
     permissions:
@@ -400,6 +406,14 @@ jobs:
             fi
             echo "  staged: $dst/$f.yaml ($(wc -c < "$dst/$f.yaml") bytes, sha256 verified)"
           done
+
+      # Download the mihomo-core AAR produced by android-build-aar into app/libs/
+      # so the Gradle auto-detect (app/build.gradle.kts) wires it as a dependency.
+      - name: Download mihomo-core AAR
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mihomo-core-aar
+          path: apps/android/app/libs
 
       - name: Build unsigned release APK
         working-directory: apps/android
