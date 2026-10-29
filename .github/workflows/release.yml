@@ -311,6 +311,16 @@ jobs:
             throw "CLASHEDGE_UPDATE_PUBKEY is not set — client cannot verify manifests without the embedded public key"
           }
 
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/windows/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/windows
+        run: npm ci
+
       - name: Tauri release build (--no-bundle)
         working-directory: apps/windows
         env:
