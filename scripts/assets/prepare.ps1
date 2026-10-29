@@ -152,10 +152,10 @@ function Process-Asset {
 # Parallel download and processing (PowerShell 7+ ForEach-Object -Parallel)
 $lock = Get-Content $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
-$results = $lock.assets | ForEach-Object -Parallel -ThrottleLimit 4 {
+$results = $lock.assets | ForEach-Object -Parallel {
     param($asset, $Proxy, $cacheDir, $stageDir)
     Process-Asset -asset $asset -Proxy $Proxy -cacheDir $cacheDir -stageDir $stageDir
-} -ArgumentList $Proxy, $cacheDir, $stageDir
+} -ThrottleLimit 4 -ArgumentList $Proxy, $cacheDir, $stageDir
 
 $failed = 0
 foreach ($result in $results) {
