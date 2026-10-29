@@ -14,7 +14,7 @@
 #   pwsh scripts/assets/prepare.ps1 -Proxy http://127.0.0.1:7890
 #
 # Exit code 0 = all assets staged and verified.
-# ASCII-only; PowerShell 7+ compatible (uses ForEach-Object -Parallel).
+# ASCII-only; Windows PowerShell 5.1 compatible.
 
 [CmdletBinding()]
 param(
@@ -149,16 +149,12 @@ function Process-Asset {
     return @{ failed = $false }
 }
 
-# Parallel download and processing (PowerShell 7+ ForEach-Object -Parallel)
-$lock = Get-Content $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
-
-$results = $lock.assets | ForEach-Object -Parallel {
-    param($asset, $Proxy, $cacheDir, $stageDir)
-    Process-Asset -asset $asset -Proxy $Proxy -cacheDir $cacheDir -stageDir $stageDir
-} -ThrottleLimit 4 -ArgumentList $Proxy, $cacheDir, $stageDir
-
+# Download and stage every pinned asset sequentially. Script-block isolation
+# would hide the parent-scope functions (Process-Asset / Get-SHA256 /
+# Invoke-Download) from the worker runspace, so -Parallel is not safe here.
 $failed = 0
-foreach ($result in $results) {
+foreach ($asset in $lock.assets) {
+    $result = Process-Asset -asset $asset -Proxy $Proxy -cacheDir $cacheDir -stageDir $stageDir
     if ($result.failed) {
         $failed++
         Write-Host "  FAIL  $($result.error)" -ForegroundColor Red
