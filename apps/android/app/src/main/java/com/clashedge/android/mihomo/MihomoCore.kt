@@ -56,10 +56,14 @@ class MihomoCoreImpl : MihomoCore {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    // Reflection handles to the gomobile-generated Mihomo class
+    // Reflection handles to the gomobile-generated Mihomo class.
+    // Class.forName initializes the class, which loads libgojni via go.Universe's
+    // static initializer; an UnsatisfiedLinkError there surfaces as an
+    // ExceptionInInitializerError (an Error, not an Exception), so catch Throwable.
     private val mihomoClass: Class<*>? = try {
         Class.forName("mihomo.Mihomo")
-    } catch (e: ClassNotFoundException) {
+    } catch (e: Throwable) {
+        com.clashedge.android.util.Logger.error("Mihomo AAR unavailable: $e")
         null
     }
 
@@ -83,7 +87,7 @@ class MihomoCoreImpl : MihomoCore {
             val method = clazz.getMethod(methodName, *paramTypes)
             val result = method.invoke(null, *args)
             return result as? String
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             return "JNI $methodName failed: ${e.message}"
         }
     }
