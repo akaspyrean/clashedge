@@ -143,8 +143,12 @@ Copy-Item -Recurse (Join-Path $tpl "App\DefaultData\*") (Join-Path $out "Data")
 Copy-Item $stagedWintun (Join-Path $out "App\DefaultData\wintun.dll")
 Copy-Item $stagedWintun (Join-Path $out "Data\wintun.dll")
 if (Test-Path $stagedRules) {
-    Copy-Item -Recurse (Join-Path $stagedRules "*") (Join-Path $out "App\DefaultData\rules")
-    Copy-Item -Recurse (Join-Path $stagedRules "*") (Join-Path $out "Data\rules")
+    $rulesDef = Join-Path $out "App\DefaultData\rules"
+    $rulesData = Join-Path $out "Data\rules"
+    New-Item -ItemType Directory -Force $rulesDef | Out-Null
+    New-Item -ItemType Directory -Force $rulesData | Out-Null
+    Copy-Item -Recurse (Join-Path $stagedRules "*") $rulesDef
+    Copy-Item -Recurse (Join-Path $stagedRules "*") $rulesData
 }
 foreach ($g in @("GeoIP.dat", "GeoSite.dat", "Country.mmdb")) {
     Copy-Item (Join-Path $stagedGeodata $g) (Join-Path $out "App\DefaultData\$g")
