@@ -349,6 +349,16 @@ pub fn build_runtime_config(
                             plist.push(serde_norway::Value::from(n.clone()));
                         }
                     }
+                } else if matches!(gname.as_str(), "扶梯出行" | "人工智能" | "影音视听")
+                {
+                    // 解耦非叶子分流策略组：保留原有选项，同时追加全部节点供独立直选，实现分流隔离
+                    if let Some(plist) = gmap.get_mut("proxies").and_then(|p| p.as_sequence_mut()) {
+                        for n in &node_names {
+                            if !plist.iter().any(|v| v.as_str() == Some(n)) {
+                                plist.push(serde_norway::Value::from(n.clone()));
+                            }
+                        }
+                    }
                 }
             }
         }

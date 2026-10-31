@@ -73,7 +73,11 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
             info!("Tray: toggling TUN mode");
             let state = app_handle.state::<crate::AppState>();
             let new_val = !state.config_manager.lock().unwrap().get_config().tun.enable;
-            state.controller.apply_tun(app_handle, new_val).await?;
+            if new_val && !crate::util::elevation::is_elevated() {
+                prompt_elevation_for_tun(app_handle)?;
+            } else {
+                state.controller.apply_tun(app_handle, new_val).await?;
+            }
         }
 
         // 开机自启开关（注册表 Run 键 → 根启动器 --clash-edge-autostart）
@@ -182,5 +186,43 @@ pub async fn handle_tray_event(app_handle: &AppHandle, event: &MenuEvent) -> Res
         }
     }
 
+    Ok(())
+}
+
+#[cfg(windows)]
+fn prompt_elevation_for_tun(app_handle: &AppHandle) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO,
+    };
+
+    let text: Vec<u16> = std::ffi::OsStr::new("开启 TUN 模式需要系统管理员权限创建虚拟网卡并接管路由。\n\n是否立即以管理员身份重新启动 ClashEdge 并自动开启 TUN？")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let title: Vec<u16> = std::ffi::OsStr::new("ClashEdge - 需要管理员权限")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let res = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_ICONQUESTION | MB_YESNO,
+        )
+    };
+
+    if res == IDYES {
+        let data_dir = crate::util::paths::get_app_data_dir(app_handle).ok();
+        crate::util::elevation::relaunch_elevated(true, data_dir.as_deref())?;
+        app_handle.exit(0);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn prompt_elevation_for_tun(_app_handle: &AppHandle) -> Result<()> {
     Ok(())
 }
