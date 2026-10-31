@@ -495,6 +495,46 @@ watch(
   color: var(--ce-text-tertiary);
 }
 
+.region-pills {
+  display: flex;
+  align-items: center;
+  gap: var(--ce-space-2);
+  overflow-x: auto;
+  padding: 2px 0;
+}
+
+.region-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: var(--ce-radius-full);
+  border: 1px solid var(--ce-border);
+  background: var(--ce-bg-surface);
+  color: var(--ce-text-secondary);
+  font: var(--ce-type-caption);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--ce-dur-fast) var(--ce-ease-standard);
+}
+
+.region-pill:hover {
+  border-color: var(--ce-text-disabled);
+  color: var(--ce-text-primary);
+}
+
+.region-pill.is-active {
+  border-color: var(--ce-accent-bg);
+  background: var(--ce-accent-soft);
+  color: var(--ce-accent-fg);
+  font-weight: 600;
+}
+
+.pill-flag {
+  font-size: 13px;
+  line-height: 1;
+}
+
 .tile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
