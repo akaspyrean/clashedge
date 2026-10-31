@@ -299,24 +299,25 @@ pub fn run() {
                 });
             }
 
-            // GeoData / 规则集自动更新：仅在用户开启 `geo-auto-update` 时，启动 90s 后
-            // 检查一次，距上次成功更新 >24h 才执行（无常驻定时器）。
+            // GeoData / 规则集自动更新：启动 90s 检查一次，此后每 24 小时周期检查一次。
             {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let enabled = app_handle
-                        .state::<crate::AppState>()
-                        .config_manager
-                        .lock()
-                        .unwrap()
-                        .get_config()
-                        .general
-                        .geo_auto_update;
-                    if !enabled {
-                        return;
-                    }
                     tokio::time::sleep(std::time::Duration::from_secs(90)).await;
-                    crate::geodata::updater::auto_update_if_due(&app_handle).await;
+                    loop {
+                        let enabled = app_handle
+                            .state::<crate::AppState>()
+                            .config_manager
+                            .lock()
+                            .unwrap()
+                            .get_config()
+                            .general
+                            .geo_auto_update;
+                        if enabled {
+                            crate::geodata::updater::auto_update_if_due(&app_handle).await;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+                    }
                 });
             }
 

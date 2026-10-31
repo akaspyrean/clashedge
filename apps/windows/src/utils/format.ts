@@ -101,3 +101,76 @@ export function maskUrl(url: string): string {
     return "…";
   }
 }
+
+/** 常用地区名到国旗 Emoji 的映射 */
+const REGION_FLAGS: Record<string, string> = {
+  香港: "🇭🇰",
+  日本: "🇯🇵",
+  美国: "🇺🇸",
+  新加坡: "🇸🇬",
+  台湾: "🇹🇼",
+  英国: "🇬🇧",
+  德国: "🇩🇪",
+  韩国: "🇰🇷",
+  荷兰: "🇳🇱",
+  加拿大: "🇨🇦",
+  澳大利亚: "🇦🇺",
+  法国: "🇫🇷",
+  俄罗斯: "🇷🇺",
+  土耳其: "🇹🇷",
+  印度: "🇮🇳",
+  巴西: "🇧🇷",
+  阿根廷: "🇦🇷",
+  马来西亚: "🇲🇾",
+  泰国: "🇹🇭",
+  越南: "🇻🇳",
+  菲律宾: "🇵🇭",
+  印度尼西亚: "🇮🇩",
+};
+
+export function getRegionFlag(region?: string | null): string | undefined {
+  if (!region) return undefined;
+  for (const [key, flag] of Object.entries(REGION_FLAGS)) {
+    if (region.includes(key)) return flag;
+  }
+  return undefined;
+}
+
+/** 智能清洗机场原始长节点名（如 JMS-1416430@c37s1.portablesub.net -> c37s1），
+ *  并组合国旗与易读名称。
+ */
+export function formatNodeDisplay(rawName: string, region?: string | null): {
+  displayName: string;
+  flag?: string;
+  cleanName: string;
+} {
+  const flag = getRegionFlag(region);
+
+  // 1. 去除形如 JMS-1416430@、任意 [A-Za-z0-9_-]+@ 的账号长前缀
+  let clean = rawName.replace(/^[A-Za-z0-9_.-]+@/, "").trim();
+
+  // 2. 去除长域名后缀（如 .portablesub.net、.sub.xyz 等）
+  clean = clean.replace(/\.(portablesub|sub|node|server|v2ray|shadowsocks|vpn)\.[a-zA-Z0-9.-]+$/i, "");
+  // 如果剩余部分仍带有域名尾缀（如 c37s1.com / c37s1.net），去除常见顶级域
+  clean = clean.replace(/\.(com|net|org|xyz|top|io|me|info|vip|club)$/i, "");
+
+  // 3. 去除类似 "【VIP专线】" 或头部方括号广告
+  clean = clean.replace(/^\[[^\]]+\]/, "").trim();
+  clean = clean.replace(/^【[^】]+】/, "").trim();
+
+  // 如果清洗后为空，回退原名
+  if (!clean) clean = rawName;
+
+  // 4. 生成主展示名：若已经包含地区词（如 "香港 01"），直接保留；
+  // 否则若有外部识别出的地区（如 "美国"），组合成 "美国 · c37s1"
+  let displayName = clean;
+  if (region && !clean.includes(region)) {
+    displayName = `${region} · ${clean}`;
+  }
+
+  return {
+    displayName,
+    flag,
+    cleanName: clean,
+  };
+}

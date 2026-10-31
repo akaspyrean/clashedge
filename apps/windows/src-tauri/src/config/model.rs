@@ -175,7 +175,7 @@ fn default_geo_auto_update() -> bool {
     true
 }
 fn default_auto_check_update() -> bool {
-    false
+    true
 }
 fn default_proxy_mode() -> String {
     "rule".to_string()
@@ -347,7 +347,7 @@ pub struct TunConfig {
     /// 严格路由（mihomo `strict-route`）：强制所有流量经 TUN，避免 Windows 多网卡
     /// 并行 DNS 解析造成的 DNS 泄漏；代价是可能影响个别依赖物理网卡直连的软件。
     /// 默认 false 以保持既有行为。
-    #[serde(default)]
+    #[serde(default = "default_tun_strict_route")]
     pub strict_route: bool,
 
     /// TUN 内核接管 DNS 的劫持地址列表（mihomo `dns-hijack`）。
@@ -368,7 +368,7 @@ impl Default for TunConfig {
             auto_route: default_tun_auto_route(),
             auto_detect_interface: default_tun_auto_detect_interface(),
             interface_name: None,
-            strict_route: false,
+            strict_route: default_tun_strict_route(),
             dns_hijack: default_dns_hijack(),
         }
     }
@@ -381,6 +381,9 @@ fn default_tun_auto_route() -> bool {
     true
 }
 fn default_tun_auto_detect_interface() -> bool {
+    true
+}
+pub(crate) fn default_tun_strict_route() -> bool {
     true
 }
 fn default_dns_hijack() -> Vec<String> {

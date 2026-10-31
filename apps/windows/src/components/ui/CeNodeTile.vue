@@ -2,8 +2,10 @@
      结构：外层容器 + 覆盖整格的主按钮（选中节点）+ 独立的延迟标签按钮（重新测速），
      避免按钮嵌套按钮。readonly（自动测速组）只展示不可点选。 -->
 <script setup lang="ts">
+import { computed } from "vue";
 import { Check } from "lucide-vue-next";
 import CeLatencyTag from "./CeLatencyTag.vue";
+import { formatNodeDisplay } from "@/utils/format";
 
 const props = defineProps<{
   name: string;
@@ -23,6 +25,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ select: []; retest: [] }>();
 
+const formatted = computed(() => formatNodeDisplay(props.name, props.region));
+
 function onSelect() {
   if (!props.readonly) emit("select");
 }
@@ -38,9 +42,13 @@ function onSelect() {
       class="ce-tile__main"
       :aria-pressed="selected ? 'true' : 'false'"
       :aria-disabled="readonly ? 'true' : undefined"
+      :title="name"
       @click="onSelect"
     >
-      <span class="ce-tile__name">{{ name }}</span>
+      <div class="ce-tile__header">
+        <span v-if="formatted.flag" class="ce-tile__flag" aria-hidden="true">{{ formatted.flag }}</span>
+        <span class="ce-tile__name">{{ formatted.displayName }}</span>
+      </div>
       <span v-if="protocol" class="ce-tile__proto">{{ protocol }}</span>
     </button>
     <!-- 地区与延迟同行：地区在延迟标签左侧 -->

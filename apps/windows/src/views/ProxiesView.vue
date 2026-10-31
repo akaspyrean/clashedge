@@ -12,6 +12,7 @@ import CeSegmented from "@/components/ui/CeSegmented.vue";
 import { useAction } from "@/composables/useAction";
 import { useNodeRetest } from "@/composables/useNodeRetest";
 import { resolveGroupId, sortRuleGroups } from "@/constants/groups";
+import { getRegionFlag } from "@/utils/format";
 import { useConfigStore } from "@/stores/config";
 import { useCoreStore } from "@/stores/core";
 import { useProxyStore } from "@/stores/proxy";
@@ -64,12 +65,34 @@ const query = ref("");
 const searchInput = ref<HTMLInputElement | null>(null);
 
 const groupNodes = computed(() => (current.value ? nodesOf(current.value) : []));
+const selectedRegion = ref<string>("ALL");
+
 watch(
   () => current.value?.name,
   () => {
     query.value = "";
+    selectedRegion.value = "ALL";
   },
 );
+
+const availableRegions = computed(() => {
+  const g = current.value;
+  if (!g) return [];
+  const regions = g.regions ?? {};
+  const counts: Record<string, number> = {};
+  for (const name of groupNodes.value) {
+    if (name === "DIRECT" || name === "REJECT" || name === "自动优选" || name === "人工优选") continue;
+    const r = regions[name] || "其它";
+    counts[r] = (counts[r] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({
+      name,
+      count,
+      flag: getRegionFlag(name),
+    }));
+});
 
 // ---- 排序：延迟（默认，已测升序在前）/ 名称 ----
 const sortMode = ref<"delay" | "name">("delay");
@@ -85,6 +108,12 @@ const tiles = computed(() => {
   const regions = g.regions ?? {};
   return groupNodes.value
     .filter((n) => (q ? n.toLowerCase().includes(q) : true))
+    .filter((n) => {
+      if (selectedRegion.value === "ALL") return true;
+      if (n === "DIRECT" || n === "REJECT" || n === "自动优选" || n === "人工优选") return true;
+      const r = regions[n] || "其它";
+      return r === selectedRegion.value;
+    })
     .map((name) => {
       const d = delayFor(name);
       return {
@@ -258,6 +287,29 @@ watch(
               <Zap :size="16" :stroke-width="1.75" aria-hidden="true" />{{ $t("proxies.test_all") }}
             </el-button>
           </span>
+        </div>
+
+        <!-- 地区快捷筛选药丸栏 -->
+        <div v-if="availableRegions.length > 1" class="region-pills" role="tablist">
+          <button
+            type="button"
+            class="region-pill"
+            :class="{ 'is-active': selectedRegion === 'ALL' }"
+            @click="selectedRegion = 'ALL'"
+          >
+            全部 ({{ groupNodes.length }})
+          </button>
+          <button
+            v-for="reg in availableRegions"
+            :key="reg.name"
+            type="button"
+            class="region-pill"
+            :class="{ 'is-active': selectedRegion === reg.name }"
+            @click="selectedRegion = reg.name"
+          >
+            <span v-if="reg.flag" class="pill-flag" aria-hidden="true">{{ reg.flag }}</span>
+            {{ reg.name }} ({{ reg.count }})
+          </button>
         </div>
 
         <p v-if="readonlyGroup" class="note">{{ $t("proxies.auto_readonly") }}</p>
