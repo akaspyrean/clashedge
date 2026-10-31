@@ -128,6 +128,32 @@ const REGION_FLAGS: Record<string, string> = {
   印度尼西亚: "🇮🇩",
 };
 
+/** 常用地区名到 ISO 国家两字码（供 Flyme 风格精致微标展示，彻底避免字体错位） */
+const REGION_CODES: Record<string, string> = {
+  香港: "HK",
+  日本: "JP",
+  美国: "US",
+  新加坡: "SG",
+  台湾: "TW",
+  英国: "GB",
+  德国: "DE",
+  韩国: "KR",
+  荷兰: "NL",
+  加拿大: "CA",
+  澳大利亚: "AU",
+  法国: "FR",
+  俄罗斯: "RU",
+  土耳其: "TR",
+  印度: "IN",
+  巴西: "BR",
+  阿根廷: "AR",
+  马来西亚: "MY",
+  泰国: "TH",
+  越南: "VN",
+  菲律宾: "PH",
+  印度尼西亚: "ID",
+};
+
 export function getRegionFlag(region?: string | null): string | undefined {
   if (!region) return undefined;
   for (const [key, flag] of Object.entries(REGION_FLAGS)) {
@@ -136,15 +162,25 @@ export function getRegionFlag(region?: string | null): string | undefined {
   return undefined;
 }
 
+export function getRegionCode(region?: string | null): string | undefined {
+  if (!region) return undefined;
+  for (const [key, code] of Object.entries(REGION_CODES)) {
+    if (region.includes(key)) return code;
+  }
+  return undefined;
+}
+
 /** 智能清洗机场原始长节点名（如 JMS-1416430@c37s1.portablesub.net -> c37s1），
- *  并组合国旗与易读名称。
+ *  并组合易读名称与国家识别码。
  */
 export function formatNodeDisplay(rawName: string, region?: string | null): {
   displayName: string;
   flag?: string;
+  regionCode?: string;
   cleanName: string;
 } {
   const flag = getRegionFlag(region);
+  const regionCode = getRegionCode(region);
 
   // 1. 去除形如 JMS-1416430@、任意 [A-Za-z0-9_-]+@ 的账号长前缀
   let clean = rawName.replace(/^[A-Za-z0-9_.-]+@/, "").trim();
@@ -171,6 +207,7 @@ export function formatNodeDisplay(rawName: string, region?: string | null): {
   return {
     displayName,
     flag,
+    regionCode,
     cleanName: clean,
   };
 }
