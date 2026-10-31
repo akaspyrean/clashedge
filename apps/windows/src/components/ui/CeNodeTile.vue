@@ -46,9 +46,10 @@ function onSelect() {
       @click="onSelect"
     >
       <div class="ce-tile__header">
-        <span v-if="formatted.flag" class="ce-tile__flag" aria-hidden="true">{{ formatted.flag }}</span>
         <span class="ce-tile__name">{{ formatted.displayName }}</span>
+        <span v-if="formatted.regionCode" class="ce-tile__badge" aria-hidden="true">{{ formatted.regionCode }}</span>
       </div>
+      <span v-if="name !== formatted.displayName" class="ce-tile__subname" :title="name">{{ name }}</span>
       <span v-if="protocol" class="ce-tile__proto">{{ protocol }}</span>
     </button>
     <!-- 地区与延迟同行：地区在延迟标签左侧 -->
@@ -90,12 +91,12 @@ function onSelect() {
 
 .ce-tile:hover {
   border-color: var(--ce-text-disabled);
-  box-shadow: var(--ce-shadow-e1);
 }
 
 .ce-tile.is-selected,
 .ce-tile.is-selected:hover {
   border-color: var(--ce-accent-bg);
+  background: var(--ce-accent-soft);
   box-shadow: 0 0 0 0.5px var(--ce-accent-bg);
 }
 
@@ -131,12 +132,46 @@ function onSelect() {
   outline-offset: 2px;
 }
 
+.ce-tile__header {
+  display: flex;
+  align-items: center;
+  gap: var(--ce-space-2);
+  width: 100%;
+  min-width: 0;
+}
+
 .ce-tile__name {
   font-weight: 500;
   line-height: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ce-tile__subname {
+  font-family: var(--ce-font-mono);
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ce-text-disabled);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ce-tile__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 4px;
+  background: var(--ce-accent-soft);
+  color: var(--ce-accent-fg);
+  border: 1px solid var(--ce-border);
+  flex-shrink: 0;
 }
 
 .ce-tile.is-selected .ce-tile__name {
