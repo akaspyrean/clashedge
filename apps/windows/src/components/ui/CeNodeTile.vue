@@ -168,7 +168,7 @@ function onSelect() {
   font-weight: 700;
   line-height: 1;
   border-radius: 4px;
-  background: rgba(36, 101, 240, 0.08);
+  background: var(--ce-accent-soft);
   color: var(--ce-accent-fg);
   border: 1px solid var(--ce-border);
   flex-shrink: 0;
