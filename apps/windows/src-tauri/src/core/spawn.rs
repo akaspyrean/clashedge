@@ -90,20 +90,51 @@ pub fn write_runtime_config(data_dir: &Path, config: &Config) -> Result<(PathBuf
 /// 否则写入一个只含占位规则的最小文件（保证内核能起来，签名更新器稍后补全）。
 pub fn ensure_rule_files(data_dir: &Path) {
     let rules_dir = data_dir.join("rules");
+    // 防御历史打包脚本 bug：若误写成普通文件，删掉后恢复为目录
+    if rules_dir.is_file() {
+        warn!("Data/rules is a file instead of a directory; removing to recreate directory");
+        let _ = std::fs::remove_file(&rules_dir);
+    }
     if std::fs::create_dir_all(&rules_dir).is_err() {
         return;
     }
-    let defaults = crate::util::paths::portable_root()
-        .map(|r| r.join("App").join("DefaultData").join("rules"));
+    // 候选 1：便携包 App/DefaultData/rules（必须是目录）
+    let portable = crate::util::paths::portable_root()
+        .map(|r| r.join("App").join("DefaultData").join("rules"))
+        .filter(|p| p.is_dir());
+    // 候选 2：开发构建——从 exe 目录逐级向上找仓库 build/assets/staging/rules
+    let dev = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+        .and_then(|start| {
+            let mut dir = start;
+            for _ in 0..8 {
+                let cand = dir
+                    .join("build")
+                    .join("assets")
+                    .join("staging")
+                    .join("rules");
+                if cand.is_dir() {
+                    return Some(cand);
+                }
+                match dir.parent() {
+                    Some(p) => dir = p.to_path_buf(),
+                    None => break,
+                }
+            }
+            None
+        });
+
     for name in crate::config::model::BUILTIN_RULE_SETS {
         let file = rules_dir.join(format!("{}.yaml", name));
         if file.exists() {
             continue;
         }
-        let copied = defaults
-            .as_ref()
+        let copied = [portable.as_ref(), dev.as_ref()]
+            .into_iter()
+            .flatten()
             .map(|d| d.join(format!("{}.yaml", name)))
-            .filter(|src| src.exists())
+            .find(|src| src.exists())
             .map(|src| std::fs::copy(src, &file).is_ok())
             .unwrap_or(false);
         if !copied {
