@@ -995,8 +995,14 @@ hosts:
             cfg.tun.dns_hijack,
             vec!["any:53".to_string(), "tcp://any:53".to_string()]
         );
-        assert!(cfg.dns.fake_ip_filter.contains(&"+.msftconnecttest.com".to_string()));
-        assert!(cfg.dns.fake_ip_filter.contains(&"+.msftncsi.com".to_string()));
+        assert!(cfg
+            .dns
+            .fake_ip_filter
+            .contains(&"+.msftconnecttest.com".to_string()));
+        assert!(cfg
+            .dns
+            .fake_ip_filter
+            .contains(&"+.msftncsi.com".to_string()));
     }
 
     /// 内置规则必须随默认配置写盘：rules / proxy-groups / rule-providers

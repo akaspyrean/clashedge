@@ -1287,7 +1287,8 @@ rule-providers:
             "tun.strict-route"
         );
         assert_eq!(
-            tun.get("endpoint-independent-nat").and_then(|v| v.as_bool()),
+            tun.get("endpoint-independent-nat")
+                .and_then(|v| v.as_bool()),
             Some(true),
             "tun.endpoint-independent-nat"
         );
