@@ -120,6 +120,11 @@ pub(crate) fn merge_rules(config: Config) -> Config {
         info!("Builtin proxy-groups migrated to current baseline");
     }
 
+    // TUN & DNS 网络兼容性条目自愈（保全 dns-hijack 与 NCSI 探测域名）
+    if crate::config::model::migrate_tun_and_dns(&mut config) {
+        info!("TUN and DNS compatibility entries migrated");
+    }
+
     // 确保默认配置文件存在
     if config.general.profile.is_empty() {
         config.general.profile = "DIRECT".to_string();
@@ -230,7 +235,41 @@ pub fn build_runtime_config(
             serde_norway::from_str::<serde_norway::Value>(SNIFFER_YAML)?
         );
     }
-    put!("dns", serde_norway::to_value(&app.dns)?);
+    // DNS 运行时处理：
+    // 当 TUN 开启时，mihomo 要求 DNS 处于启用状态以支撑虚拟网卡流量的域名解析；
+    // 同时强力保全 Windows NCSI 探测域名（msftconnecttest.com / msftncsi.com）在 fake-ip-filter 中，
+    // 防止 Windows Wi-Fi 状态栏误报「无 Internet 连接」。
+    let mut dns_val = serde_norway::to_value(&app.dns)?;
+    if app.tun.enable {
+        if let Some(dns_map) = dns_val.as_mapping_mut() {
+            dns_map.insert(
+                serde_norway::Value::String("enable".to_string()),
+                serde_norway::Value::Bool(true),
+            );
+            let filter_key = serde_norway::Value::String("fake-ip-filter".to_string());
+            let mut filter_list: Vec<String> = dns_map
+                .get(&filter_key)
+                .and_then(|v| v.as_sequence())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for ncsi in [
+                "+.msftconnecttest.com",
+                "+.msftncsi.com",
+                "msftconnecttest.com",
+                "msftncsi.com",
+            ] {
+                if !filter_list.iter().any(|item| item == ncsi) {
+                    filter_list.push(ncsi.to_string());
+                }
+            }
+            dns_map.insert(filter_key, serde_norway::to_value(&filter_list)?);
+        }
+    }
+    put!("dns", dns_val);
 
     // 高级开关（D5）：tcp-concurrent / unified-delay。true/false 都显式写出——
     // 订阅 / 用户侧配置渗透不得改变这两个键（应用级开关由应用所有）。
@@ -1242,6 +1281,16 @@ rule-providers:
             Some(true),
             "tun.auto-detect-interface"
         );
+        assert_eq!(
+            tun.get("strict-route").and_then(|v| v.as_bool()),
+            Some(true),
+            "tun.strict-route"
+        );
+        assert_eq!(
+            tun.get("endpoint-independent-nat").and_then(|v| v.as_bool()),
+            Some(true),
+            "tun.endpoint-independent-nat"
+        );
         let hijack: Vec<&str> = tun
             .get("dns-hijack")
             .expect("tun must carry dns-hijack")
@@ -1249,6 +1298,30 @@ rule-providers:
             .map(|s| s.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
         assert_eq!(hijack, vec!["any:53", "tcp://any:53"], "tun.dns-hijack");
+
+        // 当 tun.enable 为 true 时，dns.enable 必须强制为 true，且 fake-ip-filter 保全 NCSI 探测域名
+        let dns = runtime
+            .as_mapping()
+            .unwrap()
+            .get("dns")
+            .expect("runtime must carry dns")
+            .as_mapping()
+            .expect("dns must be a mapping");
+        assert_eq!(
+            dns.get("enable").and_then(|v| v.as_bool()),
+            Some(true),
+            "dns.enable"
+        );
+        let filter: Vec<&str> = dns
+            .get("fake-ip-filter")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(filter.contains(&"+.msftconnecttest.com"));
+        assert!(filter.contains(&"+.msftncsi.com"));
     }
 
     /// F：mixed / system / gvisor 三种 stack 均能正确保存并生成 runtime 配置。

@@ -183,6 +183,12 @@ fn merge_legacy_value(value: &serde_norway::Value) -> Config {
         if let Some(v) = as_string(field(tun, "interface-name")).filter(|s| !s.is_empty()) {
             config.tun.interface_name = Some(v);
         }
+        if let Some(v) = as_bool(field(tun, "strict-route")) {
+            config.tun.strict_route = v;
+        }
+        if let Some(v) = as_bool(field(tun, "endpoint-independent-nat")) {
+            config.tun.endpoint_independent_nat = v;
+        }
         if let Some(v) = as_string_list(field(tun, "dns-hijack")) {
             if !v.is_empty() {
                 config.tun.dns_hijack = v;
