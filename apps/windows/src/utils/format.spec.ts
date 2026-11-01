@@ -92,3 +92,23 @@ describe("maskUrl", () => {
     expect(maskUrl("not a url")).toBe("…");
   });
 });
+
+describe("formatNodeDisplay", () => {
+  it("cleans airport long domain, account prefix and port, combining region", async () => {
+    const { formatNodeDisplay } = await import("./format");
+    const res1 = formatNodeDisplay("JMS-1416430@c37s3.portablesubmarines.com", "美国");
+    expect(res1.cleanName).toBe("c37s3");
+    expect(res1.displayName).toBe("美国 · c37s3");
+    expect(res1.regionCode).toBe("US");
+
+    const res2 = formatNodeDisplay("JMS-1416430@c37s3.portablesubmarines.com:443", "美国");
+    expect(res2.cleanName).toBe("c37s3");
+    expect(res2.displayName).toBe("美国 · c37s3");
+    expect(res2.regionCode).toBe("US");
+
+    const res3 = formatNodeDisplay("香港 01", "香港");
+    expect(res3.cleanName).toBe("香港 01");
+    expect(res3.displayName).toBe("香港 01");
+    expect(res3.regionCode).toBe("HK");
+  });
+});

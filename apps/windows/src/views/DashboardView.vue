@@ -130,7 +130,14 @@ const coreErrorMessage = computed(() => {
 const coreLabel = computed(() =>
   coreState.value === "running" && !carrying.value ? t("dashboard.status_idle") : undefined,
 );
-const coreVersion = computed(() => core.status.version ?? "—");
+const coreVersion = computed(() => {
+  const v = (core.status.version ?? "").trim();
+  if (!v || v === "—") return "—";
+  if (/^mihomo\b/i.test(v)) {
+    return v.replace(/^mihomo\s*v?/i, "mihomo v");
+  }
+  return `mihomo ${v.startsWith("v") ? v : `v${v}`}`;
+});
 const mixedPort = computed(() => config.config?.["mixed-port"] ?? "—");
 
 // 动作守卫：restart/reload 无自带 starting 状态，用统一 busy 防连点；start/stop 由 store 兜底。
@@ -184,13 +191,13 @@ const sessionLine = computed(() =>
           <template #info>
             <div class="core-info">
               <div class="core-info-line">混合端口 {{ mixedPort }}</div>
-              <div class="core-info-line">mihomo v{{ coreVersion }}</div>
+              <div class="core-info-line">{{ coreVersion }}</div>
             </div>
           </template>
           <template #actions="{ statusText }">
             <div class="ce-core__actions">
               <span class="core-status-label" role="status">{{ statusText }}</span>
-              <span v-if="coreLabel" class="core-status-label">{{ coreLabel }}</span>
+
               <el-button size="small" :disabled="!running || coreActionBusy" @click="onRestart">{{ $t("dashboard.restart") }}</el-button>
               <el-button size="small" plain :disabled="!running || coreActionBusy" @click="onReload">{{ $t("dashboard.reload") }}</el-button>
             </div>

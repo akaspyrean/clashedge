@@ -23,7 +23,12 @@ use crate::util::error::{Error, Result};
 use once_cell::sync::Lazy;
 
 /// DoH JSON 端点（IP 字面量，证书含 IP SAN）。依次尝试（默认值，可被运行时覆盖）。
-const DEFAULT_DOH_ENDPOINTS: &[&str] = &["https://223.5.5.5/resolve", "https://1.1.1.1/dns-query"];
+const DEFAULT_DOH_ENDPOINTS: &[&str] = &[
+    "https://120.53.53.53/dns-query",
+    "https://1.12.12.12/dns-query",
+    "https://223.5.5.5/resolve",
+    "https://1.1.1.1/dns-query",
+];
 /// 单次 DoH 查询超时（端点内 A/AAAA 并行，两者取最长）。从 4s 收紧到 2s。
 const DOH_TIMEOUT: Duration = Duration::from_secs(2);
 /// 缓存 TTL：60s。只缓存成功结果，失败不缓存（保证网络恢复后立即可重试）。
@@ -65,10 +70,10 @@ static DOH_ENDPOINTS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| {
 pub fn set_doh_endpoints(endpoints: Vec<String>) {
     let mut guard = DOH_ENDPOINTS.lock().unwrap();
     if endpoints.is_empty() {
-        *guard = vec![
-            "https://223.5.5.5/resolve".to_string(),
-            "https://1.1.1.1/dns-query".to_string(),
-        ];
+        *guard = DEFAULT_DOH_ENDPOINTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
     } else {
         *guard = endpoints;
     }
