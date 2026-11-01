@@ -345,10 +345,13 @@ pub struct TunConfig {
     pub interface_name: Option<String>,
 
     /// 严格路由（mihomo `strict-route`）：强制所有流量经 TUN，避免 Windows 多网卡
-    /// 并行 DNS 解析造成的 DNS 泄漏；代价是可能影响个别依赖物理网卡直连的软件。
-    /// 默认 false 以保持既有行为。
+    /// 并行 DNS 解析造成的 DNS 泄漏与 Wi-Fi 双栈 IPv6 漏流。默认开启。
     #[serde(default = "default_tun_strict_route")]
     pub strict_route: bool,
+
+    /// 独立端点 NAT（mihomo `endpoint-independent-nat`）：开启 Full Cone NAT，提升游戏与 P2P 体验。
+    #[serde(default = "default_tun_endpoint_independent_nat")]
+    pub endpoint_independent_nat: bool,
 
     /// TUN 内核接管 DNS 的劫持地址列表（mihomo `dns-hijack`）。
     /// 默认 any:53 + tcp://any:53，接管本机所有 DNS 请求交给 mihomo DNS 处理，
@@ -369,6 +372,7 @@ impl Default for TunConfig {
             auto_detect_interface: default_tun_auto_detect_interface(),
             interface_name: None,
             strict_route: default_tun_strict_route(),
+            endpoint_independent_nat: default_tun_endpoint_independent_nat(),
             dns_hijack: default_dns_hijack(),
         }
     }
@@ -384,6 +388,9 @@ fn default_tun_auto_detect_interface() -> bool {
     true
 }
 pub(crate) fn default_tun_strict_route() -> bool {
+    true
+}
+pub(crate) fn default_tun_endpoint_independent_nat() -> bool {
     true
 }
 fn default_dns_hijack() -> Vec<String> {
@@ -477,6 +484,14 @@ fn default_dns_fake_ip_filter() -> Vec<String> {
         "localhost.ptlogin2.qq.com".to_string(),
         "+.msftconnecttest.com".to_string(),
         "+.msftncsi.com".to_string(),
+        "msftconnecttest.com".to_string(),
+        "msftncsi.com".to_string(),
+        "*.msftconnecttest.com".to_string(),
+        "*.msftncsi.com".to_string(),
+        "time.*.com".to_string(),
+        "time.*.gov".to_string(),
+        "pool.ntp.org".to_string(),
+        "time.windows.com".to_string(),
         "*.n.n.srv.nintendo.net".to_string(),
     ]
 }
@@ -694,6 +709,30 @@ pub fn default_rules() -> Vec<String> {
                 .replace("{GROUP_LADDER}", pd::GROUP_LADDER)
         })
         .collect()
+}
+
+/// 自动迁移与保全 TUN / DNS 关键网络兼容性条目：
+/// 1. 若旧配置缺失 dns-hijack 则补齐默认 hijack（any:53 + tcp://any:53）；
+/// 2. 补齐关键 Windows NCSI 连通性探测域名至 fake-ip-filter，防止 Windows Wi-Fi 状态栏误报「无 Internet 连接」。
+pub fn migrate_tun_and_dns(config: &mut Config) -> bool {
+    let mut changed = false;
+    if config.tun.dns_hijack.is_empty() {
+        config.tun.dns_hijack = default_dns_hijack();
+        changed = true;
+    }
+    const NCSI_DOMAINS: &[&str] = &[
+        "+.msftconnecttest.com",
+        "+.msftncsi.com",
+        "msftconnecttest.com",
+        "msftncsi.com",
+    ];
+    for domain in NCSI_DOMAINS {
+        if !config.dns.fake_ip_filter.iter().any(|d| d == domain) {
+            config.dns.fake_ip_filter.push(domain.to_string());
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -932,6 +971,38 @@ hosts:
             serde_norway::from_str("enable: true\nstack: gvisor\ndns-hijack:\n  - 1.1.1.1:53\n")
                 .unwrap();
         assert_eq!(config.dns_hijack, vec!["1.1.1.1:53".to_string()]);
+    }
+
+    /// strict-route 默认为 true，endpoint-independent-nat 默认为 true。
+    #[test]
+    fn tun_default_strict_route_and_endpoint_independent_nat() {
+        let tun = Config::default().tun;
+        assert!(tun.strict_route, "strict-route must default true");
+        assert!(
+            tun.endpoint_independent_nat,
+            "endpoint-independent-nat must default true"
+        );
+    }
+
+    /// migrate_tun_and_dns 自动补全缺失的 NCSI 探测域名与 dns-hijack
+    #[test]
+    fn migrate_tun_and_dns_fills_missing_ncsi_and_hijack() {
+        let mut cfg = Config::default();
+        cfg.tun.dns_hijack.clear();
+        cfg.dns.fake_ip_filter = vec!["+.lan".to_string()];
+        assert!(migrate_tun_and_dns(&mut cfg));
+        assert_eq!(
+            cfg.tun.dns_hijack,
+            vec!["any:53".to_string(), "tcp://any:53".to_string()]
+        );
+        assert!(cfg
+            .dns
+            .fake_ip_filter
+            .contains(&"+.msftconnecttest.com".to_string()));
+        assert!(cfg
+            .dns
+            .fake_ip_filter
+            .contains(&"+.msftncsi.com".to_string()));
     }
 
     /// 内置规则必须随默认配置写盘：rules / proxy-groups / rule-providers

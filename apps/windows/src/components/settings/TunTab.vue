@@ -59,9 +59,14 @@ const onTun = (v: boolean | string | number) => {
         <el-switch v-model="cfg.tun['auto-detect-interface']" :aria-label="label" />
       </template>
     </PrefRow>
-    <PrefRow :title="t('tun.strict_route')">
+    <PrefRow :title="t('tun.strict_route')" :hint="t('tun.strict_route_hint')">
       <template #default="{ label }">
         <el-switch v-model="cfg.tun['strict-route']" :aria-label="label" />
+      </template>
+    </PrefRow>
+    <PrefRow :title="t('tun.endpoint_independent_nat')" :hint="t('tun.endpoint_independent_nat_hint')">
+      <template #default="{ label }">
+        <el-switch v-model="cfg.tun['endpoint-independent-nat']" :aria-label="label" />
       </template>
     </PrefRow>
     <PrefRow :title="t('tun.interface_name')">

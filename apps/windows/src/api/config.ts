@@ -19,8 +19,10 @@ export interface TunConfig {
   "auto-route": boolean;
   "auto-detect-interface": boolean;
   "interface-name"?: string | null;
-  /** 严格路由：强制所有流量经 TUN，避免多网卡并行 DNS 造成的泄漏。 */
+  /** 严格路由：强制所有流量经 TUN，避免多网卡并行 DNS 造成的泄漏与 Wi-Fi IPv6 漏流。 */
   "strict-route"?: boolean;
+  /** 独立端点 NAT（mihomo endpoint-independent-nat）：开启 Full Cone NAT。 */
+  "endpoint-independent-nat"?: boolean;
   /** TUN 内核 DNS 劫持列表（any:53 / tcp://any:53）；普通用户无需编辑。 */
   "dns-hijack"?: string[];
 }
