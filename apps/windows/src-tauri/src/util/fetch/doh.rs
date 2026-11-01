@@ -70,7 +70,10 @@ static DOH_ENDPOINTS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| {
 pub fn set_doh_endpoints(endpoints: Vec<String>) {
     let mut guard = DOH_ENDPOINTS.lock().unwrap();
     if endpoints.is_empty() {
-        *guard = DEFAULT_DOH_ENDPOINTS.iter().map(|s| s.to_string()).collect();
+        *guard = DEFAULT_DOH_ENDPOINTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
     } else {
         *guard = endpoints;
     }
