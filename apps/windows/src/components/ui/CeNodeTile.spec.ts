@@ -51,7 +51,7 @@ describe("CeNodeTile", () => {
   it("shows the region next to the latency tag when provided", () => {
     const withRegion = mountTile({ region: "香港" });
     expect(withRegion.find(".ce-tile__region").exists()).toBe(true);
-    expect(withRegion.find(".ce-tile__region").text()).toBe("香港");
+    expect(withRegion.find(".ce-tile__region").text()).toBe("HK");
     // 地区标签与延迟标签是兄弟节点（不互相嵌套）
     expect(withRegion.find(".ce-tile__region .ce-lat").exists()).toBe(false);
     expect(withRegion.find(".ce-lat .ce-tile__region").exists()).toBe(false);

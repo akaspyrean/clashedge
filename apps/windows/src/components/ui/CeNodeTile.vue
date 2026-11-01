@@ -26,6 +26,7 @@ const props = defineProps<{
 const emit = defineEmits<{ select: []; retest: [] }>();
 
 const formatted = computed(() => formatNodeDisplay(props.name, props.region));
+const displayRegion = computed(() => formatted.value.regionCode || props.region);
 
 function onSelect() {
   if (!props.readonly) emit("select");
@@ -47,14 +48,13 @@ function onSelect() {
     >
       <div class="ce-tile__header">
         <span class="ce-tile__name">{{ formatted.displayName }}</span>
-        <span v-if="formatted.regionCode" class="ce-tile__badge" aria-hidden="true">{{ formatted.regionCode }}</span>
       </div>
       <span v-if="name !== formatted.displayName" class="ce-tile__subname" :title="name">{{ name }}</span>
       <span v-if="protocol" class="ce-tile__proto">{{ protocol }}</span>
     </button>
     <!-- 地区与延迟同行：地区在延迟标签左侧 -->
     <div class="ce-tile__meta">
-      <span v-if="region" class="ce-tile__region" :title="region">{{ region }}</span>
+      <span v-if="displayRegion" class="ce-tile__badge ce-tile__region" :title="region" aria-hidden="true">{{ displayRegion }}</span>
       <CeLatencyTag
         class="ce-tile__lat"
         clickable
@@ -200,13 +200,7 @@ function onSelect() {
 }
 
 .ce-tile__region {
-  flex: 1 1 auto;
-  min-width: 0;
-  font: var(--ce-type-caption);
-  color: var(--ce-text-tertiary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
 
 /* 延迟标签作为 meta 行的右侧项参与布局（无地区时也能贴右）。 */
@@ -216,7 +210,7 @@ function onSelect() {
 }
 
 .ce-tile.is-unavailable .ce-tile__region {
-  color: var(--ce-text-disabled);
+  opacity: 0.6;
 }
 
 .ce-tile__check {

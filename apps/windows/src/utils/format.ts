@@ -182,15 +182,19 @@ export function formatNodeDisplay(rawName: string, region?: string | null): {
   const flag = getRegionFlag(region);
   const regionCode = getRegionCode(region);
 
-  // 1. 去除形如 JMS-1416430@、任意 [A-Za-z0-9_-]+@ 的账号长前缀
-  let clean = rawName.replace(/^[A-Za-z0-9_.-]+@/, "").trim();
+  // 1. 去除端口号（如 :443、:80）
+  let clean = rawName.replace(/:\d+$/, "").trim();
 
-  // 2. 去除长域名后缀（如 .portablesub.net、.sub.xyz 等）
-  clean = clean.replace(/\.(portablesub|sub|node|server|v2ray|shadowsocks|vpn)\.[a-zA-Z0-9.-]+$/i, "");
-  // 如果剩余部分仍带有域名尾缀（如 c37s1.com / c37s1.net），去除常见顶级域
-  clean = clean.replace(/\.(com|net|org|xyz|top|io|me|info|vip|club)$/i, "");
+  // 2. 去除形如 JMS-1416430@、任意 [A-Za-z0-9_.-]+@ 的账号长前缀
+  clean = clean.replace(/^[A-Za-z0-9_.-]+@/, "").trim();
 
-  // 3. 去除类似 "【VIP专线】" 或头部方括号广告
+  // 3. 去除长域名后缀（如 .portablesubmarines.com、.portablesub.net、.sub.xyz 等）
+  clean = clean.replace(/\.(portablesub[a-z0-9_-]*|sub|node|server|v2ray|shadowsocks|vpn)\.[a-zA-Z0-9.-]+$/i, "");
+  // 如果剩余部分仍带有域名尾缀（如 c37s1.com / c37s1.net），去除常见二级或顶级域
+  clean = clean.replace(/\.[a-zA-Z0-9_-]+\.(com|net|org|xyz|top|io|me|info|vip|club|co|cc)$/i, "");
+  clean = clean.replace(/\.(com|net|org|xyz|top|io|me|info|vip|club|co|cc)$/i, "");
+
+  // 4. 去除类似 "【VIP专线】" 或头部方括号广告
   clean = clean.replace(/^\[[^\]]+\]/, "").trim();
   clean = clean.replace(/^【[^】]+】/, "").trim();
 
