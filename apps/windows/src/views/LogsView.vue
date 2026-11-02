@@ -51,17 +51,10 @@ const counts = computed(() => {
   return c;
 });
 
-/** 支持正则；输入了不合法的正则时退回为普通子串匹配，而不是抛错。 */
+/** Search plain text by default: user-supplied regular expressions can block the UI. */
 const matcher = computed<(s: string) => boolean>(() => {
-  const q = query.value.trim();
-  if (!q) return () => true;
-  try {
-    const re = new RegExp(q, "i");
-    return (s) => re.test(s);
-  } catch {
-    const lower = q.toLowerCase();
-    return (s) => s.toLowerCase().includes(lower);
-  }
+  const q = query.value.trim().toLowerCase();
+  return q ? (s) => s.toLowerCase().includes(q) : () => true;
 });
 
 const visible = computed(() =>

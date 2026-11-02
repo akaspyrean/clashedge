@@ -3,7 +3,6 @@ package com.clashedge.android.vpn
 import android.app.Service
 import android.content.Intent
 import android.net.VpnService
-import android.os.IBinder
 import com.clashedge.android.ClashEdgeApp
 import com.clashedge.android.core.ProxyCoordinator
 import com.clashedge.android.service.ProxyForegroundService
@@ -20,8 +19,6 @@ import com.clashedge.android.util.Logger
 class ClashVpnService : VpnService() {
 
     private var started = false
-
-    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val config = intent?.getStringExtra(ProxyForegroundService.EXTRA_CONFIG)
@@ -49,7 +46,7 @@ class ClashVpnService : VpnService() {
 
     override fun onRevoke() {
         Logger.warn("VPN revoked by the system")
-        coordinator().onCoreStopped("VPN was revoked")
+        coordinator().onVpnLost("VPN was revoked")
         started = false
         closeFd()
         stopSelf()
@@ -57,8 +54,10 @@ class ClashVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        started = false
         closeFd()
+        coordinator().onVpnLost("VPN service destroyed")
+        super.onDestroy()
     }
 
     private fun closeFd() {

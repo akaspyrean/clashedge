@@ -8,11 +8,14 @@ import com.clashedge.android.subscription.SubscriptionRepository
 import com.clashedge.android.util.Logger
 import java.io.File
 import java.util.UUID
+import android.util.AtomicFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -38,6 +41,7 @@ class ProfileRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val storeFile get() = File(context.filesDir, "profiles.json")
+    private val editMutex = Mutex()
 
     private val _profiles = MutableStateFlow<List<Profile>>(emptyList())
     val profiles: StateFlow<List<Profile>> = _profiles.asStateFlow()
@@ -53,6 +57,7 @@ class ProfileRepository(
     }
 
     suspend fun select(id: String): Result<Unit> = runCatching {
+        require(_profiles.value.any { it.id == id }) { "profile not found" }
         appConfig.setActiveProfile(id)
         Logger.info("selected profile $id")
     }
@@ -60,7 +65,7 @@ class ProfileRepository(
     suspend fun activeNodes(): List<Node> = activeProfile()?.nodes().orEmpty()
 
     suspend fun import(url: String, name: String): Result<Profile> = withContext(Dispatchers.IO) {
-        runCatching {
+        editMutex.withLock { runCatching {
             val nodes = subscriptions.fetch(url.trim())
             require(nodes.isNotEmpty()) { "no usable proxies in subscription" }
             val record = ProfileRecord(
@@ -74,11 +79,11 @@ class ProfileRepository(
             save(updated)
             Logger.info("imported subscription with ${nodes.size} nodes")
             updated.last()
-        }
+        } }
     }
 
     suspend fun refresh(id: String): Result<Profile> = withContext(Dispatchers.IO) {
-        runCatching {
+        editMutex.withLock { runCatching {
             val current = _profiles.value.first { it.id == id }
             val url = current.subscribeUrl ?: error("profile has no subscription url")
             val nodes = subscriptions.fetch(url.trim())
@@ -88,11 +93,11 @@ class ProfileRepository(
             save(updated)
             Logger.info("refreshed subscription $id (${nodes.size} nodes)")
             updated.first { it.id == id }
-        }
+        } }
     }
 
-    suspend fun delete(id: String) {
-        save(_profiles.value.filterNot { it.id == id })
+    suspend fun delete(id: String) = withContext(Dispatchers.IO) {
+        editMutex.withLock { save(_profiles.value.filterNot { it.id == id }) }
     }
 
     /**
@@ -142,17 +147,29 @@ class ProfileRepository(
     }
 
     private fun save(updated: List<Profile>) {
-        storeFile.writeText(json.encodeToString(updated.map { it.toRecord() }))
+        val bytes = json.encodeToString(updated.map { it.toRecord() }).toByteArray(Charsets.UTF_8)
+        val atomic = AtomicFile(storeFile)
+        val out = atomic.startWrite()
+        try {
+            out.write(bytes)
+            atomic.finishWrite(out)
+        } catch (e: Throwable) {
+            atomic.failWrite(out)
+            throw e
+        }
         _profiles.value = updated
     }
 
     suspend fun load() = withContext(Dispatchers.IO) {
-        val records = runCatching { json.decodeFromString<List<ProfileRecord>>(storeFile.readText()) }
-            .onFailure { e ->
+        editMutex.withLock {
+            val records = runCatching {
+                val atomic = AtomicFile(storeFile)
+                json.decodeFromString<List<ProfileRecord>>(atomic.openRead().bufferedReader().use { it.readText() })
+            }.onFailure { e ->
                 Logger.warn("profiles.json parse failed, using empty list: $e")
-            }
-            .getOrDefault(emptyList())
-        _profiles.value = records.map { it.toProfile() }
+            }.getOrDefault(emptyList())
+            _profiles.value = records.map { it.toProfile() }
+        }
     }
 
     private fun Profile.nodes(): List<Node> = runCatching {

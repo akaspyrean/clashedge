@@ -402,8 +402,9 @@ impl ControllerClient {
         let upload_total = value_as_u64(json.get("uploadTotal"));
 
         let mut connections = Vec::new();
+        let total = json.get("connections").and_then(|v| v.as_array()).map_or(0, Vec::len);
         if let Some(arr) = json.get("connections").and_then(|v| v.as_array()) {
-            for conn in arr {
+            for conn in arr.iter().take(MAX_CONNECTIONS_RETURNED) {
                 let metadata = conn.get("metadata");
                 let host = metadata
                     .and_then(|m| m.get("host"))
@@ -470,9 +471,7 @@ impl ControllerClient {
 
         // P2：只把前 MAX_CONNECTIONS_RETURNED 条送 WebView；total 记真实总数。
         // 前端用 total 显示"共 N 条"，truncated 决定是否渲染截断提示。
-        let total = connections.len();
         let truncated = total > MAX_CONNECTIONS_RETURNED;
-        connections.truncate(MAX_CONNECTIONS_RETURNED);
 
         Ok(serde_json::json!({
             "download_total": download_total,
