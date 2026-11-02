@@ -1,7 +1,7 @@
 <!-- src/views/LogsView.vue - 日志：通过 Mihomo 外部控制器 /logs 实时流展示
      后端 core::logs 连接控制器 SSE 长连接，逐行转发为 log-line 事件；
      本页挂载时启动流、卸载时停止，保证不残留后台连接。
-     - 级别筛选芯片（带计数；形状：DEBUG 无 / INFO 圆 / WARN 菱形 / ERROR 横杠）+ 正则搜索
+     - 级别筛选芯片（带计数；形状：DEBUG 无 / INFO 圆 / WARN 菱形 / ERROR 横杠）+ 文本搜索
      - 暂停 / 清空日志（确认）；向上滚动即暂停跟随，出现「回到最新」
      - 导出需要「保存文件」能力（尚无对应后端命令），本页暂不含 -->
 <script setup lang="ts">
@@ -51,17 +51,10 @@ const counts = computed(() => {
   return c;
 });
 
-/** 支持正则；输入了不合法的正则时退回为普通子串匹配，而不是抛错。 */
+/** Search plain text by default: user-supplied regular expressions can block the UI. */
 const matcher = computed<(s: string) => boolean>(() => {
-  const q = query.value.trim();
-  if (!q) return () => true;
-  try {
-    const re = new RegExp(q, "i");
-    return (s) => re.test(s);
-  } catch {
-    const lower = q.toLowerCase();
-    return (s) => s.toLowerCase().includes(lower);
-  }
+  const q = query.value.trim().toLowerCase();
+  return q ? (s) => s.toLowerCase().includes(q) : () => true;
 });
 
 const visible = computed(() =>

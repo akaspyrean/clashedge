@@ -42,16 +42,16 @@ describe("isNodePoolDegraded", () => {
     expect(isNodePoolDegraded([null, null, 0, undefined])).toBe(true);
   });
 
-  it("is true when every node is slower than the bad threshold", () => {
-    expect(isNodePoolDegraded([501, 610, 929])).toBe(true);
+  it("does not mistake slow responses for an outage", () => {
+    expect(isNodePoolDegraded([501, 610, 929])).toBe(false);
   });
 
-  it("is true when timeouts and abnormally slow nodes are mixed", () => {
-    expect(isNodePoolDegraded([null, 0, 800, Infinity])).toBe(true);
+  it("does not mistake a slow response mixed with timeouts for an outage", () => {
+    expect(isNodePoolDegraded([null, 0, 800, Infinity])).toBe(false);
   });
 
-  it("honours a custom bad threshold", () => {
-    expect(isNodePoolDegraded([400, 600], { bad: 300 })).toBe(true);
+  it("does not use presentation thresholds as an outage criterion", () => {
+    expect(isNodePoolDegraded([400, 600], { bad: 300 })).toBe(false);
     expect(isNodePoolDegraded([400, 600], { bad: 700 })).toBe(false);
   });
 });

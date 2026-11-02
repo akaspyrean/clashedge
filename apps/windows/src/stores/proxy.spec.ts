@@ -42,16 +42,16 @@ describe("proxy store auto-recovery", () => {
     expect(triggerAutoRecovery).toHaveBeenCalledTimes(1);
   });
 
-  it("triggers when every healthy-looking node is slower than the bad threshold", async () => {
+  it("does not treat high-latency responses as complete outage", async () => {
     mockDelays([610, 929, 1200]);
     await useProxyStore().testNodes(["node0", "node1", "node2"]);
-    expect(triggerAutoRecovery).toHaveBeenCalledTimes(1);
+    expect(triggerAutoRecovery).not.toHaveBeenCalled();
   });
 
-  it("triggers when timeouts and abnormally slow nodes are mixed", async () => {
+  it("does not trigger when at least one node responds despite high latency", async () => {
     mockDelays([0, 800, 0]);
     await useProxyStore().testNodes(["node0", "node1", "node2"]);
-    expect(triggerAutoRecovery).toHaveBeenCalledTimes(1);
+    expect(triggerAutoRecovery).not.toHaveBeenCalled();
   });
 
   it("does not trigger while at least one node is healthy", async () => {
@@ -63,6 +63,17 @@ describe("proxy store auto-recovery", () => {
   it("does not trigger for an empty node list", async () => {
     await useProxyStore().testNodes([]);
     expect(triggerAutoRecovery).not.toHaveBeenCalled();
+  });
+
+  it("ignores results from a previous profile after invalidation", async () => {
+    let finish!: (value: Array<{ group: string; delay: number }>) => void;
+    testLatency.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const store = useProxyStore();
+    const pending = store.testNode("node1");
+    store.invalidateLatencies();
+    finish([{ group: "node1", delay: 30 }]);
+    await pending;
+    expect(store.nodeDelays.node1).toBeUndefined();
   });
 
   it("keeps latency results even when the recovery call fails", async () => {
