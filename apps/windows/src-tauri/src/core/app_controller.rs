@@ -89,15 +89,12 @@ impl AppController {
     /// start()/restart()（含就绪轮询，最长 ~10s），若在锁内执行会长期占住全局
     /// 事务锁，导致其余开关（TUN/代理模式/mixin/托盘）全部排队等待。
     pub async fn apply_system_proxy(&self, app: &AppHandle, enable: bool) -> Result<()> {
-        // 开启前必须确认核心在服务（不满足时先尝试自动启动核心，仍失败则拒绝
-        // 开启并返回明确错误——绝不能让 Windows 指向无人监听的代理端口）。
-        // 失败时不留下任何半套状态。
+        // Acquire the transaction lock before the readiness check: a concurrent
+        // stop must not race between readiness and registry ownership acquisition.
+        let _tx = self.tx.lock().await;
         if enable {
             crate::core::runtime::ensure_core_serving(app).await?;
         }
-
-        // 全程持有事务锁，串行整段事务。
-        let _tx = self.tx.lock().await;
         // 降级模式下只允许"关闭"（不写配置的恢复路径由 *_unless_degraded 兜底），
         // 开启会持久化默认配置覆盖损坏原文件。
         if enable {
@@ -115,9 +112,11 @@ impl AppController {
     /// "Windows 代理仍指向已死的 127.0.0.1:7890" 的断网状态。反过来：即使
     /// 退系统代理失败，也不停止核心，用户至少保持可上网。
     pub async fn stop_core_and_sync_proxy(&self, app: &AppHandle) -> Result<()> {
-        // 1) 先退出系统代理接管（config/registry/journal/事件统一事务）。
-        //    失败则直接返回，不停止核心——宁可保持核心运行也不掐断用户网络。
-        self.apply_system_proxy(app, false).await?;
+        // Keep proxy release and core stop under the same lock; no other
+        // enable operation can interleave and leave a dead Windows proxy.
+        let _tx = self.tx.lock().await;
+        // Fail closed: do not stop the core when releasing the proxy fails.
+        crate::core::runtime::apply_system_proxy_locked(app, false).await?;
 
         // 2) 再停止核心。
         {

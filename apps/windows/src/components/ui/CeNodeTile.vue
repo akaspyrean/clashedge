@@ -77,7 +77,7 @@ function onSelect() {
   display: flex;
   flex-direction: column;
   gap: var(--ce-space-2);
-  min-width: 200px;
+  min-width: 0;
   min-height: 72px;
   padding: var(--ce-space-3) var(--ce-space-4);
   border: 1px solid var(--ce-border);
@@ -106,6 +106,8 @@ function onSelect() {
   gap: var(--ce-space-2);
   width: 100%;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 0;
   border: 0;
   background: transparent;
@@ -141,6 +143,8 @@ function onSelect() {
 }
 
 .ce-tile__name {
+  min-width: 0;
+  max-width: 100%;
   font-weight: 500;
   line-height: 20px;
   overflow: hidden;
@@ -149,6 +153,11 @@ function onSelect() {
 }
 
 .ce-tile__subname {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   font-family: var(--ce-font-mono);
   font-size: 11px;
   line-height: 14px;

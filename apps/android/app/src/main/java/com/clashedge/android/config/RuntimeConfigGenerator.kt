@@ -41,10 +41,30 @@ object RuntimeConfigGenerator {
                 if (n.alpn.isNotEmpty()) { append(", alpn: ["); append(n.alpn.map { escapeYaml(it) }.joinToString(", ")); append("]") }
                 n.fingerprint?.let { append(", fingerprint: "); append(escapeYaml(it)) }
                 if (n.network != "tcp") { append(", network: "); append(escapeYaml(n.network)) }
-                n.wsPath?.let { append(", ws-path: "); append(escapeYaml(it)) }
-                if (n.wsHeaders.isNotEmpty()) { append(", ws-headers: "); append(n.wsHeaders.map { (k, v) -> "${escapeYaml(k)}:${escapeYaml(v)}" }.joinToString(",")) }
-                n.httpPath?.let { append(", http-path: "); append(escapeYaml(it)) }
-                if (n.httpHeaders.isNotEmpty()) { append(", http-headers: "); append(n.httpHeaders.map { (k, v) -> "${escapeYaml(k)}:${escapeYaml(v)}" }.joinToString(",")) }
+                if (n.wsPath != null || n.wsHeaders.isNotEmpty()) {
+                    append(", ws-opts: { ")
+                    val parts = mutableListOf<String>()
+                    n.wsPath?.let { parts += "path: ${escapeYaml(it)}" }
+                    if (n.wsHeaders.isNotEmpty()) {
+                        parts += "headers: { " + n.wsHeaders.entries.joinToString(", ") { (k, v) ->
+                            "${escapeYaml(k)}: ${escapeYaml(v)}"
+                        } + " }"
+                    }
+                    append(parts.joinToString(", "))
+                    append(" }")
+                }
+                if (n.httpPath != null || n.httpHeaders.isNotEmpty()) {
+                    append(", http-opts: { ")
+                    val parts = mutableListOf<String>()
+                    n.httpPath?.let { parts += "path: [${escapeYaml(it)}]" }
+                    if (n.httpHeaders.isNotEmpty()) {
+                        parts += "headers: { " + n.httpHeaders.entries.joinToString(", ") { (k, v) ->
+                            "${escapeYaml(k)}: [${escapeYaml(v)}]"
+                        } + " }"
+                    }
+                    append(parts.joinToString(", "))
+                    append(" }")
+                }
                 n.upMbps?.let { append(", up: "); append(it.toString()) }
                 n.downMbps?.let { append(", down: "); append(it.toString()) }
                 n.authStr?.let { append(", auth-str: "); append(escapeYaml(it)) }
@@ -141,6 +161,18 @@ object RuntimeConfigGenerator {
         }
     }
 
-    private fun escapeYaml(value: String): String =
-        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+    private fun escapeYaml(value: String): String = buildString {
+        append('"')
+        for (char in value) {
+            when (char) {
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (char.code < 0x20) append("\\u%04x".format(char.code)) else append(char)
+            }
+        }
+        append('"')
+    }
 }
