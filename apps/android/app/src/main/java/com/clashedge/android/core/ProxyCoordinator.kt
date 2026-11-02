@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Single source of truth for the proxy lifecycle. UI state must always reflect the
@@ -57,12 +58,13 @@ class ProxyCoordinator(
 
     /** Mutex to serialize start/stop and prevent race conditions. */
     private val lifecycleMutex = Mutex()
+    private val runRequested = AtomicBoolean(false)
 
     init {
         // Observe MihomoCore.running/error and keep local state in sync (single source of truth).
         scope.launch {
             core.running.collect { isRunning ->
-                if (isRunning && _state.value != ConnectionState.RUNNING) {
+                if (isRunning && runRequested.get() && _state.value != ConnectionState.RUNNING) {
                     _state.value = ConnectionState.RUNNING
                     _error.value = null
                     _lastError.value = null
@@ -99,6 +101,7 @@ class ProxyCoordinator(
             Logger.warn("start() called during transition; ignoring")
             return
         }
+        runRequested.set(true)
         _state.value = ConnectionState.STARTING
         _error.value = null
         try {
@@ -114,6 +117,7 @@ class ProxyCoordinator(
                 .putExtra(ProxyForegroundService.EXTRA_MODE, settings.mode)
             context.startForegroundService(svc)
         } catch (t: Throwable) {
+            runRequested.set(false)
             _error.value = t.message
             _lastError.value = t.message
             _state.value = ConnectionState.ERROR
@@ -121,19 +125,24 @@ class ProxyCoordinator(
         }
     }
 
-    private suspend fun stopLocked() {
+    private suspend fun stopLocked(reason: String? = null) {
+        runRequested.set(false)
         _state.value = ConnectionState.STOPPING
-        core.stop()
-        context.stopService(Intent(context, ProxyForegroundService::class.java))
-        context.stopService(Intent(context, ClashVpnService::class.java))
-        // Keep _error if it was ERROR, only clear on explicit stop
-        if (_state.value != ConnectionState.ERROR) {
-            _error.value = null
+        try {
+            core.stop()
+        } finally {
+            context.stopService(Intent(context, ProxyForegroundService::class.java))
+            context.stopService(Intent(context, ClashVpnService::class.java))
+            _error.value = reason
+            if (reason != null) _lastError.value = reason
+            _state.value = if (reason == null) ConnectionState.STOPPED else ConnectionState.ERROR
         }
-        _state.value = ConnectionState.STOPPED
     }
 
-    fun stop() = scope.launch { lifecycleMutex.withLock { stopLocked() } }
+    fun stop() {
+        runRequested.set(false)
+        scope.launch { lifecycleMutex.withLock { stopLocked() } }
+    }
 
     suspend fun restartCore() = lifecycleMutex.withLock {
         when (_state.value) {
@@ -148,6 +157,7 @@ class ProxyCoordinator(
     }
 
     fun onCoreRunning() {
+        if (!runRequested.get()) return
         _state.value = ConnectionState.RUNNING
         // Clear error on successful start
         _error.value = null
@@ -158,16 +168,19 @@ class ProxyCoordinator(
     /** Called by ClashVpnService once the TUN fd is ready. */
     fun onVpnEstablished(fd: Int, config: String) {
         scope.launch {
-            try {
-                val err = core.start(config, fd, context.filesDir.absolutePath)
-                if (err.isEmpty()) onCoreRunning()
-                else {
-                    onCoreError("Mihomo core failed to start: $err")
-                    stop()
+            lifecycleMutex.withLock {
+                if (!runRequested.get()) {
+                    context.stopService(Intent(context, ClashVpnService::class.java))
+                    return@withLock
                 }
-            } catch (t: Throwable) {
-                onCoreError("proxy start failed: ${t.message}")
-                stop()
+                try {
+                    val err = core.start(config, fd, context.filesDir.absolutePath)
+                    if (err.isEmpty() && runRequested.get()) onCoreRunning()
+                    else if (err.isEmpty()) core.stop()
+                    else onCoreError("Mihomo core failed to start: $err")
+                } catch (t: Throwable) {
+                    onCoreError("proxy start failed: ${t.message}")
+                }
             }
         }
     }
@@ -182,10 +195,16 @@ class ProxyCoordinator(
     }
 
     fun onCoreError(message: String) {
+        runRequested.set(false)
         _error.value = message
         _lastError.value = message
         _state.value = ConnectionState.ERROR
-        stop()
+        scope.launch { lifecycleMutex.withLock { stopLocked(message) } }
+    }
+
+    fun onVpnLost(reason: String) {
+        if (!runRequested.getAndSet(false)) return
+        scope.launch { lifecycleMutex.withLock { stopLocked(reason) } }
     }
 
     fun refreshGroups() {

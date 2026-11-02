@@ -139,11 +139,12 @@ const onSelectNode = (name: string) => {
   return g && select.run(() => proxyStore.select(g.name, name));
 };
 
-function onTestAll() {
+async function onTestAll() {
   const names = visibleGroups.value
     .flatMap((g) => nodesOf(g).filter((n) => !proxyStore.groups.some((x) => x.name === n) && n !== "REJECT"));
-  void proxyStore.testAll(visibleGroups.value.map((g) => g.name));
-  void proxyStore.testNodes(names);
+  // Avoid piling the group requests on top of the node probe batch.
+  await proxyStore.testAll(visibleGroups.value.map((g) => g.name));
+  await proxyStore.testNodes(names);
 }
 const testingAll = computed(() => proxyStore.testing || proxyStore.testingNodes);
 
@@ -172,7 +173,9 @@ async function initManualDefault() {
   const manual = proxyStore.groups.find((g) => resolveGroupId(g.name) === "manual");
   const manualNodes = manual ? manual.all.filter((n) => n !== "DIRECT") : [];
   if (!manual || manualNodes.length === 0) return;
+  if (proxyStore.testingNodes) return;
   manualDefaultRunning = true;
+  let completed = false;
   const before = manual.now;
   try {
     const names = [
@@ -185,8 +188,12 @@ async function initManualDefault() {
     await proxyStore.testNodes(names);
     await proxyStore.loadGroups();
     const fresh = proxyStore.groups.find((g) => resolveGroupId(g.name) === "manual");
-    // 测速期间用户手动改过 → 尊重用户选择，不覆盖
-    if (!fresh || fresh.now !== before) return;
+    if (configStore.activeProfile !== profileName || !fresh) return;
+    // A user selection supersedes automatic initialization.
+    if (fresh.now !== before) {
+      completed = true;
+      return;
+    }
     let best: string | null = null;
     let bestMs = Infinity;
     for (const n of manualNodes) {
@@ -196,14 +203,22 @@ async function initManualDefault() {
         best = n;
       }
     }
-    if (best && best !== fresh.now) await proxyStore.select(fresh.name, best);
+    if (best) {
+      if (best !== fresh.now) await proxyStore.select(fresh.name, best);
+      completed = true;
+    }
   } catch {
-    // 一次性初始化失败静默；无论成败均打标记，避免每次启动重复全量测速
+    // Do not permanently mark an unsuccessful test as complete.
   } finally {
-    localStorage.setItem(manualDefaultKey(profileName), "1");
+    if (completed) localStorage.setItem(manualDefaultKey(profileName), "1");
     manualDefaultRunning = false;
   }
 }
+
+watch(
+  () => configStore.activeProfile,
+  () => proxyStore.invalidateLatencies(),
+);
 
 onMounted(() => {
   void proxyStore.loadGroups().then(() => initManualDefault());
@@ -537,7 +552,7 @@ watch(
 
 .tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
   gap: var(--ce-space-3);
 }
 
