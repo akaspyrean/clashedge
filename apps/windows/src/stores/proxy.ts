@@ -18,17 +18,24 @@ export const useProxyStore = defineStore("proxy", {
     /** nodeName -> delay(ms)；undefined=未测，null=测过失败 */
     nodeDelays: {} as Record<string, number | undefined | null>,
     testing: false,
+    groupsStale: false,
+    latencyEpoch: 0,
     /** 组内节点逐个测速中（人工优选手动测速） */
     testingNodes: false,
   }),
   actions: {
+    invalidateLatencies() {
+      this.latencyEpoch++;
+      this.nodeDelays = {};
+      this.delays = {};
+    },
     async loadGroups() {
       try {
-        // 载入全部代理组；可见性按当前模式由 ProxiesView 联动决定
-        // （rule 隐藏 GLOBAL / global 独占显示 / direct 无组）。
+        // Preserve the last known-good list on a transient controller failure.
         this.groups = await proxyApi.getGroups();
+        this.groupsStale = false;
       } catch {
-        this.groups = [];
+        this.groupsStale = true;
       }
     },
     async select(group: string, proxy: string) {
@@ -37,12 +44,13 @@ export const useProxyStore = defineStore("proxy", {
     },
     /** 测试单个组（其当前选中节点的延迟）。 */
     async testOne(group: string) {
+      const epoch = this.latencyEpoch;
       try {
         const results = await proxyApi.testLatency(group);
         const r = results[0];
-        this.delays[group] = r ? r.delay : null;
+        if (epoch === this.latencyEpoch) this.delays[group] = r ? r.delay : null;
       } catch {
-        this.delays[group] = null;
+        if (epoch === this.latencyEpoch) this.delays[group] = null;
       }
     },
     /** 并发测试指定组；缺省为当前全部组。testing 置位后重入直接忽略（按钮 loading 已禁用）。 */
@@ -58,11 +66,12 @@ export const useProxyStore = defineStore("proxy", {
     },
     /** 重新测试单个节点（节点格上的延迟标签点击）；结果写入 nodeDelays。 */
     async testNode(name: string) {
+      const epoch = this.latencyEpoch;
       try {
         const r = (await proxyApi.testLatency(name))[0];
-        this.nodeDelays[name] = r ? r.delay : null;
+        if (epoch === this.latencyEpoch) this.nodeDelays[name] = r ? r.delay : null;
       } catch {
-        this.nodeDelays[name] = null;
+        if (epoch === this.latencyEpoch) this.nodeDelays[name] = null;
       }
     },
     /** 手动测速：对组内所有节点（排除 DIRECT 兜底）逐一测试延迟，
@@ -76,14 +85,13 @@ export const useProxyStore = defineStore("proxy", {
     },
     /** 批量测速指定节点（去重）：分块限并发（每批 10 个）防止一次性全量并发压垮后端；
      *  testingNodes 标志防重入。
-     *
-     *  自愈：若**所有**被测节点都不可用（全部超时，或全部延迟高于「较差」阈值，
-     *  或两者混合），立即通知后端同时刷新「节点数据」与「地理数据/规则」
-     *  （节点池整体异常通常是订阅过期或 GeoData/规则陈旧所致）。后端自带
-     *  10 分钟冷却限流，重复触发不会打爆上游。 */
+     *  自愈：仅在全部节点测速失败时触发（高延迟不等同于节点失效），
+     *  通知后端刷新「节点数据」与「地理数据/规则」。
+     */
     async testNodes(names: string[]) {
       if (this.testingNodes) return;
       this.testingNodes = true;
+      const epoch = this.latencyEpoch;
       try {
         const nodes = [...new Set(names)];
         const CHUNK = 10;
@@ -94,12 +102,13 @@ export const useProxyStore = defineStore("proxy", {
             batch.map(async (n) => {
               try {
                 const r = (await proxyApi.testLatency(n))[0];
-                this.nodeDelays[n] = r ? r.delay : null;
+                if (epoch === this.latencyEpoch) this.nodeDelays[n] = r ? r.delay : null;
               } catch {
-                this.nodeDelays[n] = null;
+                if (epoch === this.latencyEpoch) this.nodeDelays[n] = null;
               }
             })
           );
+          if (epoch !== this.latencyEpoch) return;
           for (const n of batch) testedDelays.push(this.nodeDelays[n]);
         }
         // 节点池整体不可用（全超时 / 全异常慢）→ 立即触发两类数据自愈更新

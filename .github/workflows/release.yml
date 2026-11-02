@@ -432,6 +432,12 @@ jobs:
           name: mihomo-core-aar
           path: apps/android/app/libs
 
+      - name: Verify Mihomo AAR before packaging
+        run: |
+          test -s apps/android/app/libs/mihomo-core.aar
+          unzip -Z1 apps/android/app/libs/mihomo-core.aar | grep -Eq '(^|/)libgojni\.so$'
+          unzip -Z1 apps/android/app/libs/mihomo-core.aar | grep -q '^classes.jar$'
+
       - name: Build unsigned release APK
         working-directory: apps/android
         env:
@@ -446,6 +452,10 @@ jobs:
           AAPT2="$ANDROID_HOME/build-tools/34.0.0/aapt2"
           APK="apps/android/app/build/outputs/apk/release/app-release-unsigned.apk"
           test -f "$APK" || { echo "APK not found: $APK"; exit 1; }
+          # A signed APK without the gomobile JNI library is not a functional VPN client.
+          unzip -Z1 "$APK" | grep -Eq '^lib/[^/]+/libgojni\.so$' || {
+            echo 'FATAL: APK does not contain libgojni.so'; exit 1;
+          }
           "$AAPT2" dump badging "$APK" | head -1
 
       - name: Rename and stage unsigned Android artifact

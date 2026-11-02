@@ -8,6 +8,7 @@ export const useProfilesStore = defineStore("profiles", {
   state: () => ({
     profiles: [] as ProfileInfo[],
     loading: false,
+    stale: false,
   }),
   getters: {
     activeProfile: (s) => s.profiles.find((p) => p.active) ?? null,
@@ -17,8 +18,9 @@ export const useProfilesStore = defineStore("profiles", {
       this.loading = true;
       try {
         this.profiles = (await profilesApi.list()) ?? [];
+        this.stale = false;
       } catch {
-        this.profiles = [];
+        this.stale = true;
       } finally {
         this.loading = false;
       }
