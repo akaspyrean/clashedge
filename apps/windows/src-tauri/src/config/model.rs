@@ -251,7 +251,7 @@ fn default_secret() -> String {
 pub fn generate_random_secret() -> String {
     use rand::Rng;
     let mut bytes = [0u8; 16];
-    rand::rng().fill(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
