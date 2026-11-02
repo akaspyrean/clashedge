@@ -402,7 +402,10 @@ impl ControllerClient {
         let upload_total = value_as_u64(json.get("uploadTotal"));
 
         let mut connections = Vec::new();
-        let total = json.get("connections").and_then(|v| v.as_array()).map_or(0, Vec::len);
+        let total = json
+            .get("connections")
+            .and_then(|v| v.as_array())
+            .map_or(0, Vec::len);
         if let Some(arr) = json.get("connections").and_then(|v| v.as_array()) {
             for conn in arr.iter().take(MAX_CONNECTIONS_RETURNED) {
                 let metadata = conn.get("metadata");
