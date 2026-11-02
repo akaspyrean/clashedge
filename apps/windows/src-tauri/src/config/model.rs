@@ -249,9 +249,9 @@ fn default_secret() -> String {
 /// `default_secret` 是占位值；真实安装首次初始化 / 旧版固定默认值会被
 /// `ConfigManager::init` 轮换为随机值，避免控制器被已知默认密钥接管。
 pub fn generate_random_secret() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
