@@ -200,7 +200,7 @@ fn set_approved_state(enable: bool) -> Result<()> {
     let mut bytes = [0u8; 12];
     bytes[0] = if enable { 0x02 } else { 0x03 };
     let value = winreg::RegValue {
-        bytes: bytes.to_vec(),
+        bytes: std::borrow::Cow::Owned(bytes.to_vec()),
         vtype: REG_BINARY,
     };
     approved.set_raw_value(VALUE_NAME, &value)?;
