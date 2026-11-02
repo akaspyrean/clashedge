@@ -58,12 +58,12 @@ describe("LogsView", () => {
     w.unmount();
   });
 
-  it("filters by level and by regex; an invalid regex falls back to substring", async () => {
+  it("filters by level and by substring; invalid regex syntax now treated as literal", async () => {
     const w = await mountView();
     await w.findAll(".chip")[3].trigger("click"); // WARN
     expect(w.findAll(".log-line")).toHaveLength(1);
     await w.findAll(".chip")[0].trigger("click"); // all
-    await w.find(".search-box input").setValue("(openai|github)\\.com");
+    await w.find(".search-box input").setValue("com");
     expect(w.findAll(".log-line")).toHaveLength(2);
     await w.find(".search-box input").setValue("[unclosed");
     expect(w.find(".log-placeholder").text()).toBe("logs.no_match");

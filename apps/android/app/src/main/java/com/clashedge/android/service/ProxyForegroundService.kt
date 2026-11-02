@@ -31,12 +31,23 @@ class ProxyForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val config = intent?.getStringExtra(EXTRA_CONFIG)
+        if (config.isNullOrBlank()) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         startForeground(NOTIFICATION_ID, buildNotification())
         val vpn = Intent(this, ClashVpnService::class.java)
-        vpn.putExtra(EXTRA_CONFIG, intent?.getStringExtra(EXTRA_CONFIG).orEmpty())
+        vpn.putExtra(EXTRA_CONFIG, config)
         vpn.putExtra(EXTRA_MODE, intent?.getStringExtra(EXTRA_MODE).orEmpty())
         startService(vpn)
-        return START_STICKY
+        // Automatic restart with a null Intent must never connect without a config.
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        stopService(Intent(this, ClashVpnService::class.java))
+        super.onDestroy()
     }
 
     private fun buildNotification(): Notification {
