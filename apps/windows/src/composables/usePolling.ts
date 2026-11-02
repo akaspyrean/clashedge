@@ -11,47 +11,58 @@ import { useNotify } from "./useNotify";
 export function usePolling(task: () => Promise<void>, intervalFor: () => number) {
   let timer: number | undefined;
   let inFlight = false;
+  let disposed = false;
+  let failures = 0;
   const { fail } = useNotify();
 
   function stop() {
     if (timer !== undefined) {
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
       timer = undefined;
     }
   }
 
   function start() {
-    if (timer !== undefined) return;
-    timer = window.setInterval(() => void tick(), intervalFor());
+    if (disposed || document.hidden || timer !== undefined || inFlight) return;
+    const base = Math.max(500, intervalFor());
+    const delay = Math.min(60_000, base * 2 ** Math.min(failures, 5));
+    timer = window.setTimeout(() => {
+      timer = undefined;
+      void tick();
+    }, delay);
   }
 
   async function tick() {
-    if (inFlight) return;
+    if (disposed || document.hidden || inFlight) return;
+    stop();
     inFlight = true;
     try {
       await task();
+      if (!disposed) failures = 0;
     } catch (e) {
-      fail(e, "轮询失败：");
+      if (!disposed) {
+        failures++;
+        // Persistent outages should not produce a toast every polling interval.
+        if (failures === 1 || failures === 5) fail(e, "轮询失败：");
+      }
     } finally {
       inFlight = false;
-      stop();
-      if (!document.hidden) start();
+      if (!disposed) start();
     }
   }
 
   function onVisibilityChange() {
-    if (document.hidden) {
-      stop();
-    } else {
-      void tick();
-    }
+    if (document.hidden) stop();
+    else void tick();
   }
 
   onMounted(() => {
+    disposed = false;
     void tick();
     document.addEventListener("visibilitychange", onVisibilityChange);
   });
   onUnmounted(() => {
+    disposed = true;
     stop();
     document.removeEventListener("visibilitychange", onVisibilityChange);
   });

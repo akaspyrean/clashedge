@@ -122,8 +122,13 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // Mihomo Android core (AAR / JNI) — built from source via android-mihomo-aar.yml
     // Place mihomo-core.aar in app/libs/ to enable (auto-detected).
-    val mihomoAar = file("app/libs/mihomo-core.aar")
-    if (mihomoAar.exists()) {
+    val mihomoAar = file("libs/mihomo-core.aar")
+    if (releaseVersion != "dev") {
+        check(mihomoAar.isFile) {
+            "Release requires Mihomo AAR at ${mihomoAar.absolutePath}; refusing an inert APK"
+        }
+    }
+    if (mihomoAar.isFile) {
         implementation(files(mihomoAar))
     }
     debugImplementation(libs.androidx.compose.ui.tooling)
