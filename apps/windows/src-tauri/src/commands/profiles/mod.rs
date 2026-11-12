@@ -513,6 +513,27 @@ pub(crate) fn update_profile_metadata_locked(file_path: &Path, content: &str) ->
     Ok(())
 }
 
+/// 设置自定义 User-Agent 的复合事务主体（调用方 AppController 已持事务锁）：
+/// 读取内容 → 替换/插入/移除头注释行 → 临时文件事务式替换正式文件。
+/// 不触发激活：头注释是 app 元数据，不属于 mihomo 运行时配置。
+pub(crate) async fn set_profile_user_agent_locked(
+    file_path: &Path,
+    user_agent: Option<String>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(file_path)?;
+    let updated = apply_header_user_agent(&content, user_agent.as_deref());
+    if updated == content {
+        // 无变化：不触发文件写（保留 mtime，且不产生 .bak 残留）
+        return Ok(());
+    }
+    let temp_path = temp_path_for(file_path);
+    // RAII：任何提前返回都会清理临时文件
+    let _guard = crate::util::temp::TempFile::new(temp_path.clone());
+    std::fs::write(&temp_path, updated.as_bytes())?;
+    commit_profile_file(&temp_path, file_path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
@@ -540,25 +561,4 @@ mod metadata_tests {
         assert!(std::fs::metadata(&path).unwrap().modified().unwrap() > old);
         let _ = std::fs::remove_file(path);
     }
-}
-
-/// 设置自定义 User-Agent 的复合事务主体（调用方 AppController 已持事务锁）：
-/// 读取内容 → 替换/插入/移除头注释行 → 临时文件事务式替换正式文件。
-/// 不触发激活：头注释是 app 元数据，不属于 mihomo 运行时配置。
-pub(crate) async fn set_profile_user_agent_locked(
-    file_path: &Path,
-    user_agent: Option<String>,
-) -> Result<()> {
-    let content = std::fs::read_to_string(file_path)?;
-    let updated = apply_header_user_agent(&content, user_agent.as_deref());
-    if updated == content {
-        // 无变化：不触发文件写（保留 mtime，且不产生 .bak 残留）
-        return Ok(());
-    }
-    let temp_path = temp_path_for(file_path);
-    // RAII：任何提前返回都会清理临时文件
-    let _guard = crate::util::temp::TempFile::new(temp_path.clone());
-    std::fs::write(&temp_path, updated.as_bytes())?;
-    commit_profile_file(&temp_path, file_path)?;
-    Ok(())
 }

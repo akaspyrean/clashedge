@@ -80,17 +80,6 @@ pub async fn get_direct_first_streaming(app: &AppHandle, url: &str) -> Result<re
     get_direct_first_impl(app, url, None, None, None).await
 }
 
-/// 订阅拉取变体：允许单个订阅覆盖 User-Agent（审计 B7）。
-/// 部分服务端按 UA 决定返回格式，用户可为单个订阅显式指定；
-/// `custom_ua=None` 时与 `get_direct_first` 完全一致（内置 mihomo 兼容 UA）。
-pub async fn get_direct_first_with_ua(
-    app: &AppHandle,
-    url: &str,
-    custom_ua: Option<&str>,
-) -> Result<reqwest::Response> {
-    get_direct_first_impl(app, url, Some(TIMEOUT), custom_ua, None).await
-}
-
 /// Conditional subscription fetch variant. Validator headers are forwarded on the
 /// initial request; redirects remain subject to the same SSRF and routing checks.
 pub async fn get_direct_first_with_validators(
