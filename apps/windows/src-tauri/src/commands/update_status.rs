@@ -72,7 +72,7 @@ pub fn get_auto_update_status(
 
 /// 节点池整体不可用（全部超时 / 全部异常慢）→ 立即刷新节点数据 + 地理数据/规则。
 ///
-/// 与后台定时任务的区别：不等待 6h / 24h 的"到期"窗口——用户此刻已经无法
+/// 与后台定时任务的区别：不等待 6h / 24h 的"到期"窗口——此刻已经无法
 /// 正常选路，等定时器没有意义；但仍遵守各自的自动更新开关与 10 分钟冷却。
 ///
 /// 幂等 + 限流：
@@ -80,10 +80,11 @@ pub fn get_auto_update_status(
 /// - 两个开关都关闭 → 尊重用户意图，不触发；
 /// - 任一开关开启 → 只执行对应更新；单项失败不影响另一项。
 ///
-/// 返回 `{ "triggered": bool, "refreshed": usize, "geo_updated": bool, "reason": "..." }`。
-#[command]
-pub async fn trigger_auto_recovery(app: tauri::AppHandle) -> Result<serde_json::Value> {
-    let data_dir = crate::util::paths::get_app_data_dir(&app)?;
+/// 本执行体由 `trigger_auto_recovery` 命令（手动入口）与后台巡检
+/// （`core::patrol`，P0-3）共用：巡检触发与手动触发走完全相同的
+/// 限流与开关约束。
+pub(crate) async fn run_auto_recovery(app: &tauri::AppHandle) -> Result<serde_json::Value> {
+    let data_dir = crate::util::paths::get_app_data_dir(app)?;
 
     // 尊重用户的开关设置：关掉的项目不自动拉取。
     let (subscription_enabled, geo_enabled) = {
@@ -123,14 +124,14 @@ pub async fn trigger_auto_recovery(app: tauri::AppHandle) -> Result<serde_json::
 
     // 1) 节点数据：串行刷新全部订阅（对上游友好）。
     let refreshed = if subscription_enabled {
-        crate::commands::profiles::refresh_all_subscriptions(&app).await
+        crate::commands::profiles::refresh_all_subscriptions(app).await
     } else {
         0
     };
 
     // 2) 地理数据/规则：立即执行（跳过 24h 到期判断，受开关约束）。
     let geo_updated = if geo_enabled {
-        match crate::geodata::updater::update_geodata(&app).await {
+        match crate::geodata::updater::update_geodata(app).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("Auto-recovery geo/rules update failed: {}", e);
@@ -152,4 +153,10 @@ pub async fn trigger_auto_recovery(app: tauri::AppHandle) -> Result<serde_json::
         "geo_updated": geo_updated,
         "reason": "all nodes unavailable (timeout or abnormally slow)",
     }))
+}
+
+/// 手动入口（前端测速发现全组异常时调用）；实际执行见 [`run_auto_recovery`]。
+#[command]
+pub async fn trigger_auto_recovery(app: tauri::AppHandle) -> Result<serde_json::Value> {
+    run_auto_recovery(&app).await
 }

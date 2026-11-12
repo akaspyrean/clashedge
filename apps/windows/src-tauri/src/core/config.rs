@@ -68,6 +68,17 @@ sniff:
     ports: [443, 8443]
 "#;
 
+/// mihomo `profile` 段：选择状态持久化（P0-1）。
+/// - `store-selected`：每组的手动选择由 mihomo 写入 cache.db，
+///   `PUT /configs?force=true` 整组重建后按名称恢复——消除“定时订阅
+///   刷新重置手动选择”的定时掉线；
+/// - `store-fake-ip`：fake-ip 映射同步持久化，重载后既有连接的域名
+///   解析不抖动。
+const PROFILE_SECTION_YAML: &str = r#"
+store-selected: true
+store-fake-ip: true
+"#;
+
 /// 合并配置规则 - 运行时语义校验与归一：
 /// - 校验并修正代理模式（rule / global / direct）
 /// - 校验 geodata_mode（应用级值，仅空串回退 manual，不覆盖 mihomo 语义值）
@@ -273,7 +284,8 @@ pub fn build_runtime_config(
 
     // 高级开关（D5）：tcp-concurrent / unified-delay。true/false 都显式写出——
     // 订阅 / 用户侧配置渗透不得改变这两个键（应用级开关由应用所有）。
-    // 不调整 url-test interval（300s）/ tolerance（100ms）：上游探测压力红线。
+    // url-test 探测参数由内置组基线（model::default_proxy_groups）统一：
+    // interval 120s / tolerance 100ms / max-failed-times 2（P0-2）。
     put!(
         "tcp-concurrent",
         serde_norway::Value::from(app.advanced.tcp_concurrent)
@@ -281,6 +293,24 @@ pub fn build_runtime_config(
     put!(
         "unified-delay",
         serde_norway::Value::from(app.advanced.unified_delay)
+    );
+
+    // P0-1 选择持久化：见 PROFILE_SECTION_YAML 注释。热重载（force reload
+    // 整组重建）后手动选择由 mihomo cache.db 恢复，不再被重置。
+    put!(
+        "profile",
+        serde_norway::from_str::<serde_norway::Value>(PROFILE_SECTION_YAML)?
+    );
+
+    // P0-5 TCP keep-alive：显式固定（与 mihomo 推荐值一致，防默认随版本漂移）。
+    // NAT 掐断 / 休眠唤醒后的半开连接在约 2 分钟内被内核回收，不再“假在线”。
+    put!("keep-alive-interval", serde_norway::Value::from(30));
+    put!("keep-alive-idle", serde_norway::Value::from(120));
+    // P0-5 TLS Client Hello 统一伪装为 Chrome 指纹，降低节点侧风控拦截造成的
+    // “看起来掉线”（仅对 TLS 类协议生效，对 ss 等无影响）。
+    put!(
+        "global-client-fingerprint",
+        serde_norway::Value::from("chrome")
     );
 
     // geodata-mode：仅透传 mihomo 语义值（bool / "metax" / "v2ray"）；
@@ -496,8 +526,13 @@ mod tests {
         let runtime = build_runtime_config(&app, None).unwrap();
         let map = runtime.as_mapping().unwrap();
 
-        // 应用级键不得进入运行时
-        assert!(map.get("profile").is_none(), "profile must be stripped");
+        // 应用级键不得进入运行时。注意 `profile` 顶层键的双重身份：
+        // 应用级 profile 名（字符串）绝不能进入；mihomo 语义的 profile 段
+        // （选择持久化开关，P0-1）是运行时必需的映射，由专项测试覆盖。
+        assert!(
+            map.get("profile").and_then(|v| v.as_mapping()).is_some(),
+            "runtime profile key must be the mihomo persistence mapping, never the app-level name"
+        );
         assert!(map.get("locale").is_none(), "locale must be stripped");
         assert!(map.get("advanced").is_none(), "advanced must be stripped");
         assert!(map.get("profiles").is_none(), "profiles must be stripped");
@@ -578,6 +613,33 @@ proxies:
             .filter_map(|p| p.as_str())
             .collect();
         assert_eq!(auto_names, vec!["Node1", "Node2"]);
+    }
+
+    // ---- P0 稳定性：选择持久化 / keep-alive / TLS 指纹 ----
+
+    /// P0-1/P0-5：热重载（force reload 整组重建）后手动选择必须由 mihomo
+    /// cache.db 恢复；keep-alive 让 NAT 掐断的半开连接及时回收；TLS 指纹
+    /// 统一伪装降低节点侧风控误杀。
+    #[test]
+    fn build_runtime_config_persists_selection_and_tunes_keepalive() {
+        let app = Config::default();
+        let runtime = build_runtime_config(&app, None).unwrap();
+        let map = runtime.as_mapping().unwrap();
+
+        let profile = map.get("profile").unwrap();
+        assert_eq!(
+            profile.get("store-selected").unwrap().as_bool(),
+            Some(true),
+            "selection must survive force reloads"
+        );
+        assert_eq!(profile.get("store-fake-ip").unwrap().as_bool(), Some(true));
+
+        assert_eq!(map.get("keep-alive-interval").unwrap().as_u64(), Some(30));
+        assert_eq!(map.get("keep-alive-idle").unwrap().as_u64(), Some(120));
+        assert_eq!(
+            map.get("global-client-fingerprint").unwrap().as_str(),
+            Some("chrome")
+        );
     }
 
     // ---- D5: tcp-concurrent / unified-delay ----
