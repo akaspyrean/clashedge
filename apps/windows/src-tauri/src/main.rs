@@ -24,12 +24,127 @@ mod update;
 mod util;
 
 use crate::config::persistence::ConfigManager;
-use crate::core::manager::CoreManager;
+use crate::core::manager::{CoreManager, CoreStatus};
 use crate::tray::builder::build_tray;
 use crate::util::logging::init as init_logging;
 use crate::util::paths::get_app_data_dir;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tracing::{error, info, warn};
+
+#[cfg(not(windows))]
+fn ipv4_route_identity() -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn ipv4_default_routes_identity() -> Option<String> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetIpForwardTable, MIB_IPFORWARDROW, MIB_IPFORWARDTABLE,
+    };
+
+    const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+    let mut size = 0u32;
+    let status = unsafe { GetIpForwardTable(std::ptr::null_mut(), &mut size, 0) };
+    if status != ERROR_INSUFFICIENT_BUFFER || size == 0 {
+        return None;
+    }
+
+    let buffer_bytes = (size as usize).checked_add(7)? / 8 * 8;
+    let mut storage = vec![0u64; buffer_bytes / 8];
+    let table = storage.as_mut_ptr().cast::<MIB_IPFORWARDTABLE>();
+    let status = unsafe { GetIpForwardTable(table, &mut size, 0) };
+    if status != 0 {
+        return None;
+    }
+
+    // `MIB_IPFORWARDTABLE::table` is declared as one row; the API writes
+    // `dwNumEntries` rows into the buffer. Bound the row count by the buffer we
+    // allocated (which the API sized) before taking a slice over it.
+    let count = unsafe { (*table).dwNumEntries as usize };
+    let row_size = std::mem::size_of::<MIB_IPFORWARDROW>();
+    let max_rows = buffer_bytes.saturating_sub(std::mem::size_of::<u32>()) / row_size.max(1);
+    if count == 0 || count > max_rows {
+        return None;
+    }
+
+    let first_row = unsafe { std::ptr::addr_of!((*table).table).cast::<MIB_IPFORWARDROW>() };
+    let rows = unsafe { std::slice::from_raw_parts(first_row, count) };
+    let mut defaults: Vec<String> = rows
+        .iter()
+        .filter(|row| row.dwForwardDest == 0 && row.dwForwardMask == 0)
+        .map(|row| {
+            let gateway = std::net::Ipv4Addr::from(row.dwForwardNextHop.to_ne_bytes());
+            format!(
+                "if{}:gw{}:metric{}",
+                row.dwForwardIfIndex, gateway, row.dwForwardMetric1
+            )
+        })
+        .collect();
+    if defaults.is_empty() {
+        return None;
+    }
+    defaults.sort();
+    Some(defaults.join(","))
+}
+
+#[cfg(not(windows))]
+fn ipv4_default_routes_identity() -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn ipv4_route_identity() -> Option<String> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{GetBestRoute, MIB_IPFORWARDROW};
+
+    let mut route = MIB_IPFORWARDROW::default();
+    // 1.1.1.1 in network byte order; source 0 asks Windows to select the route.
+    let status = unsafe { GetBestRoute(u32::from_ne_bytes([1, 1, 1, 1]), 0, &mut route) };
+    if status != 0 {
+        return None;
+    }
+    let gateway = std::net::Ipv4Addr::from(route.dwForwardNextHop.to_ne_bytes());
+    let source = (|| {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("1.1.1.1:53").ok()?;
+        Some(socket.local_addr().ok()?.ip().to_string())
+    })();
+    Some(format!(
+        "if{}:gw{}:src{:?}",
+        route.dwForwardIfIndex, gateway, source
+    ))
+}
+
+fn ipv6_route_source() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("[::]:0").ok()?;
+    socket.connect("[2606:4700:4700::1111]:53").ok()?;
+    let addr = socket.local_addr().ok()?;
+    Some(addr.ip().to_string())
+}
+
+async fn network_fingerprint() -> Option<String> {
+    let ipv4_route = ipv4_route_identity();
+    // TUN can make GetBestRoute report the virtual adapter, so also track the
+    // IPv4 default route table (physical interface + gateway), which stays
+    // stable across ordinary CDN DNS rotation.
+    let ipv4_defaults = ipv4_default_routes_identity();
+    let ipv6_source = ipv6_route_source();
+    // DNS is used only as a reachability bit. Its load-balanced answer set is
+    // intentionally excluded so ordinary CDN rotation cannot trigger recovery.
+    let dns_reachable = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::net::lookup_host(("connectivitycheck.gstatic.com", 443)),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    if ipv4_route.is_none() && ipv4_defaults.is_none() && ipv6_source.is_none() && !dns_reachable {
+        None
+    } else {
+        Some(format!(
+            "v4={:?};v4def={:?};v6={:?};dns={}",
+            ipv4_route, ipv4_defaults, ipv6_source, dns_reachable
+        ))
+    }
+}
 
 /// 应用状态 - 需要公开以便 commands 访问
 ///
@@ -103,9 +218,9 @@ pub fn run() {
             }
             show_main_window(app);
         }))
-        // 文件选择保留 dialog；fs / notification / clipboard / opener 无真实调用，
-        // 文件读写与打开目录均走受控 Rust command，因此不注册未使用插件。
+        // File access and folder opening remain routed through controlled Rust commands.
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // Tauri updater 半成品已移除；当前更新链是已实现的 Portable Updater
         //（minisign manifest → SHA256 → staging → Launcher 事务替换）。
         .plugin(init_logging())
@@ -159,6 +274,42 @@ pub fn run() {
                 let core_mgr = CoreManager::new(app.handle().clone(), config_handle)?;
                 state.core_manager.set(core_mgr).ok();
             }
+
+            // Detect wake/resume gaps and effective route/DNS changes; Mihomo's
+            // fake-IP cache and url-test group both need a fresh network probe.
+            let watchdog_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let interval = std::time::Duration::from_secs(30);
+                let mut ticker = tokio::time::interval(interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                let mut last_wall_check = std::time::SystemTime::now();
+                let mut previous = network_fingerprint().await;
+                loop {
+                    ticker.tick().await;
+                    let now = std::time::SystemTime::now();
+                    let resumed = now
+                        .duration_since(last_wall_check)
+                        .unwrap_or_default()
+                        > std::time::Duration::from_secs(90);
+                    last_wall_check = now;
+                    let current = network_fingerprint().await;
+                    let changed = previous.is_some() && current.is_some() && current != previous;
+                    if resumed || changed {
+                        let state = watchdog_app.state::<AppState>();
+                        if let Some(core) = state.core_manager.get() {
+                            if matches!(core.status(), CoreStatus::Running) {
+                                info!("Network watchdog detected resume/network change; refreshing fake-IP and auto selection");
+                                if let Err(error) = core.recover_after_network_change().await {
+                                    warn!("Network recovery probe failed: {}", error);
+                                }
+                            }
+                        }
+                    }
+                    if current.is_some() {
+                        previous = current;
+                    }
+                }
+            });
 
             // 创建系统托盘（内部会把 TrayIcon 存入 AppState.tray）
             build_tray(app.handle())?;
@@ -285,16 +436,24 @@ pub fn run() {
                     } else {
                         info!("Startup subscription auto-refresh disabled by setting");
                     }
-                    const SUBSCRIPTION_AUTO_UPDATE_INTERVAL: std::time::Duration =
+                    const FULL_REFRESH_INTERVAL: std::time::Duration =
                         std::time::Duration::from_secs(6 * 60 * 60);
+                    const RETRY_CHECK_INTERVAL: std::time::Duration =
+                        std::time::Duration::from_secs(5 * 60);
+                    let mut last_full_refresh = tokio::time::Instant::now();
                     loop {
-                        tokio::time::sleep(SUBSCRIPTION_AUTO_UPDATE_INTERVAL).await;
+                        tokio::time::sleep(RETRY_CHECK_INTERVAL).await;
                         if !enabled(&app_handle) {
                             info!("Subscription auto-update skipped: disabled by setting");
                             continue;
                         }
-                        let n = crate::commands::profiles::refresh_all_subscriptions(&app_handle).await;
-                        info!("Periodic subscription auto-update: {} profile(s) refreshed", n);
+                        if last_full_refresh.elapsed() >= FULL_REFRESH_INTERVAL {
+                            let n = crate::commands::profiles::refresh_all_subscriptions(&app_handle).await;
+                            info!("Periodic subscription auto-update: {} profile(s) refreshed", n);
+                            last_full_refresh = tokio::time::Instant::now();
+                        } else {
+                            crate::commands::profiles::retry_failed_subscriptions(&app_handle).await;
+                        }
                     }
                 });
             }

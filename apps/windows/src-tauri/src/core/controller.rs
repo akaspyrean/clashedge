@@ -1,13 +1,11 @@
 // src-tauri/src/core/controller.rs
 //! 外部控制器 REST 客户端（ControllerClient）
 //!
-//! CoreManager 的独立模块：只依赖 `config`（读取 external-controller /
-//! secret）与 `api_client`，不含进程生命周期状态。生命周期仍在 CoreManager；
-//! 需要调 REST 的方法（version/get_status 等）仍留在 manager.rs，通过
-//! `self.controller` 调用这里的接口。
+//! 常规 REST 调用经 Mihomo Windows named pipe 传输，pipe 名由共享配置中的
+//! per-install secret 派生；`/logs` 长连接仍由 logs 模块通过 loopback HTTP 获取。
+//! CoreManager 负责进程生命周期；manager/lifecycle/supervisor 通过此模块调用 API。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::RwLock;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -15,7 +13,21 @@ use reqwest::Url;
 use tracing::{info, warn};
 
 use crate::config::model::Config;
+use crate::core::pipe_http::PipeHttpClient;
 use crate::util::error::{Error, Result};
+
+pub(crate) fn controller_pipe_name(secret: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(secret.as_bytes());
+    let mut suffix = String::with_capacity(32);
+    for byte in &digest[..16] {
+        let _ = write!(suffix, "{byte:02x}");
+    }
+    format!(r"\\.\pipe\ClashEdge-Mihomo-Controller-{suffix}")
+}
 
 /// 会话覆盖优先、其次配置值的控制器地址。
 pub(crate) fn effective_controller_addr(
@@ -28,6 +40,76 @@ pub(crate) fn effective_controller_addr(
         .unwrap_or_else(|| config.read().proxy.external_controller.clone())
 }
 
+fn strip_multiplier_suffix(name: &str) -> &str {
+    let trimmed = name.trim();
+    for marker in [" ×", " x", " *"] {
+        if let Some((base, suffix)) = trimmed.rsplit_once(marker) {
+            let value = suffix.trim().trim_start_matches(['x', 'X', '×', '*']);
+            if value.parse::<f64>().is_ok() {
+                return base.trim_end();
+            }
+        }
+    }
+    trimmed
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, b) in right.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (row[j + 1] + 1)
+                .min(row[j] + 1)
+                .min(diagonal + if a == *b { 0 } else { 1 });
+            diagonal = above;
+        }
+    }
+    row[right.len()]
+}
+
+fn tun_patch_payload<T: serde::Serialize>(tun: &T, enable: bool) -> Result<serde_json::Value> {
+    let mut tun_value = serde_json::to_value(tun)?;
+    if let Some(object) = tun_value.as_object_mut() {
+        object.insert("enable".to_string(), serde_json::Value::Bool(enable));
+    }
+    Ok(serde_json::json!({ "tun": tun_value }))
+}
+
+fn parse_tun_enable(live: &serde_json::Value) -> bool {
+    live.get("tun")
+        .and_then(|tun| tun.get("enable"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn fuzzy_proxy_match<'a>(stale: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    let wanted = strip_multiplier_suffix(stale).to_lowercase();
+    let mut ranked: Vec<(usize, &str)> = candidates
+        .iter()
+        .map(|candidate| {
+            let normalized = strip_multiplier_suffix(candidate).to_lowercase();
+            (edit_distance(&wanted, &normalized), *candidate)
+        })
+        .collect();
+    ranked.sort_by_key(|(distance, _)| *distance);
+    let (best, name) = ranked.first().copied()?;
+    if ranked.get(1).is_some_and(|(second, _)| *second == best) {
+        return None;
+    }
+    let name_len = wanted.chars().count();
+    // Short labels carry little identifying information; only allow an exact
+    // normalized match below six characters.
+    let threshold = if name_len < 6 {
+        0
+    } else {
+        (name_len / 5).min(3)
+    };
+    (best <= threshold).then_some(name)
+}
+
 /// 外部控制器 HTTP 客户端：只做 REST 调用，不持有进程状态。
 pub(crate) struct ControllerClient {
     /// 共享配置（与 ConfigManager 同一 Arc，单一数据源）
@@ -35,22 +117,19 @@ pub(crate) struct ControllerClient {
     /// 本次会话的控制器地址覆盖（配置端口被占用时改选的空闲端口）。
     /// 只存在于运行期：绝不写回共享配置（共享配置会被任意设置保存落盘）。
     controller_override: Arc<RwLock<Option<String>>>,
-    /// 外部控制器 HTTP 客户端
-    api_client: reqwest::Client,
+    /// Mihomo named-pipe controller HTTP client.
+    api_client: PipeHttpClient,
 }
 
 impl ControllerClient {
     pub(crate) fn new(config: Arc<RwLock<Config>>) -> Result<Self> {
+        let pipe_config = config.clone();
         Ok(Self {
             config,
             controller_override: Arc::new(RwLock::new(None)),
-            api_client: reqwest::Client::builder()
-                // 低危：REST 客户端统一超时，避免对控制器请求无限阻塞
-                .timeout(Duration::from_secs(10))
-                // 控制器在回环地址上：必须忽略 HTTP(S)_PROXY / 系统代理 / PAC，
-                // 否则回环请求会被转发到代理而失败（审计 B6）。
-                .no_proxy()
-                .build()?,
+            api_client: PipeHttpClient::new_dynamic(move || {
+                controller_pipe_name(&pipe_config.read().proxy.secret)
+            }),
         })
     }
 
@@ -74,15 +153,15 @@ impl ControllerClient {
         }
     }
 
-    /// 构造请求头（Bearer 鉴权）。供仍留在 CoreManager 的流程方法使用。
+    /// Named-pipe requests are authorized by the Windows pipe ACL; Mihomo does
+    /// not validate the HTTP secret on this transport, so do not send a misleading
+    /// Bearer header.
     pub(crate) fn api_headers(&self) -> Result<HeaderMap> {
-        let secret = self.config.read().proxy.secret.clone();
-        authorization_headers(&secret)
+        Ok(HeaderMap::new())
     }
 
-    /// 暴露底层 HTTP 客户端，供仍留在 CoreManager 的流程（wait_ready /
-    /// verify_runtime_applied / reload_config / version）直接发 REST 请求。
-    pub(crate) fn api_client(&self) -> &reqwest::Client {
+    /// Named-pipe HTTP client shared by lifecycle, manager and supervisor probes.
+    pub(crate) fn api_client(&self) -> &PipeHttpClient {
         &self.api_client
     }
 
@@ -119,16 +198,13 @@ impl ControllerClient {
     /// TUN 变更在 mihomo 中通常需要完整 tun 段；失败时调用方回退整进程重启。
     pub(crate) async fn apply_tun(&self, enable: bool) -> Result<()> {
         let tun = self.config.read().tun.clone();
-        let mut tun_value = serde_json::to_value(&tun).unwrap_or_default();
-        if let Some(obj) = tun_value.as_object_mut() {
-            obj.insert("enable".to_string(), serde_json::Value::Bool(enable));
-        }
+        let patch = tun_patch_payload(&tun, enable)?;
         let url = self.api_url(&["configs"], None)?;
         let resp = self
             .api_client
             .patch(url)
             .headers(self.api_headers()?)
-            .json(&serde_json::json!({ "tun": tun_value }))
+            .json(&patch)
             .send()
             .await?;
 
@@ -174,11 +250,7 @@ impl ControllerClient {
             .json()
             .await
             .map_err(|e| Error::Other(format!("read-back TUN state decode failed: {}", e)))?;
-        Ok(live
-            .get("tun")
-            .and_then(|t| t.get("enable"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false))
+        Ok(parse_tun_enable(&live))
     }
 
     /// 获取代理组列表（GET /proxies）。
@@ -333,7 +405,33 @@ impl ControllerClient {
     /// “切了节点仍然断网”。只排空经由该组的连接，不影响其他组
     /// （用户在“扶梯出行”切节点不应打断“影音视听”的下载）。
     /// UI 与托盘两条切换路径都经过这里，自动获得排空语义。
-    pub(crate) async fn select_proxy_group(&self, group: String, proxy: String) -> Result<()> {
+    pub(crate) async fn select_proxy_group(&self, group: String, mut proxy: String) -> Result<()> {
+        // A refreshed subscription can rename a node or append a provider multiplier
+        // suffix. Resolve a stale UI choice against the group's current node list.
+        if let Ok(group_url) = self.api_url(&["proxies", &group], None) {
+            if let Ok(response) = self
+                .api_client
+                .get(group_url)
+                .headers(self.api_headers()?)
+                .send()
+                .await
+            {
+                if let Ok(value) = response.json::<serde_json::Value>().await {
+                    if let Some(nodes) = value.get("all").and_then(|v| v.as_array()) {
+                        let names: Vec<&str> = nodes.iter().filter_map(|v| v.as_str()).collect();
+                        if !names.iter().any(|name| *name == proxy) {
+                            if let Some(replacement) = fuzzy_proxy_match(&proxy, &names) {
+                                info!(
+                                    "Resolved stale proxy selection '{}' -> '{}'",
+                                    proxy, replacement
+                                );
+                                proxy = replacement.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let url = self.api_url(&["proxies", &group], None)?;
         let resp = self
             .api_client
@@ -363,6 +461,52 @@ impl ControllerClient {
                 resp.status()
             )))
         }
+    }
+
+    /// Clear fake-IP mappings and re-test the built-in url-test group after a
+    /// network transition or a long system sleep.
+    pub(crate) async fn recover_after_network_change(&self) -> Result<()> {
+        let flush_url = self.api_url(&["cache", "fakeip", "flush"], None)?;
+        let flush = self
+            .api_client
+            .delete(flush_url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+        if !flush.status().is_success() {
+            warn!("Fake-IP cache flush returned {}", flush.status());
+        }
+
+        let group = crate::config::model::product_data::GROUP_AUTO;
+        let group_url = self.api_url(&["proxies", group], None)?;
+        let response = self
+            .api_client
+            .get(group_url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Ok(());
+        }
+        let value: serde_json::Value = response.json().await?;
+        if value.get("type").and_then(|v| v.as_str()) != Some("URLTest")
+            && value.get("type").and_then(|v| v.as_str()) != Some("url-test")
+        {
+            return Ok(());
+        }
+        let test_url = "https://www.gstatic.com/generate_204";
+        let query = [("url", test_url), ("timeout", "5000")];
+        let delay_url = self.api_url(&["group", group, "delay"], Some(&query))?;
+        let tested = self
+            .api_client
+            .get(delay_url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+        if !tested.status().is_success() {
+            warn!("Automatic proxy-group retest returned {}", tested.status());
+        }
+        Ok(())
     }
 
     /// 关闭经由指定组的全部活动连接（选择性排空，P0-4）。
@@ -675,6 +819,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tun_patch_preserves_settings_and_overrides_enable() {
+        let tun = serde_json::json!({ "enable": false, "stack": "system", "mtu": 1400 });
+        let enabled = tun_patch_payload(&tun, true).unwrap();
+        assert_eq!(enabled["tun"]["enable"], true);
+        assert_eq!(enabled["tun"]["stack"], "system");
+        assert_eq!(enabled["tun"]["mtu"], 1400);
+
+        let disabled = tun_patch_payload(&tun, false).unwrap();
+        assert_eq!(disabled["tun"]["enable"], false);
+    }
+
+    #[test]
+    fn tun_enable_parser_defaults_missing_or_malformed_state_to_false() {
+        assert!(parse_tun_enable(
+            &serde_json::json!({ "tun": { "enable": true } })
+        ));
+        assert!(!parse_tun_enable(
+            &serde_json::json!({ "tun": { "enable": false } })
+        ));
+        assert!(!parse_tun_enable(&serde_json::json!({ "tun": {} })));
+        assert!(!parse_tun_enable(
+            &serde_json::json!({ "tun": { "enable": "true" } })
+        ));
+    }
+
+    #[test]
+    fn controller_pipe_name_is_stable_secret_derived_and_redacted() {
+        let first = controller_pipe_name("install-secret-one");
+        assert_eq!(first, controller_pipe_name("install-secret-one"));
+        assert_ne!(first, controller_pipe_name("install-secret-two"));
+        assert!(first.starts_with(r"\\.\pipe\ClashEdge-Mihomo-Controller-"));
+        assert!(!first.contains("install-secret-one"));
+    }
+
+    #[test]
+    fn fuzzy_proxy_match_strips_multiplier_and_handles_small_name_changes() {
+        let candidates = ["🇺🇸 US Los Angeles 03 x1.20", "🇺🇸 US Los Angeles 30 x1.2"];
+        assert_eq!(
+            fuzzy_proxy_match("🇺🇸 US Los Angeles 03", &candidates),
+            Some("🇺🇸 US Los Angeles 03 x1.20")
+        );
+        assert_eq!(strip_multiplier_suffix("relay ×1.5"), "relay");
+    }
+
+    #[test]
+    fn fuzzy_proxy_match_rejects_ambiguous_or_distant_names() {
+        assert_eq!(
+            fuzzy_proxy_match("US node 1", &["US node 2", "US node 3"]),
+            None
+        );
+        assert_eq!(fuzzy_proxy_match("old", &["a very different node"]), None);
+        assert_eq!(fuzzy_proxy_match("US", &["JP"]), None);
+    }
+
+    #[test]
     fn trim_rules_keeps_only_type_payload_proxy() {
         let json = serde_json::json!({
             "rules": [
@@ -737,186 +936,5 @@ mod tests {
             "base kept: {}",
             s
         );
-    }
-
-    /// 回读 TUN 实际状态（get_tun_enable）：从运行中 mihomo 的 GET /configs
-    /// 解析 tun.enable。用本地 mock HTTP server 验证「开启/关闭/缺 tun 段/
-    /// 非 200 响应」四个分支，确保编排层的「确认实际结果」判定可靠。
-    #[tokio::test]
-    async fn get_tun_enable_reads_live_state_from_controller() {
-        async fn respond(server: tokio::net::TcpListener, body: String, status: u16) {
-            let (mut sock, _) = server.accept().await.unwrap();
-            let request = {
-                use tokio::io::AsyncReadExt;
-                let mut buf = [0u8; 1024];
-                let _ = sock.read(&mut buf).await;
-                String::from_utf8_lossy(&buf).to_string()
-            };
-            assert!(
-                request.starts_with("GET /configs"),
-                "expected GET /configs, got: {}",
-                request.lines().next().unwrap_or("")
-            );
-            let res = format!(
-                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                status,
-                body.len(),
-                body
-            );
-            use tokio::io::AsyncWriteExt;
-            let _ = sock.write_all(res.as_bytes()).await;
-        }
-
-        // 每个场景：绑定新端口 → 把地址写回共享 config → spawn 响应器 → 读 TUN 状态。
-        async fn probe(
-            client: &ControllerClient,
-            cfg: &Arc<RwLock<Config>>,
-            body: &str,
-            status: u16,
-        ) -> Result<bool> {
-            let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = server.local_addr().unwrap();
-            cfg.write().proxy.external_controller = format!("{}", addr);
-            let h = tokio::spawn(respond(server, body.to_string(), status));
-            let result = client.get_tun_enable().await;
-            h.await.unwrap();
-            result
-        }
-
-        let cfg = Arc::new(RwLock::new(Config::default()));
-        let client = ControllerClient::new(cfg.clone()).unwrap();
-
-        // 1) tun.enable=true
-        assert!(probe(&client, &cfg, r#"{"tun":{"enable":true}}"#, 200)
-            .await
-            .unwrap());
-        // 2) tun.enable=false
-        assert!(!probe(&client, &cfg, r#"{"tun":{"enable":false}}"#, 200)
-            .await
-            .unwrap());
-        // 3) 缺 tun 段 → 默认 false（内核未启用 TUN）
-        assert!(!probe(&client, &cfg, r#"{"mixed-port":7890}"#, 200)
-            .await
-            .unwrap());
-        // 4) 非 200 → Err（不假成功）
-        assert!(probe(&client, &cfg, r#"{"error":"x"}"#, 500).await.is_err());
-    }
-
-    /// 应用 TUN（apply_tun）：向运行中核心发 PATCH /configs，body 携带完整 tun 段
-    /// 且 enable 取目标值；200 → Ok，非 200 → Err。这是编排层 apply_tun 的 PATCH 分支。
-    #[tokio::test]
-    async fn apply_tun_patches_target_enable_and_checks_status() {
-        // 读取 reqwest 发出的 HTTP 请求：解析请求行 + content-length 对应的 JSON body。
-        async fn read_patch_request(
-            sock: &mut tokio::net::TcpStream,
-        ) -> (String, serde_json::Value) {
-            use tokio::io::AsyncReadExt;
-            let mut head_buf = Vec::new();
-            let mut tmp = [0u8; 4096];
-            loop {
-                let n = sock.read(&mut tmp).await.unwrap();
-                if n == 0 {
-                    break;
-                }
-                head_buf.extend_from_slice(&tmp[..n]);
-                if head_buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let s = String::from_utf8_lossy(&head_buf).to_string();
-            let (head, body_part) = match s.split_once("\r\n\r\n") {
-                Some((h, b)) => (h.to_string(), b.to_string()),
-                None => (s, String::new()),
-            };
-            let content_length: usize = head
-                .lines()
-                .find_map(|l| {
-                    l.to_ascii_lowercase()
-                        .strip_prefix("content-length: ")
-                        .and_then(|v| v.trim().parse().ok())
-                })
-                .unwrap_or(0);
-            let mut body = body_part;
-            while body.len() < content_length && body.len() < 1_000_000 {
-                let n = sock.read(&mut tmp).await.unwrap();
-                if n == 0 {
-                    break;
-                }
-                body.push_str(&String::from_utf8_lossy(&tmp[..n]));
-            }
-            let json = serde_json::from_str(body.trim()).unwrap_or(serde_json::Value::Null);
-            (head, json)
-        }
-
-        async fn respond_patch(
-            server: tokio::net::TcpListener,
-            status: u16,
-        ) -> (String, serde_json::Value) {
-            let (mut sock, _) = server.accept().await.unwrap();
-            let (head, body) = read_patch_request(&mut sock).await;
-            use tokio::io::AsyncWriteExt;
-            let res = format!("HTTP/1.1 {}\r\nContent-Length: 0\r\n\r\n", status);
-            let _ = sock.write_all(res.as_bytes()).await;
-            (head, body)
-        }
-
-        // 每个场景绑定一个新端口写入共享 config，spawn 响应器再调 apply_tun。
-        async fn probe(
-            client: &ControllerClient,
-            cfg: &Arc<RwLock<Config>>,
-            enable: bool,
-            status: u16,
-        ) -> (Result<()>, String, serde_json::Value) {
-            let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = server.local_addr().unwrap();
-            cfg.write().proxy.external_controller = format!("{}", addr);
-            let h = tokio::spawn(respond_patch(server, status));
-            let result = client.apply_tun(enable).await;
-            let (head, body) = h.await.unwrap();
-            (result, head, body)
-        }
-
-        let cfg = Arc::new(RwLock::new(Config::default()));
-        let client = ControllerClient::new(cfg.clone()).unwrap();
-
-        // 1) 开启：PATCH 成功，body 的 tun.enable=true（200 → Ok）
-        {
-            let (res, head, body) = probe(&client, &cfg, true, 200).await;
-            assert!(res.is_ok(), "apply_tun(true, 200) must succeed");
-            assert!(
-                head.starts_with("PATCH /configs"),
-                "expected PATCH /configs, got: {}",
-                head
-            );
-            assert_eq!(
-                body["tun"]["enable"].as_bool(),
-                Some(true),
-                "PATCH body tun.enable must be true:\n{}",
-                body
-            );
-        }
-
-        // 2) 关闭：PATCH body 的 tun.enable=false
-        {
-            let (res, head, body) = probe(&client, &cfg, false, 200).await;
-            assert!(res.is_ok(), "apply_tun(false, 200) must succeed");
-            assert!(
-                head.starts_with("PATCH /configs"),
-                "expected PATCH /configs, got: {}",
-                head
-            );
-            assert_eq!(
-                body["tun"]["enable"].as_bool(),
-                Some(false),
-                "PATCH body tun.enable must be false:\n{}",
-                body
-            );
-        }
-
-        // 3) 非 200 → Err（PATCH 失败，调用方回退重启）
-        {
-            let (res, ..) = probe(&client, &cfg, true, 500).await;
-            assert!(res.is_err(), "apply_tun on 500 must fail");
-        }
     }
 }

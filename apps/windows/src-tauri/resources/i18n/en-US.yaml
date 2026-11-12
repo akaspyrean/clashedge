@@ -510,6 +510,8 @@ android:
   core_start_failed: "Failed to start the proxy core"
   config_corrupt: "Configuration is damaged and has been restored"
   network_changed: "Network changed, restarting proxy"
+  subscription_expiry_notice: "A subscription expires within 7 days."
+  subscription_traffic_notice: "A subscription has 10% or less traffic remaining."
   profiles_empty: "No subscriptions yet. Click Add subscription to start."
   restart_core: "Restart Core"
   reload_core: "Reload Config"

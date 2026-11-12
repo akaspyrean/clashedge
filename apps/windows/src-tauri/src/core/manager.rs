@@ -288,6 +288,11 @@ impl CoreManager {
         self.controller.get_tun_enable().await
     }
 
+    /// 网络切换/休眠唤醒后清理 fake-IP 并重测自动优选组（P1-2）。
+    pub async fn recover_after_network_change(&self) -> Result<()> {
+        self.controller.recover_after_network_change().await
+    }
+
     /// 获取代理组列表（GET /proxies）。
     pub async fn get_proxy_groups(&self) -> Result<Vec<serde_json::Value>> {
         let mut groups = self.controller.get_proxy_groups().await?;

@@ -507,6 +507,8 @@ android:
   core_start_failed: "代理核心启动失败"
   config_corrupt: "配置已损坏，已自动恢复"
   network_changed: "网络已切换，正在重启代理"
+  subscription_expiry_notice: "订阅将在 7 天内到期。"
+  subscription_traffic_notice: "订阅剩余流量不足 10%。"
   profiles_empty: "暂无订阅，点击「添加订阅」开始使用"
   restart_core: "重启核心"
   reload_core: "重载配置"

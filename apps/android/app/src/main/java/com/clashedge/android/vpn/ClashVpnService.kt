@@ -2,6 +2,8 @@ package com.clashedge.android.vpn
 
 import android.app.Service
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.VpnService
 import com.clashedge.android.ClashEdgeApp
 import com.clashedge.android.core.ProxyCoordinator
@@ -19,6 +21,8 @@ import com.clashedge.android.util.Logger
 class ClashVpnService : VpnService() {
 
     private var started = false
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var observedNetwork: Network? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val config = intent?.getStringExtra(ProxyForegroundService.EXTRA_CONFIG)
@@ -36,6 +40,7 @@ class ClashVpnService : VpnService() {
         started = true
         return try {
             coordinator.onVpnEstablished(fd, config)
+            registerUnderlyingNetworkCallback()
             Service.START_STICKY
         } catch (t: Throwable) {
             Logger.error("vpn onStart error: $t")
@@ -45,6 +50,7 @@ class ClashVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        unregisterUnderlyingNetworkCallback()
         Logger.warn("VPN revoked by the system")
         coordinator().onVpnLost("VPN was revoked")
         started = false
@@ -54,10 +60,43 @@ class ClashVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        unregisterUnderlyingNetworkCallback()
         started = false
         closeFd()
         coordinator().onVpnLost("VPN service destroyed")
         super.onDestroy()
+    }
+
+    private fun registerUnderlyingNetworkCallback() {
+        val manager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val previous = observedNetwork
+                observedNetwork = network
+                // This is the default network for this app. ClashEdge excludes its own
+                // package from the VPN, so the callback tracks the physical underlay.
+                if (previous != null && previous != network) coordinator().onUnderlyingNetworkChanged()
+            }
+
+            override fun onLost(network: Network) {
+                if (observedNetwork == network) {
+                    observedNetwork = null
+                    coordinator().onUnderlyingNetworkChanged()
+                }
+            }
+        }
+        // Track only the selected default network. A request callback would report every
+        // available Wi-Fi/cellular network and mistake secondary connectivity for a switch.
+        manager.registerDefaultNetworkCallback(callback)
+        networkCallback = callback
+    }
+
+    private fun unregisterUnderlyingNetworkCallback() {
+        val callback = networkCallback ?: return
+        val manager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        runCatching { manager.unregisterNetworkCallback(callback) }
+        networkCallback = null
+        observedNetwork = null
     }
 
     private fun closeFd() {

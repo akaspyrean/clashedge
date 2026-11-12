@@ -50,6 +50,7 @@ pub(super) fn strip_subscribe_header(content: &str) -> String {
             !(t.starts_with("# subscribe-url:")
                 || t.starts_with("#subscribe-url:")
                 || t.starts_with("# subscription-userinfo:")
+                || t.starts_with("# subscription-etag:")
                 || t.starts_with("# subscribe-user-agent:")
                 || t.starts_with("#subscribe-user-agent:"))
         })
@@ -81,6 +82,21 @@ pub(super) fn extract_subscription_userinfo(content: &str) -> Option<String> {
             Some(v.to_string())
         }
     })
+}
+
+fn extract_subscription_etag(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("# subscription-etag:")?;
+        sanitize_etag(rest.trim())
+    })
+}
+
+fn sanitize_etag(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() || value.len() > 500 || !value.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 /// 从 profile 头注释提取自定义 User-Agent（`# subscribe-user-agent: <ua>`，
@@ -133,6 +149,53 @@ pub(super) fn sanitize_userinfo(raw: &str) -> Option<String> {
     }
 }
 
+pub(super) fn notify_subscription_health(app: &AppHandle, name: &str, userinfo: Option<&str>) {
+    let Some(userinfo) = userinfo else {
+        return;
+    };
+    let value = |key: &str| -> Option<u64> {
+        userinfo.split(';').find_map(|item| {
+            let (field, number) = item.trim().split_once('=')?;
+            (field == key).then(|| number.trim().parse().ok()).flatten()
+        })
+    };
+    let now = crate::util::update_status::now_secs();
+    if let Some(expire) = value("expire") {
+        if expire >= now && expire <= now + 7 * 24 * 60 * 60 {
+            let key = format!("subscription-expiry:{}:{}", name, expire);
+            if let Err(error) = crate::util::notify::send_once(
+                app,
+                key,
+                "Subscription expiring soon",
+                &format!("The subscription '{}' expires within 7 days.", name),
+            ) {
+                warn!("Could not show subscription expiry notification: {}", error);
+            }
+        }
+    }
+    if let Some(total) = value("total") {
+        let used = match (value("upload"), value("download")) {
+            (Some(upload), Some(download)) => upload.saturating_add(download),
+            _ => return,
+        };
+        let remaining = total.saturating_sub(used);
+        if total > 0 && remaining <= total / 10 {
+            let key = format!("subscription-quota:{}:{}", name, total);
+            if let Err(error) = crate::util::notify::send_once(
+                app,
+                key,
+                "Subscription traffic almost exhausted",
+                &format!(
+                    "The subscription '{}' has 10% or less traffic remaining.",
+                    name
+                ),
+            ) {
+                warn!("Could not show subscription quota notification: {}", error);
+            }
+        }
+    }
+}
+
 /// 组装 profile 头注释（订阅地址 + 可选流量信息 + 可选自定义 UA）。
 pub(super) fn build_header(url: &str, userinfo: Option<&str>, user_agent: Option<&str>) -> String {
     let mut h = format!("# subscribe-url: {}\n", url);
@@ -143,6 +206,14 @@ pub(super) fn build_header(url: &str, userinfo: Option<&str>, user_agent: Option
         h.push_str(&format!("# subscribe-user-agent: {}\n", ua));
     }
     h
+}
+
+pub(super) fn append_etag(header: &mut String, etag: Option<&str>) {
+    if let Some(etag) = etag.and_then(sanitize_etag) {
+        header.push_str("# subscription-etag: ");
+        header.push_str(&etag);
+        header.push('\n');
+    }
 }
 
 /// 更新 profile 头注释中的自定义 User-Agent 行（纯函数，可测）：
@@ -280,14 +351,21 @@ fn is_token_like(seg: &str) -> bool {
 ///
 /// 失败（含下载中途的读写错误）时一律删除临时文件，不留 `.tmp.*` 残留。
 /// 成功返回响应头里的（已净化）`Subscription-Userinfo`。
+pub(super) struct DownloadOutcome {
+    pub(super) not_modified: bool,
+    pub(super) userinfo: Option<String>,
+    pub(super) etag: Option<String>,
+}
+
 pub(super) async fn download_subscription_streaming(
     app: &AppHandle,
     url: &str,
     header: &str,
     temp_path: &Path,
     user_agent: Option<&str>,
-) -> Result<Option<String>> {
-    let result = download_subscription_inner(app, url, header, temp_path, user_agent).await;
+    etag: Option<&str>,
+) -> Result<DownloadOutcome> {
+    let result = download_subscription_inner(app, url, header, temp_path, user_agent, etag).await;
     if result.is_err() {
         let _ = std::fs::remove_file(temp_path);
     }
@@ -300,10 +378,35 @@ async fn download_subscription_inner(
     header: &str,
     temp_path: &Path,
     user_agent: Option<&str>,
-) -> Result<Option<String>> {
+    etag: Option<&str>,
+) -> Result<DownloadOutcome> {
     // 拉取动作直连优先：直连不通自动切应用自身代理兜底（软件代理模式不变）。
     // 单个订阅可覆盖 User-Agent（审计 B7）；None 用内置 mihomo 兼容 UA。
-    let mut resp = crate::util::fetch::get_direct_first_with_ua(app, url, user_agent).await?;
+    let mut validators = reqwest::header::HeaderMap::new();
+    if let Some(etag) = etag.and_then(sanitize_etag) {
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&etag) {
+            validators.insert(reqwest::header::IF_NONE_MATCH, value);
+        }
+    }
+    let mut resp =
+        crate::util::fetch::get_direct_first_with_validators(app, url, user_agent, &validators)
+            .await?;
+    let response_etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .and_then(sanitize_etag);
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(DownloadOutcome {
+            not_modified: true,
+            userinfo: resp
+                .headers()
+                .get("subscription-userinfo")
+                .and_then(|v| v.to_str().ok())
+                .and_then(sanitize_userinfo),
+            etag: response_etag.or_else(|| etag.and_then(sanitize_etag)),
+        });
+    }
 
     if !resp.status().is_success() {
         return Err(Error::Other(format!(
@@ -347,7 +450,11 @@ async fn download_subscription_inner(
         file.write_all(&chunk)?;
     }
     file.flush()?;
-    Ok(userinfo)
+    Ok(DownloadOutcome {
+        not_modified: false,
+        userinfo,
+        etag: response_etag.or_else(|| etag.and_then(sanitize_etag)),
+    })
 }
 
 /// 订阅刷新核心逻辑（供命令与启动时静默刷新共用）：重新拉取订阅内容
@@ -365,6 +472,7 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         .ok_or_else(|| Error::NotFound("Profile has no subscription URL".to_string()))?;
     // 单个订阅的自定义 UA（审计 B7）：头注释携带，随刷新持久保留
     let custom_ua = extract_subscribe_user_agent(&content);
+    let old_etag = extract_subscription_etag(&content);
     // 旧 Subscription-Userinfo：新响应不携带该头（CDN/中间代理剥离）时沿用旧值，
     // 避免"刷新订阅后流量条消失"。
     let old_userinfo = extract_subscription_userinfo(&content);
@@ -394,9 +502,34 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     // RAII：任何提前返回（含 `?`）都会清理临时文件（成功提交后文件已被 rename 走，删除为空操作）
     let _temp_guard = crate::util::temp::TempFile::new(temp_path.clone());
     let header = build_header(parsed.as_str(), None, custom_ua.as_deref());
-    let userinfo =
-        download_subscription_streaming(app, &url, &header, &temp_path, custom_ua.as_deref())
+    let downloaded = download_subscription_streaming(
+        app,
+        &url,
+        &header,
+        &temp_path,
+        custom_ua.as_deref(),
+        old_etag.as_deref(),
+    )
+    .await?;
+    if downloaded.not_modified {
+        let userinfo = downloaded.userinfo.as_deref().or(old_userinfo.as_deref());
+        notify_subscription_health(app, name, userinfo);
+        let mut updated_header = build_header(parsed.as_str(), userinfo, custom_ua.as_deref());
+        append_etag(
+            &mut updated_header,
+            downloaded.etag.as_deref().or(old_etag.as_deref()),
+        );
+        let refreshed = format!("{}{}", updated_header, strip_subscribe_header(&content));
+        validate_profile_strict(&refreshed)?;
+        std::fs::write(&temp_path, &refreshed)?;
+        let state = app.state::<crate::AppState>();
+        state
+            .controller
+            .update_profile_metadata(&file_path, &refreshed)
             .await?;
+        info!("Subscription unchanged (HTTP 304): {}", redact_url(&url));
+        return Ok(());
+    }
 
     // 内容校验在替换前完成；失败则清理临时文件并返回 Err
     let text = match std::fs::read_to_string(&temp_path) {
@@ -422,16 +555,22 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     if !warnings.is_empty() {
         warn!("Update '{}': {}", redact_url(&url), warnings.join("；"));
     }
-    let final_text = format!(
-        "{}{}",
-        build_header(
-            parsed.as_str(),
-            // 新响应携带 userinfo 则用新值，否则沿用旧值（防 CDN 剥离导致流量条消失）
-            userinfo.as_deref().or(old_userinfo.as_deref()),
-            custom_ua.as_deref()
-        ),
-        normalized
+    notify_subscription_health(
+        app,
+        name,
+        downloaded.userinfo.as_deref().or(old_userinfo.as_deref()),
     );
+    let mut updated_header = build_header(
+        parsed.as_str(),
+        // 新响应携带 userinfo 则用新值，否则沿用旧值（防 CDN 剥离导致流量条消失）
+        downloaded.userinfo.as_deref().or(old_userinfo.as_deref()),
+        custom_ua.as_deref(),
+    );
+    append_etag(
+        &mut updated_header,
+        downloaded.etag.as_deref().or(old_etag.as_deref()),
+    );
+    let final_text = format!("{}{}", updated_header, normalized);
     if let Err(e) = validate_profile_strict(&final_text) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(e);
@@ -531,28 +670,68 @@ pub async fn refresh_all_subscriptions(app: &AppHandle) -> usize {
     }
     names.sort();
 
+    let data_dir = crate::util::paths::get_app_data_dir(app).ok();
     let mut ok_count = 0usize;
     for name in names {
-        info!("Forced subscription refresh (degraded node pool): {}", name);
+        let key = crate::util::update_status::subscription_key(&name);
+        // Forced full refresh (periodic 6h task / degraded-pool recovery) ignores
+        // failure backoff: those paths are already rate-limited by their callers.
+        info!("Forced subscription refresh: {}", name);
         let outcome = refresh_subscription(app, &name).await;
         match &outcome {
             Ok(()) => ok_count += 1,
             Err(e) => warn!("Forced subscription refresh failed for '{}': {}", name, e),
         }
-        if let Ok(data_dir) = crate::util::paths::get_app_data_dir(app) {
+        if let Some(data_dir) = data_dir.as_ref() {
             let (ok, err) = match &outcome {
                 Ok(()) => (true, String::new()),
                 Err(e) => (false, e.to_string()),
             };
-            crate::util::update_status::record(
-                &data_dir,
-                &crate::util::update_status::subscription_key(&name),
-                ok,
-                &err,
-            );
+            crate::util::update_status::record(data_dir, &key, ok, &err);
         }
     }
     ok_count
+}
+
+/// Retry only failed subscriptions whose persisted backoff has elapsed.
+pub async fn retry_failed_subscriptions(app: &AppHandle) {
+    let Ok(profiles_dir) = get_profiles_dir(app) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(profiles_dir) else {
+        return;
+    };
+    let Ok(data_dir) = crate::util::paths::get_app_data_dir(app) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let key = crate::util::update_status::subscription_key(name);
+        let Some(record) = crate::util::update_status::read_one(&data_dir, &key) else {
+            continue;
+        };
+        if record.ok
+            || !crate::util::update_status::retry_due(
+                &data_dir,
+                &key,
+                crate::util::update_status::now_secs(),
+            )
+        {
+            continue;
+        }
+        let outcome = refresh_subscription(app, name).await;
+        let (ok, error) = match outcome {
+            Ok(()) => (true, String::new()),
+            Err(e) => (false, e.to_string()),
+        };
+        crate::util::update_status::record(&data_dir, &key, ok, &error);
+    }
 }
 
 /// 启动首轮静默刷新过期订阅：遍历 profiles 目录，mtime 距今超过 6h
@@ -615,6 +794,17 @@ pub async fn auto_refresh_stale_subscriptions(app: &AppHandle) {
 
     let stale = select_stale_subscriptions(candidates, std::time::SystemTime::now());
     for name in stale {
+        if let Ok(data_dir) = crate::util::paths::get_app_data_dir(app) {
+            let key = crate::util::update_status::subscription_key(&name);
+            if !crate::util::update_status::retry_due(
+                &data_dir,
+                &key,
+                crate::util::update_status::now_secs(),
+            ) {
+                info!("Auto subscription refresh deferred by backoff: {}", name);
+                continue;
+            }
+        }
         info!("Auto refreshing stale subscription: {}", name);
         let outcome = refresh_subscription(app, &name).await;
         if let Err(e) = &outcome {
@@ -639,6 +829,21 @@ pub async fn auto_refresh_stale_subscriptions(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn etag_header_is_preserved_and_removed_from_subscription_body() {
+        let mut header = build_header("https://example.com/sub", None, None);
+        append_etag(&mut header, Some("\"revision-42\""));
+        assert_eq!(
+            extract_subscription_etag(&header),
+            Some("\"revision-42\"".into())
+        );
+        assert_eq!(
+            strip_subscribe_header(&format!("{}proxies: []\n", header)),
+            "proxies: []"
+        );
+        assert_eq!(sanitize_etag("bad\r\nInjected: true"), None);
+    }
 
     #[test]
     fn redact_url_drops_query_and_userinfo_and_path() {

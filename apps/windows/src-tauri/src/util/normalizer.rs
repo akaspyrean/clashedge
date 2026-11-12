@@ -54,6 +54,9 @@ const MAX_NODE_COUNT: usize = 1000;
 /// 整体受 `TOTAL_NORMALIZE_TIMEOUT` 保护：任一 provider 拖慢/挂起时超时中止，
 /// 避免导入流程无限阻塞。
 pub async fn normalize_subscription(app: &AppHandle, body: &str) -> Result<NormalizedSubscription> {
+    // Node `server` values are dialled by mihomo as user-configured proxies, not
+    // fetched by this app; SSRF validation applies to URLs we actually request
+    // (subscription / provider endpoints), so LAN self-hosted nodes stay usable.
     tokio::time::timeout(TOTAL_NORMALIZE_TIMEOUT, normalize_inner(app, body))
         .await
         .map_err(|_| Error::Subscription("Subscription normalization timed out".to_string()))?

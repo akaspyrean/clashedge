@@ -230,9 +230,17 @@ pub fn build_runtime_config(
         "find-process-mode",
         serde_norway::Value::from(app.general.find_process_mode.clone())
     );
+    // Regular controller requests use this Windows named pipe. Keep the loopback
+    // TCP listener for the streaming /logs endpoint; `secret` does not authenticate the pipe.
     put!(
         "external-controller",
         serde_norway::Value::from(app.proxy.external_controller.clone())
+    );
+    put!(
+        "external-controller-pipe",
+        serde_norway::Value::from(crate::core::controller::controller_pipe_name(
+            &app.proxy.secret
+        ))
     );
     put!(
         "secret",
@@ -522,7 +530,6 @@ mod tests {
         app.locale = "en-US".to_string();
         app.general.mixed_port = 7788;
         app.proxy.external_controller = "127.0.0.1:11111".to_string();
-
         let runtime = build_runtime_config(&app, None).unwrap();
         let map = runtime.as_mapping().unwrap();
 
@@ -537,11 +544,15 @@ mod tests {
         assert!(map.get("advanced").is_none(), "advanced must be stripped");
         assert!(map.get("profiles").is_none(), "profiles must be stripped");
 
-        // 受控键携带应用值
+        // 受控键携带应用值；regular APIs use the named pipe, TCP remains for /logs streaming.
         assert_eq!(map.get("mixed-port").unwrap().as_u64(), Some(7788));
         assert_eq!(
             map.get("external-controller").unwrap().as_str(),
             Some("127.0.0.1:11111")
+        );
+        assert_eq!(
+            map.get("external-controller-pipe").unwrap().as_str(),
+            Some(crate::core::controller::controller_pipe_name(&app.proxy.secret).as_str())
         );
         assert_eq!(map.get("mode").unwrap().as_str(), Some("rule"));
 
@@ -977,6 +988,10 @@ proxies:
         assert_eq!(
             map.get("external-controller").unwrap().as_str(),
             Some("127.0.0.1:9090")
+        );
+        assert_eq!(
+            map.get("external-controller-pipe").unwrap().as_str(),
+            Some(crate::core::controller::controller_pipe_name(&app.proxy.secret).as_str())
         );
         assert_eq!(
             map.get("secret").unwrap().as_str(),

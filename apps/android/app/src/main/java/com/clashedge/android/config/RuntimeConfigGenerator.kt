@@ -90,6 +90,8 @@ object RuntimeConfigGenerator {
             appendLine("allow-lan: false")
             appendLine("mode: $safeMode")
             appendLine("log-level: info")
+            appendLine("keep-alive-interval: 30")
+            appendLine("global-client-fingerprint: chrome")
             appendLine()
             // P0-1 选择持久化：与 Windows 端 build_runtime_config 同步。store-selected
             // 让 mihomo 把手动选择写入 cache.db，配置重载后按名称恢复；

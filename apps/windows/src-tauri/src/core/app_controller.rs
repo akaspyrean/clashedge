@@ -353,6 +353,12 @@ impl AppController {
         .await
     }
 
+    /// Update subscription header metadata without reloading the active Mihomo profile.
+    pub async fn update_profile_metadata(&self, file_path: &Path, content: &str) -> Result<()> {
+        let _tx = self.tx.lock().await;
+        crate::commands::profiles::update_profile_metadata_locked(file_path, content)
+    }
+
     /// 设置订阅自定义 User-Agent 的轻量事务（审计 B7）：仅替换 profile 头注释元数据，
     /// 不进入 mihomo 运行时配置，无需热重载。持事务锁串行化，避免与并发的
     /// 订阅刷新/重命名互相覆盖文件。

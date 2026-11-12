@@ -1,5 +1,6 @@
 package com.clashedge.android.subscription
 
+import android.content.Context
 import com.clashedge.android.config.AppConfigStore
 import com.clashedge.android.model.Node
 import com.clashedge.android.util.Logger
@@ -17,7 +18,10 @@ import okhttp3.Request
  * never supplies proxy-groups/rules (the app always applies the built-in group
  * skeleton from RuntimeConfigGenerator).
  */
-class SubscriptionRepository(private val appConfig: AppConfigStore) {
+class SubscriptionRepository(
+    private val context: Context,
+    private val appConfig: AppConfigStore,
+) {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -53,6 +57,11 @@ class SubscriptionRepository(private val appConfig: AppConfigStore) {
             if (!resp.isSuccessful) {
                 throw IllegalStateException("HTTP ${resp.code} for subscription")
             }
+            SubscriptionHealthNotifications.notifyIfNeeded(
+                context,
+                url.hashCode().toUInt().toString(),
+                resp.header("subscription-userinfo"),
+            )
             // Bounded read: a hostile server must not be able to stream unbounded data into memory.
             val body = resp.body?.let { readBounded(it.byteStream(), MAX_BODY_BYTES) }.orEmpty()
             normalize(body)

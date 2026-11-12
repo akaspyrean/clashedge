@@ -16,7 +16,9 @@ import com.clashedge.android.util.Logger
 import com.clashedge.android.vpn.ClashVpnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,6 +61,8 @@ class ProxyCoordinator(
     /** Mutex to serialize start/stop and prevent race conditions. */
     private val lifecycleMutex = Mutex()
     private val runRequested = AtomicBoolean(false)
+    private var networkRestartJob: Job? = null
+    private var networkChangeVersion = 0L
 
     init {
         // Observe MihomoCore.running/error and keep local state in sync (single source of truth).
@@ -150,6 +154,34 @@ class ProxyCoordinator(
             else -> {}
         }
         startLocked()
+    }
+
+    /** Debounced recovery when the physical network changes while the VPN is active. */
+    @Synchronized
+    fun onUnderlyingNetworkChanged() {
+        networkChangeVersion++
+        if (networkRestartJob?.isActive == true) return
+        networkRestartJob = scope.launch {
+            while (true) {
+                val version = synchronized(this@ProxyCoordinator) { networkChangeVersion }
+                delay(1_500)
+                if (synchronized(this@ProxyCoordinator) { networkChangeVersion != version }) continue
+
+                if (runRequested.get() && _state.value == ConnectionState.RUNNING) {
+                    Logger.info("underlying network changed; restarting Mihomo")
+                    restartCore()
+                }
+                val finished = synchronized(this@ProxyCoordinator) {
+                    if (networkChangeVersion == version) {
+                        networkRestartJob = null
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (finished) break
+            }
+        }
     }
 
     suspend fun reloadCore() = lifecycleMutex.withLock {

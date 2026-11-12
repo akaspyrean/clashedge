@@ -1,8 +1,11 @@
 package com.clashedge.android
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -24,6 +27,14 @@ class MainActivity : ComponentActivity() {
     private val coordinator get() = (application as ClashEdgeApp).coordinator
     private val appConfig get() = (application as ClashEdgeApp).appConfig
     private var pendingStart = false
+
+    private val notificationsPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            if (pendingStart) {
+                pendingStart = false
+                requestVpnStart()
+            }
+        }
 
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -69,6 +80,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestStart() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingStart = true
+            notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        requestVpnStart()
+    }
+
+    private fun requestVpnStart() {
         val permissionIntent: Intent? = coordinator.vpnPermissionIntent()
         if (permissionIntent == null) {
             lifecycleScope.launch { coordinator.start() }

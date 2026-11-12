@@ -8,7 +8,7 @@
 //! - [`write_runtime_config`]：生成并原子写入 runtime-config.yaml，返回内容哈希；
 //! - [`spawn_mihomo`]：日志**追加**写入（启动时按大小轮转）+ `CREATE_NO_WINDOW` +
 //!   落盘 `core-session.json`（pid + 映像路径），供下次启动回收孤儿进程；
-//! - [`preflight`]：spawn 前预检 mixed-port / DNS / 控制器端口，必要时回收
+//! - [`preflight`]：spawn 前预检 mixed-port / DNS / TCP controller 端口，必要时回收
 //!   本应用遗留的孤儿 mihomo，并给出"谁占用了端口"的可操作错误。
 
 use std::path::{Path, PathBuf};
@@ -414,12 +414,18 @@ pub fn read_log_since(data_dir: &Path, offset: u64) -> String {
 /// 预检结果
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Preflight {
-    /// 配置的控制器端口被占用时改选的空闲地址（仅内存生效，见 lifecycle）
+    /// TCP controller 端口被占用时改选的空闲地址（仅内存生效，见 lifecycle）。
     pub controller_override: Option<String>,
 }
 
 fn port_of(addr: &str) -> Option<u16> {
     addr.trim().rsplit(':').next()?.parse().ok()
+}
+
+fn free_local_port() -> std::io::Result<u16> {
+    Ok(std::net::TcpListener::bind(("127.0.0.1", 0))?
+        .local_addr()?
+        .port())
 }
 
 fn try_bind(host: &str, port: u16) -> std::io::Result<()> {
@@ -467,17 +473,10 @@ fn ensure_bindable(label: &str, host: &str, port: u16, mihomo_path: &Path) -> Re
     )))
 }
 
-fn free_local_port() -> std::io::Result<u16> {
-    Ok(std::net::TcpListener::bind(("127.0.0.1", 0))?
-        .local_addr()?
-        .port())
-}
-
 /// spawn 前预检（同步，调用方应放在 `spawn_blocking` 中）：
 /// - mixed-port：必须可绑定，否则报错；
 /// - DNS listen（启用时）：必须可绑定，否则报错；
-/// - 控制器端口：被占用时自动改选空闲端口，避免与其他 Clash 系软件的
-///   9090 冲突、更避免误连到别人的控制器。
+/// - TCP controller 端口供 `/logs` 流使用：被占用时自动改选空闲端口。
 pub fn preflight(mihomo_path: &Path, cfg: &Config) -> Result<Preflight> {
     let mut out = Preflight::default();
 
@@ -518,6 +517,7 @@ pub fn preflight(mihomo_path: &Path, cfg: &Config) -> Result<Preflight> {
             out.controller_override = Some(addr);
         }
     }
+
     Ok(out)
 }
 
