@@ -44,9 +44,7 @@ fn strip_multiplier_suffix(name: &str) -> &str {
     let trimmed = name.trim();
     for marker in [" ×", " x", " *"] {
         if let Some((base, suffix)) = trimmed.rsplit_once(marker) {
-            let value = suffix
-                .trim()
-                .trim_start_matches(['x', 'X', '×', '*']);
+            let value = suffix.trim().trim_start_matches(['x', 'X', '×', '*']);
             if value.parse::<f64>().is_ok() {
                 return base.trim_end();
             }
