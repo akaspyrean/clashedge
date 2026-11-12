@@ -46,6 +46,12 @@ pub struct UpdateRecord {
     /// 失败原因（成功时为空串）
     #[serde(default)]
     pub error: String,
+    /// 连续失败次数；成功后归零，用于计算退避。
+    #[serde(default)]
+    pub failure_count: u32,
+    /// 最早允许下次自动重试的 unix 秒；0 表示无退避限制。
+    #[serde(default)]
+    pub retry_after: u64,
 }
 
 impl UpdateRecord {
@@ -56,16 +62,20 @@ impl UpdateRecord {
             success: now,
             ok: true,
             error: String::new(),
+            failure_count: 0,
+            retry_after: 0,
         }
     }
 
     /// 记录一次失败（保留历史成功时间，便于展示"上次成功是何时"）。
-    pub fn failure_at(now: u64, prev_success: u64, error: &str) -> Self {
+    pub fn failure_at(now: u64, prev_success: u64, failure_count: u32, error: &str) -> Self {
         Self {
             attempt: now,
             success: prev_success,
             ok: false,
             error: sanitize_error(error),
+            failure_count,
+            retry_after: now.saturating_add(retry_delay_secs(failure_count)),
         }
     }
 }
@@ -84,6 +94,20 @@ fn sanitize_error(msg: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// Automatic retry backoff: 5m, 10m, 20m ... capped at 6h.
+fn retry_delay_secs(failures: u32) -> u64 {
+    (5 * 60u64)
+        .saturating_mul(1u64 << failures.saturating_sub(1).min(7))
+        .min(6 * 60 * 60)
+}
+
+/// Whether an automatic retry is due for the given update key.
+pub fn retry_due(data_dir: &Path, key: &str, now: u64) -> bool {
+    read_one(data_dir, key)
+        .map(|record| record.retry_after == 0 || now >= record.retry_after)
+        .unwrap_or(true)
 }
 
 /// 当前 unix 秒。
@@ -124,8 +148,12 @@ pub fn record(data_dir: &Path, key: &str, ok: bool, error: &str) {
     let entry = if ok {
         UpdateRecord::success_at(now)
     } else {
-        let prev_success = all.get(key).map(|r| r.success).unwrap_or(0);
-        UpdateRecord::failure_at(now, prev_success, error)
+        let previous = all.get(key);
+        let prev_success = previous.map(|r| r.success).unwrap_or(0);
+        let failures = previous
+            .map(|r| r.failure_count.saturating_add(1))
+            .unwrap_or(1);
+        UpdateRecord::failure_at(now, prev_success, failures, error)
     };
     all.insert(key.to_string(), entry);
     if let Err(e) = write_all(data_dir, &all) {
@@ -202,6 +230,28 @@ mod tests {
         let k = subscription_key("MySub");
         assert!(k.starts_with(KEY_SUBSCRIPTION_PREFIX));
         assert_ne!(k, KEY_GEO);
+    }
+
+    #[test]
+    fn retry_is_deferred_until_persisted_backoff_expires() {
+        let dir = temp_dir("retry-backoff");
+        let key = subscription_key("retry-me");
+        record(&dir, &key, false, "offline");
+        let failed = read_one(&dir, &key).unwrap();
+        assert!(!retry_due(&dir, &key, failed.attempt));
+        assert!(retry_due(&dir, &key, failed.retry_after));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failure_backoff_increases_and_success_clears_it() {
+        let first = UpdateRecord::failure_at(1_000, 0, 1, "offline");
+        let second = UpdateRecord::failure_at(1_000, 0, 2, "offline");
+        assert_eq!(first.retry_after - first.attempt, 5 * 60);
+        assert_eq!(second.retry_after - second.attempt, 10 * 60);
+        let success = UpdateRecord::success_at(2_000);
+        assert_eq!(success.failure_count, 0);
+        assert_eq!(success.retry_after, 0);
     }
 
     #[test]

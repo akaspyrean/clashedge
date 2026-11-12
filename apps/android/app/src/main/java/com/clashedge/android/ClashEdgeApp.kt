@@ -36,7 +36,7 @@ class ClashEdgeApp : Application() {
         super.onCreate()
         Logger.init(this)
         appConfig = AppConfigStore(this)
-        subscriptions = SubscriptionRepository(appConfig)
+        subscriptions = SubscriptionRepository(this, appConfig)
         profiles = ProfileRepository(this, subscriptions, appConfig)
         coordinator = ProxyCoordinator(this, appConfig, profiles)
         // Load profiles off the main thread

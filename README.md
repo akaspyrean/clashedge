@@ -24,14 +24,16 @@ ClashEdge 是一个 Mihomo 图形客户端（Mihomo 是 Clash 内核的活跃延
 
 - **便携优先**：Windows 解压即用，程序与数据分离（`App/` + `Data/`），复制文件夹即整体迁移。
 - **开箱即用**：内置经签名校验的规则链与策略组，订阅只提供节点，无需手写任何规则。
-- **内核托管**：mihomo 配置由应用统一生成并守护——崩溃自启、端口预检、热重载。
+- **内核托管**：mihomo 配置由应用统一生成并守护——崩溃自启、端口预检、热重载；常规控制器 API 走由安装密钥派生的 Windows named pipe（pipe 本身不校验 HTTP secret，访问依赖 Windows pipe ACL），日志流保留带密钥的 loopback HTTP；连续崩溃时逐步退避并通知。
+- **订阅与网络恢复**：支持 ETag 条件刷新和失败退避；唤醒或换网后清理 fake-IP 映射并重新测速自动优选组。
+- **订阅状态提醒**：接近到期或流量额度不足时发送系统通知。
 
 | 平台 | 状态 | 网络接入 | 分发形态 |
 | --- | --- | --- | --- |
 | **Windows** | ✅ 正式版 | 系统代理 · TUN（Wintun） | 便携目录 |
 | **Android** | 🔶 预览版 | VpnService（TUN） | APK |
 
-> Android 预览版自 v0.1.0 起随 [Release](../../releases) 发布，界面与 VPN 授权流程完整可体验；Mihomo 内核（AAR/JNI）仍为占位实现，暂无真实代理。正式版前置条件见 [`apps/android/README.md`](apps/android/README.md)。
+> Android 预览版自 v0.1.0 起随 [Release](../../releases) 发布，包含换网恢复与订阅状态通知；通知受 Android 系统权限控制。Mihomo 内核（AAR/JNI）仍为占位实现，暂无真实代理。正式版前置条件见 [`apps/android/README.md`](apps/android/README.md)。
 
 ## 一个例子
 
@@ -98,7 +100,7 @@ flowchart TB
 | **人工智能** | Select | AI 服务专用出口 |
 | **影音视听** | Select | 流媒体专用出口 |
 | **人工优选** | Select | 全部订阅节点，纯手动选择 |
-| **自动优选** | URL-Test | 每 5 分钟测速，自动选最低延迟（容差 100ms） |
+| **自动优选** | URL-Test | 每 2 分钟测速，自动选最低延迟（容差 100ms） |
 | **GLOBAL** | Select | Global 模式专用，规则模式下隐藏 |
 
 ## 仓库结构

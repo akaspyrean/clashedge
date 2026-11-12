@@ -30,6 +30,8 @@
     <string name="core_start_failed">Failed to start the proxy core</string>
     <string name="config_corrupt">Configuration is damaged and has been restored</string>
     <string name="network_changed">Network changed, restarting proxy</string>
+    <string name="subscription_expiry_notice">A subscription expires within 7 days.</string>
+    <string name="subscription_traffic_notice">A subscription has 10% or less traffic remaining.</string>
     <string name="profiles_empty">No subscriptions yet. Click Add subscription to start.</string>
     <string name="restart_core">Restart Core</string>
     <string name="reload_core">Reload Config</string>

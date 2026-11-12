@@ -40,7 +40,7 @@ mod guards;
 
 pub use client::{
     fake_ip_range_from_config, get_direct_first, get_direct_first_streaming,
-    get_direct_first_with_ua, validate_url_app,
+    get_direct_first_with_ua, get_direct_first_with_validators, validate_url_app,
 };
 pub use doh::{resolve_real_addrs, set_doh_endpoints};
 pub use guards::{redact_url_for_log, validate_url_sync, validate_url_with};

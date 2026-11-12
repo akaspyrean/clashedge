@@ -33,6 +33,7 @@ mod validate;
 
 pub use subscription::{
     auto_refresh_stale_subscriptions, refresh_all_subscriptions, refresh_subscription,
+    retry_failed_subscriptions,
 };
 
 use files::{
@@ -40,10 +41,10 @@ use files::{
     profile_path, reserve_new, temp_path_for,
 };
 use subscription::{
-    apply_header_user_agent, build_header, download_subscription_streaming, extract_subscribe_url,
-    extract_subscribe_user_agent, extract_subscription_userinfo, normalize_subscription_body,
-    read_profile_head, redact_subscribe_url, redact_url, sanitize_user_agent,
-    strip_subscribe_header,
+    append_etag, apply_header_user_agent, build_header, download_subscription_streaming,
+    extract_subscribe_url, extract_subscribe_user_agent, extract_subscription_userinfo,
+    normalize_subscription_body, read_profile_head, redact_subscribe_url, redact_url,
+    sanitize_user_agent, strip_subscribe_header,
 };
 use validate::{validate_profile_strict, validate_subscription_content};
 
@@ -403,9 +404,32 @@ pub async fn import_profile_from_url(
     // RAII：任何提前返回（含 `?`）都会清理临时文件
     let _temp_guard = crate::util::temp::TempFile::new(temp_path.clone());
     let header = build_header(parsed.as_str(), None, custom_ua.as_deref());
-    let userinfo =
-        download_subscription_streaming(&app, &url, &header, &temp_path, custom_ua.as_deref())
-            .await?;
+    let downloaded = download_subscription_streaming(
+        &app,
+        &url,
+        &header,
+        &temp_path,
+        custom_ua.as_deref(),
+        None,
+    )
+    .await?;
+    if downloaded.not_modified {
+        return Err(Error::Other(
+            "Subscription server returned 304 without a cached profile".to_string(),
+        ));
+    }
+    let userinfo = downloaded.userinfo;
+    crate::commands::profiles::subscription::notify_subscription_health(
+        &app,
+        &name,
+        userinfo.as_deref(),
+    );
+    let mut header = build_header(
+        parsed.as_str(),
+        userinfo.as_deref(),
+        custom_ua.as_deref(),
+    );
+    append_etag(&mut header, downloaded.etag.as_deref());
 
     // 校验 YAML 合法 + 资源限制（节点数量/名称长度/字段值长度）；失败清理临时文件
     let text = match std::fs::read_to_string(&temp_path) {
@@ -427,11 +451,7 @@ pub async fn import_profile_from_url(
     if !warnings.is_empty() {
         warn!("Import '{}': {}", redact_url(&url), warnings.join("；"));
     }
-    let final_text = format!(
-        "{}{}",
-        build_header(parsed.as_str(), userinfo.as_deref(), custom_ua.as_deref()),
-        normalized
-    );
+    let final_text = format!("{}{}", header, normalized);
     if let Err(e) = validate_profile_strict(&final_text) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(e);
@@ -479,6 +499,47 @@ pub async fn set_profile_user_agent(
         .controller
         .set_profile_user_agent(&app, &name, &file_path, custom_ua)
         .await
+}
+
+/// Replace app-only subscription metadata under the profile transaction lock. This
+/// deliberately avoids a core reload because a 304 response leaves proxy YAML intact.
+pub(crate) fn update_profile_metadata_locked(file_path: &Path, content: &str) -> Result<()> {
+    let current = std::fs::read_to_string(file_path)?;
+    if current == content {
+        let file = std::fs::OpenOptions::new().write(true).open(file_path)?;
+        file.set_modified(std::time::SystemTime::now())?;
+        return Ok(());
+    }
+    let temp_path = temp_path_for(file_path);
+    let _guard = crate::util::temp::TempFile::new(temp_path.clone());
+    std::fs::write(&temp_path, content.as_bytes())?;
+    commit_profile_file(&temp_path, file_path)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_subscription_metadata_still_refreshes_file_time() {
+        let path = std::env::temp_dir().join(format!(
+            "clash-edge-profile-metadata-{}.yaml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "# subscription-url: https://example.com\nproxies: []\n").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        file.set_modified(old).unwrap();
+
+        update_profile_metadata_locked(
+            &path,
+            "# subscription-url: https://example.com\nproxies: []\n",
+        )
+        .unwrap();
+        assert!(std::fs::metadata(&path).unwrap().modified().unwrap() > old);
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// 设置自定义 User-Agent 的复合事务主体（调用方 AppController 已持事务锁）：

@@ -30,6 +30,8 @@
     <string name="core_start_failed">代理核心启动失败</string>
     <string name="config_corrupt">配置已损坏，已自动恢复</string>
     <string name="network_changed">网络已切换，正在重启代理</string>
+    <string name="subscription_expiry_notice">订阅将在 7 天内到期。</string>
+    <string name="subscription_traffic_notice">订阅剩余流量不足 10%。</string>
     <string name="profiles_empty">暂无订阅，点击「添加订阅」开始使用</string>
     <string name="restart_core">重启核心</string>
     <string name="reload_core">重载配置</string>

@@ -15,8 +15,9 @@ use tokio::process::Child;
 use tracing::{debug, error, info, warn};
 
 use crate::config::model::Config;
-use crate::core::controller::{api_url, authorization_headers};
+use crate::core::controller::api_url;
 use crate::core::health::parse_bind_error;
+use crate::core::pipe_http::PipeHttpClient;
 use crate::core::manager::{CoreManager, CoreStatus, READY_POLL_INTERVAL, READY_TIMEOUT};
 use crate::core::spawn;
 use crate::util::error::{Error, Result};
@@ -243,6 +244,14 @@ impl CoreManager {
                          auto-restart abandoned",
                         crashes_in_window, CRASH_WINDOW
                     );
+                    if let Err(error) = crate::util::notify::send_once(
+                        &app_handle,
+                        "core-circuit-open".to_string(),
+                        "Proxy core stopped",
+                        "The proxy core kept crashing and automatic restart was paused.",
+                    ) {
+                        warn!("Could not show core recovery notification: {}", error);
+                    }
                     break;
                 }
                 let backoff = AUTO_RESTART_BACKOFF * (1u32 << (crashes_in_window - 1).min(4));
@@ -446,7 +455,7 @@ pub(super) fn detect_bind_conflict_in(data_dir: &std::path::Path, offset: u64) -
 /// 只取必要的 Arc 字段。
 struct AutoRestartChecker {
     child: Arc<Mutex<Option<Child>>>,
-    api_client: reqwest::Client,
+    api_client: PipeHttpClient,
     config: Arc<RwLock<Config>>,
     controller_override: Arc<RwLock<Option<String>>>,
 }
@@ -464,9 +473,8 @@ impl AutoRestartChecker {
             format!("http://{}", addr)
         };
         let url = api_url(&base, &["version"], None)?;
-        let secret = self.config.read().proxy.secret.clone();
-        // 与 CoreManager::api_headers 同源：非法密钥字符显式报错，不静默省略
-        let headers = authorization_headers(&secret)?;
+        // 命名管道不校验 HTTP secret，请求头留空（与 ControllerClient 一致）。
+        let headers = reqwest::header::HeaderMap::new();
         let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
         loop {
             let exited = self

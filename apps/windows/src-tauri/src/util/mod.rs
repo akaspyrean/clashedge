@@ -10,6 +10,7 @@ pub mod geoip;
 pub mod logging;
 pub mod node_servers;
 pub mod normalizer;
+pub mod notify;
 pub mod paths;
 pub mod process;
 pub mod region;

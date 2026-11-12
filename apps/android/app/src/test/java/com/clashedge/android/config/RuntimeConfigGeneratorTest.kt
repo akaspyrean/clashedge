@@ -36,6 +36,8 @@ class RuntimeConfigGeneratorTest {
         assertTrue(config.contains("store-fake-ip: true"))
         assertTrue(config.contains("interval: 120"))
         assertTrue(config.contains("max-failed-times: 2"))
+        assertTrue(config.contains("keep-alive-interval: 30"))
+        assertTrue(config.contains("global-client-fingerprint: chrome"))
         assertFalse(config.contains("interval: 300"))
     }
 }

@@ -68,7 +68,7 @@ fn no_redirect_policy() -> Policy {
 /// 解析失败即拒绝）；校验返回的已验地址用 `resolve()` 钉定到客户端，
 /// 避免连接时重新解析。重定向到新主机名时逐跳做完整异步校验再钉定。
 pub async fn get_direct_first(app: &AppHandle, url: &str) -> Result<reqwest::Response> {
-    get_direct_first_impl(app, url, Some(TIMEOUT), None).await
+    get_direct_first_impl(app, url, Some(TIMEOUT), None, None).await
 }
 
 /// 大文件下载变体：`total_timeout=None` 时不设总超时（reqwest 的 `timeout()`
@@ -77,7 +77,7 @@ pub async fn get_direct_first(app: &AppHandle, url: &str) -> Result<reqwest::Res
 /// 调用方必须自行以「大小上限 + 整体 deadline」兜底，防止慢速/恶意源把
 /// 下载任务无限挂起。
 pub async fn get_direct_first_streaming(app: &AppHandle, url: &str) -> Result<reqwest::Response> {
-    get_direct_first_impl(app, url, None, None).await
+    get_direct_first_impl(app, url, None, None, None).await
 }
 
 /// 订阅拉取变体：允许单个订阅覆盖 User-Agent（审计 B7）。
@@ -88,7 +88,18 @@ pub async fn get_direct_first_with_ua(
     url: &str,
     custom_ua: Option<&str>,
 ) -> Result<reqwest::Response> {
-    get_direct_first_impl(app, url, Some(TIMEOUT), custom_ua).await
+    get_direct_first_impl(app, url, Some(TIMEOUT), custom_ua, None).await
+}
+
+/// Conditional subscription fetch variant. Validator headers are forwarded on the
+/// initial request; redirects remain subject to the same SSRF and routing checks.
+pub async fn get_direct_first_with_validators(
+    app: &AppHandle,
+    url: &str,
+    custom_ua: Option<&str>,
+    validators: &reqwest::header::HeaderMap,
+) -> Result<reqwest::Response> {
+    get_direct_first_impl(app, url, Some(TIMEOUT), custom_ua, Some(validators)).await
 }
 
 /// 整条请求链（含全部重定向跳）保持同一路由语义。
@@ -146,6 +157,7 @@ async fn get_direct_first_impl(
     url: &str,
     total_timeout: Option<Duration>,
     custom_ua: Option<&str>,
+    validators: Option<&reqwest::header::HeaderMap>,
 ) -> Result<reqwest::Response> {
     let fake = fake_ip_range(app);
     // SSRF 防护：目标 URL 必须通过校验（含 DNS 白名单检查，返回已验地址）。
@@ -173,6 +185,7 @@ async fn get_direct_first_impl(
             total_timeout,
             fake.as_ref(),
             custom_ua,
+            validators,
         )
         .await;
     }
@@ -202,6 +215,7 @@ async fn get_direct_first_impl(
         total_timeout,
         fake.as_ref(),
         custom_ua,
+        validators,
     )
     .await
 }
@@ -212,6 +226,7 @@ fn to_remote_dns(proxy_url: &str) -> String {
     proxy_url.replacen("socks5://", "socks5h://", 1)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_direct_then_proxy(
     direct: &reqwest::Client,
     proxied: &reqwest::Client,
@@ -220,6 +235,7 @@ async fn send_direct_then_proxy(
     total_timeout: Option<Duration>,
     fake: Option<&ipnet::IpNet>,
     custom_ua: Option<&str>,
+    validators: Option<&reqwest::header::HeaderMap>,
 ) -> Result<reqwest::Response> {
     match send_and_follow(
         direct,
@@ -229,10 +245,11 @@ async fn send_direct_then_proxy(
         total_timeout,
         fake,
         custom_ua,
+        validators,
     )
     .await
     {
-        Ok(resp) if resp.status().is_success() => return Ok(resp),
+        Ok(resp) if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_MODIFIED => return Ok(resp),
         Ok(resp) => {
             warn!(
                 "Direct fetch got non-success status {} for {}; retrying via proxy",
@@ -266,6 +283,7 @@ async fn send_direct_then_proxy(
         total_timeout,
         fake,
         custom_ua,
+        validators,
     )
     .await
 }
@@ -315,6 +333,7 @@ fn build_client_with_resolved(
 ///    （`None` 总超时的 streaming 模式除外）；
 /// 3. 发送动作用 `tokio::time::timeout(remaining, …)` 双保险包裹——
 ///    即使 client 总超时在 DNS/连接阶段划分不精确，也不会超过总 deadline。
+#[allow(clippy::too_many_arguments)]
 async fn send_and_follow(
     client: &reqwest::Client,
     start_url: &str,
@@ -323,6 +342,7 @@ async fn send_and_follow(
     total_timeout: Option<Duration>,
     fake: Option<&ipnet::IpNet>,
     custom_ua: Option<&str>,
+    validators: Option<&reqwest::header::HeaderMap>,
 ) -> Result<reqwest::Response> {
     let deadline = total_timeout.map(|t| Instant::now() + t);
     let mut current_url = start_url.to_string();
@@ -375,13 +395,20 @@ async fn send_and_follow(
             .build()?
         };
 
-        let send_fut = req_client
+        let mut request = req_client
             .get(&req_url)
             .header(
                 USER_AGENT,
                 custom_ua.map_or_else(user_agent, str::to_string),
-            )
-            .send();
+            );
+        // Validators may contain credentials for a subscription URL. Never forward
+        // them across a redirect to another origin.
+        if _hop == 0 {
+            if let Some(headers) = validators {
+                request = request.headers(headers.clone());
+            }
+        }
+        let send_fut = request.send();
         // 双保险：每跳发送都受剩余时间硬约束（覆盖 DNS/连接阶段与 client
         // 总超时划分不精确的窗口）
         let resp = if let Some(r) = remaining {
@@ -549,6 +576,7 @@ mod tests {
             Some(Duration::from_secs(5)),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -691,6 +719,7 @@ mod tests {
             Some(Duration::from_secs(1)),
             None,
             None,
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -716,7 +745,7 @@ mod tests {
         // 1.5s 内保持挂起（不会"提前失败"也不会"成功返回"）。
         let pending = tokio::time::timeout(
             Duration::from_millis(1500),
-            send_and_follow(&client, url, FetchRoute::Direct, "", None, None, None),
+            send_and_follow(&client, url, FetchRoute::Direct, "", None, None, None, None),
         )
         .await;
         assert!(
@@ -733,6 +762,7 @@ mod tests {
             FetchRoute::Direct,
             "",
             Some(Duration::from_millis(50)),
+            None,
             None,
             None,
         )
@@ -781,6 +811,7 @@ mod tests {
                 FetchRoute::LocalProxy,
                 &proxy_url,
                 Some(Duration::from_secs(45)),
+                None,
                 None,
                 None,
             )
