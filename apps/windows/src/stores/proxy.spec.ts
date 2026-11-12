@@ -1,32 +1,49 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
-const testLatency = vi.fn();
+const testNodeHealth = vi.fn();
 const triggerAutoRecovery = vi.fn();
 
 vi.mock("@/api/proxy", () => ({
   proxyApi: {
-    testLatency: (...args: unknown[]) => testLatency(...args),
+    testNodeHealth: (...args: unknown[]) => testNodeHealth(...args),
     triggerAutoRecovery: (...args: unknown[]) => triggerAutoRecovery(...args),
     getGroups: vi.fn(async () => []),
+    getNodeHealth: vi.fn(async () => []),
     select: vi.fn(async () => undefined),
   },
 }));
 
 import { useProxyStore } from "./proxy";
+import type { NodeHealthSummary } from "@/api/proxy";
+
+/** 构造健康摘要：延迟 ≤ 0 视为探测失败（不可用）。 */
+function healthSummary(node: string, delay: number): NodeHealthSummary {
+  const available = delay > 0;
+  return {
+    node,
+    score: available ? 90 : 0,
+    availability: available ? 1 : 0,
+    median_latency_ms: available ? delay : null,
+    sessions: 1,
+    last_available: available,
+    last_latency_ms: available ? delay : null,
+    last_tested_at_ms: 0,
+  };
+}
 
 /** 让每个节点返回指定延迟（0 = 超时）。 */
 function mockDelays(delays: number[]) {
-  testLatency.mockImplementation(async (name: string) => {
+  testNodeHealth.mockImplementation(async (name: string) => {
     const i = Number(name.replace(/\D/g, "")) || 0;
-    return [{ group: name, delay: delays[i] ?? 0 }];
+    return healthSummary(name, delays[i] ?? 0);
   });
 }
 
 describe("proxy store auto-recovery", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    testLatency.mockReset();
+    testNodeHealth.mockReset();
     triggerAutoRecovery.mockReset();
     triggerAutoRecovery.mockResolvedValue({
       triggered: true,
@@ -66,12 +83,12 @@ describe("proxy store auto-recovery", () => {
   });
 
   it("ignores results from a previous profile after invalidation", async () => {
-    let finish!: (value: Array<{ group: string; delay: number }>) => void;
-    testLatency.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    let finish!: (value: NodeHealthSummary) => void;
+    testNodeHealth.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     const store = useProxyStore();
     const pending = store.testNode("node1");
     store.invalidateLatencies();
-    finish([{ group: "node1", delay: 30 }]);
+    finish(healthSummary("node1", 30));
     await pending;
     expect(store.nodeDelays.node1).toBeUndefined();
   });
@@ -81,8 +98,9 @@ describe("proxy store auto-recovery", () => {
     mockDelays([0, 0]);
     const store = useProxyStore();
     await expect(store.testNodes(["node0", "node1"])).resolves.toBeUndefined();
-    expect(store.nodeDelays.node0).toBe(0);
-    expect(store.nodeDelays.node1).toBe(0);
+    // 探测失败记为 null（失败），不是有效延迟
+    expect(store.nodeDelays.node0).toBeNull();
+    expect(store.nodeDelays.node1).toBeNull();
     expect(store.testingNodes).toBe(false);
   });
 });

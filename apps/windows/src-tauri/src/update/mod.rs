@@ -31,6 +31,8 @@
 //!   只使用 `check_update` 刚验证过并缓存的后端 manifest；
 //! - 本模块只做「检查 / 验签 / 下载 / 暂存」，绝不在运行中自我替换。
 
+pub mod core;
+
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

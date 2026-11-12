@@ -89,6 +89,7 @@ dashboard:
   proxy_mode: "代理模式"
 
 tray:
+  backup_active: "备用中"
   control_panel: "控制面板"
   system_proxy: "系统代理"
   tun_mode: "TUN 模式"
@@ -239,6 +240,13 @@ advanced:
   unified_delay: "统一延迟计量"
   unified_delay_hint: "mihomo unified-delay：url-test 延迟去掉握手差异，不同协议间横向可比"
 
+profile_failover:
+  title: "故障切换备用订阅"
+  hint: "可选：节点池失活后巡检切到此订阅；恢复时会临时探测主订阅。留空则不切换。"
+  none: "不启用"
+  active: "当前使用备用订阅“{backup}”；巡检正在探测主订阅。"
+  saved: "备用订阅已保存"
+
 profiles:
   title: "订阅"
   delete_title: "删除订阅「{name}」？"
@@ -292,7 +300,9 @@ proxies:
   node_count: "{n} 个节点"
   current_node: "当前：{name}"
   sort_latency: "按延迟排序"
+  sort_health: "按健康评分排序"
   sort_name: "按名称排序"
+  health_summary: "健康评分 {score}/100 · 可用率 {availability}% · 最近 {sessions} 轮"
   auto_readonly: "由测速自动选择"
   no_match: "没有匹配的节点"
   group: "组"
@@ -406,6 +416,13 @@ about:
   restart_apply: "重启并安装"
   restart_apply_confirm: "应用将退出并由启动器安装新版本（系统代理会先恢复，数据不受影响）。继续？"
   staged_ready: "版本 {version} 已下载并通过校验"
+  core_update_title: "Mihomo 内核更新"
+  core_update_hint: "独立于应用版本检查；下载并校验后，重新打开 ClashEdge 以使用新内核。"
+  core_update_available: "发现 Mihomo {version}"
+  core_up_to_date: "当前内核已是最新版本"
+  core_update_staged: "内核 {version} 已下载并校验"
+  core_update_restart_hint: "退出并重新打开应用后生效"
+  core_update_failed: "内核更新失败：{error}"
   update_notice_title: "发现新版本"
   update_notice_body: "版本 {version} 可用，前往「设置 → 关于」更新。"
 

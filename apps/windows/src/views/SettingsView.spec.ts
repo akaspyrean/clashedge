@@ -20,7 +20,7 @@ import { createI18n } from "vue-i18n";
 
 // SettingsView 在 setup 中调用 useI18n()，必须安装插件；空消息表下 t 返回 key，
 // 与断言（按 key 匹配）一致。
-const testI18n = createI18n({ legacy: false, locale: "zh-CN", messages: { "zh-CN": {} } });
+const testI18n = createI18n({ legacy: false, locale: "zh-CN", messages: { "zh-CN": {} }, missingWarn: false, fallbackWarn: false });
 
 /** 后端返回一份最小可用配置。 */
 function mockBackend() {

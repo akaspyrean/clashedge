@@ -89,6 +89,7 @@ dashboard:
   proxy_mode: "Proxy Mode"
 
 tray:
+  backup_active: "Backup"
   control_panel: "Control Panel"
   system_proxy: "System Proxy"
   tun_mode: "TUN Mode"
@@ -239,6 +240,13 @@ advanced:
   unified_delay: "Unified Delay"
   unified_delay_hint: "mihomo unified-delay: url-test latency excludes handshake differences, making protocols comparable across the board"
 
+profile_failover:
+  title: "Backup subscription for failover"
+  hint: "Optional: patrol switches here when the node pool is unavailable and probes the primary subscription during recovery. Leave empty to disable failover."
+  none: "Disabled"
+  active: "Using backup subscription “{backup}”; patrol is probing the primary."
+  saved: "Backup subscription saved"
+
 profiles:
   title: "Subscriptions"
   delete_title: "Delete subscription \"{name}\"?"
@@ -292,7 +300,9 @@ proxies:
   node_count: "{n} nodes"
   current_node: "Current: {name}"
   sort_latency: "Sort by latency"
+  sort_health: "Sort by health score"
   sort_name: "Sort by name"
+  health_summary: "Health {score}/100 · {availability}% available · last {sessions} probes"
   auto_readonly: "Chosen automatically by latency test"
   no_match: "No matching nodes"
   group: "Group"
@@ -406,6 +416,13 @@ about:
   restart_apply: "Restart and install"
   restart_apply_confirm: "ClashEdge will exit and the launcher will install the new version (the system proxy is restored first; your data is untouched). Continue?"
   staged_ready: "Version {version} is downloaded and verified"
+  core_update_title: "Mihomo Core Update"
+  core_update_hint: "Checks a channel independent from app releases; reopen ClashEdge after download and verification to use the new core."
+  core_update_available: "Mihomo {version} is available"
+  core_up_to_date: "The current core is up to date"
+  core_update_staged: "Mihomo {version} is downloaded and verified"
+  core_update_restart_hint: "Takes effect after closing and reopening the app"
+  core_update_failed: "Core update failed: {error}"
   update_notice_title: "Update available"
   update_notice_body: "Version {version} is available. Open Settings → About to update."
 

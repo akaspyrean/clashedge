@@ -4,9 +4,11 @@
 pub mod config;
 pub mod connections;
 pub mod core;
+pub mod core_update;
 pub mod geodata;
 pub mod logs;
 pub mod profiles;
+pub mod profile_failover;
 pub mod proxy;
 pub mod rules;
 pub mod tray;

@@ -368,6 +368,8 @@ pub struct Spawned {
 
 /// 启动 mihomo：`-d <data_dir> -f <runtime_config>`，stdout/stderr 追加到日志文件。
 pub fn spawn_mihomo(mihomo_path: &Path, data_dir: &Path, runtime_config: &Path) -> Result<Spawned> {
+    // Central guard covers both initial start and supervisor-driven restarts.
+    crate::core::integrity::verify_core_binary(mihomo_path, data_dir)?;
     let logs_dir = data_dir.join("logs");
     let _ = std::fs::create_dir_all(&logs_dir);
     let (stdout_file, stdout_offset) =

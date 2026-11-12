@@ -38,6 +38,22 @@ function mockBackend(mode = "rule") {
     if (cmd === "get_config") return Promise.resolve({ mode, "system-proxy": false });
     if (cmd === "get_status") return Promise.resolve({ running: true, status: "running", version: null });
     if (cmd === "get_proxy_groups") return Promise.resolve(groups);
+    if (cmd === "get_node_health") return Promise.resolve([]);
+    if (cmd === "test_node_health") {
+      const n = String(args?.node ?? "");
+      const delay = NODE_DELAYS[n] ?? null;
+      const available = typeof delay === "number" && delay > 0;
+      return Promise.resolve({
+        node: n,
+        score: available ? 90 : 0,
+        availability: available ? 1 : 0,
+        median_latency_ms: available ? delay : null,
+        sessions: 1,
+        last_available: available,
+        last_latency_ms: available ? delay : null,
+        last_tested_at_ms: 0,
+      });
+    }
     if (cmd === "test_proxy_latency") {
       const g = String(args?.group ?? "");
       return Promise.resolve([{ group: g, delay: g in NODE_DELAYS ? NODE_DELAYS[g] : null }]);

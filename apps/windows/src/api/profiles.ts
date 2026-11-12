@@ -5,6 +5,17 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+export interface ActiveFailover {
+  primary_profile: string;
+  backup_profile: string;
+  started_at_ms: number;
+}
+
+export interface ProfileFailoverStatus {
+  backup_profile: string | null;
+  active: ActiveFailover | null;
+}
+
 export interface ProfileInfo {
   name: string;
   path: string;
@@ -38,5 +49,8 @@ export const profilesApi = {
     invoke<void>("update_profile_subscription", { name }),
   setUserAgent: (name: string, userAgent?: string | null) =>
     invoke<void>("set_profile_user_agent", { name, userAgent }),
+  getFailover: () => invoke<ProfileFailoverStatus>("get_profile_failover"),
+  setBackupProfile: (backupProfile: string | null) =>
+    invoke<ProfileFailoverStatus>("set_backup_profile", { backupProfile }),
   export: (name: string) => invoke<string>("export_profile", { name }),
 };

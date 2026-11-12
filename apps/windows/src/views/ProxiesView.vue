@@ -94,11 +94,19 @@ const availableRegions = computed(() => {
     }));
 });
 
-// ---- 排序：延迟（默认，已测升序在前）/ 名称 ----
-const sortMode = ref<"delay" | "name">("delay");
-const sortTitle = computed(() => t(sortMode.value === "delay" ? "proxies.sort_latency" : "proxies.sort_name"));
+// ---- 排序：延迟（默认）/ 健康评分 / 名称 ----
+const sortMode = ref<"delay" | "health" | "name">("delay");
+const sortTitle = computed(() =>
+  t(
+    sortMode.value === "delay"
+      ? "proxies.sort_latency"
+      : sortMode.value === "health"
+        ? "proxies.sort_health"
+        : "proxies.sort_name",
+  ),
+);
 function toggleSort() {
-  sortMode.value = sortMode.value === "delay" ? "name" : "delay";
+  sortMode.value = sortMode.value === "delay" ? "health" : sortMode.value === "health" ? "name" : "delay";
 }
 
 const tiles = computed(() => {
@@ -116,6 +124,7 @@ const tiles = computed(() => {
     })
     .map((name) => {
       const d = delayFor(name);
+      const health = proxyStore.nodeHealth[name];
       return {
         name,
         ms: d ?? null,
@@ -123,10 +132,22 @@ const tiles = computed(() => {
         testing: testingNodes.value.has(name),
         selected: g.now === name,
         region: regions[name],
+        healthScore: health?.score,
+        healthTitle: health
+          ? t("proxies.health_summary", {
+              score: Math.round(health.score),
+              availability: Math.round(health.availability * 100),
+              sessions: health.sessions,
+            })
+          : undefined,
       };
     })
     .sort((a, b) => {
       if (sortMode.value === "name") return a.name.localeCompare(b.name);
+      if (sortMode.value === "health") {
+        const scoreDiff = (b.healthScore ?? -1) - (a.healthScore ?? -1);
+        if (scoreDiff !== 0) return scoreDiff;
+      }
       const ka = a.ms !== null && a.ms > 0 ? a.ms : Infinity;
       const kb = b.ms !== null && b.ms > 0 ? b.ms : Infinity;
       return ka - kb;
@@ -340,6 +361,8 @@ watch(
             :selected="n.selected"
             :readonly="readonlyGroup"
             :region="n.region"
+            :health-score="n.healthScore"
+            :health-title="n.healthTitle"
             @select="onSelectNode(n.name)"
             @retest="onRetest(n.name)"
           />

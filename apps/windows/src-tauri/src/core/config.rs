@@ -257,7 +257,7 @@ pub fn build_runtime_config(
     // DNS 运行时处理：
     // 当 TUN 开启时，mihomo 要求 DNS 处于启用状态以支撑虚拟网卡流量的域名解析；
     // 同时强力保全 Windows NCSI 探测域名（msftconnecttest.com / msftncsi.com）在 fake-ip-filter 中，
-    // 防止 Windows Wi-Fi 状态栏误报「无 Internet 连接」。
+    // 防止连通性误报，并让 WebRTC STUN 获得真实地址。
     let mut dns_val = serde_norway::to_value(&app.dns)?;
     if app.tun.enable {
         if let Some(dns_map) = dns_val.as_mapping_mut() {
@@ -275,14 +275,15 @@ pub fn build_runtime_config(
                         .collect()
                 })
                 .unwrap_or_default();
-            for ncsi in [
+            for domain in [
                 "+.msftconnecttest.com",
                 "+.msftncsi.com",
                 "msftconnecttest.com",
                 "msftncsi.com",
+                "stun.*",
             ] {
-                if !filter_list.iter().any(|item| item == ncsi) {
-                    filter_list.push(ncsi.to_string());
+                if !filter_list.iter().any(|item| item == domain) {
+                    filter_list.push(domain.to_string());
                 }
             }
             dns_map.insert(filter_key, serde_norway::to_value(&filter_list)?);

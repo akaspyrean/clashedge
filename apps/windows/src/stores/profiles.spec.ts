@@ -68,8 +68,9 @@ describe("profiles store state machine", () => {
     await store.rename("机场A", "机场C");
     expect(invokeMock).toHaveBeenCalledWith("rename_profile", { oldName: "机场A", newName: "机场C" });
 
-    // 每个命令后都重新拉列表：3 命令 × (命令 + list) = 6 次 invoke
-    expect(invokeMock).toHaveBeenCalledTimes(6);
+    // 每个命令后都重新拉列表；删除/重命名还会刷新故障转移状态：
+    // create(2) + remove(3) + rename(3) = 8 次 invoke
+    expect(invokeMock).toHaveBeenCalledTimes(8);
   });
 
   it("activate 只本地标记 active，不重新拉列表", async () => {

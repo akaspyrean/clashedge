@@ -18,6 +18,9 @@ const props = defineProps<{
   selected?: boolean;
   /** 节点地区（由后端按节点名推断；识别不到则为 undefined，不显示） */
   region?: string;
+  /** 最近滚动健康评分（0..100）；未知时不显示 */
+  healthScore?: number;
+  healthTitle?: string;
   /** 节点不可用（延迟失败等）：文字弱化为 disabled 色，仍可点选 */
   unavailable?: boolean;
   /** 只读：自动测速组由内核自动选择 */
@@ -55,6 +58,14 @@ function onSelect() {
     <!-- 地区与延迟同行：地区在延迟标签左侧 -->
     <div class="ce-tile__meta">
       <span v-if="displayRegion" class="ce-tile__badge ce-tile__region" :title="region" aria-hidden="true">{{ displayRegion }}</span>
+      <span
+        v-if="healthScore !== undefined"
+        class="ce-tile__badge ce-tile__health"
+        :title="healthTitle"
+        :aria-label="healthTitle"
+      >
+        {{ Math.round(healthScore) }}
+      </span>
       <CeLatencyTag
         class="ce-tile__lat"
         clickable
@@ -210,6 +221,11 @@ function onSelect() {
 
 .ce-tile__region {
   flex-shrink: 0;
+}
+
+.ce-tile__health {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 延迟标签作为 meta 行的右侧项参与布局（无地区时也能贴右）。 */

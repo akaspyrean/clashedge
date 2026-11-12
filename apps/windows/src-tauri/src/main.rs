@@ -171,6 +171,7 @@ pub struct AppState {
     /// 应用事务控制器：私有持有配置/运行态事务串行锁，串行所有改
     /// Config + Mihomo + Windows 的入口。见上文结构注释。
     pub controller: crate::core::app_controller::AppController,
+    pub profile_failover: std::sync::OnceLock<crate::core::profile_failover::ProfileFailoverManager>,
     pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
     /// 日志流任务句柄（前端日志页启用/停止；std Mutex，abort 为同步调用）
     pub log_stream: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -196,6 +197,7 @@ impl AppState {
             core_manager: std::sync::OnceLock::new(),
             config_manager: std::sync::Mutex::new(ConfigManager::new()),
             controller: crate::core::app_controller::AppController::new(),
+            profile_failover: std::sync::OnceLock::new(),
             tray: std::sync::Mutex::new(None),
             log_stream: std::sync::Mutex::new(None),
             core_pid_cache: std::sync::atomic::AtomicU32::new(0),
@@ -232,6 +234,10 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let data_dir = get_app_data_dir(&app_handle)?;
             info!("Data directory: {:?}", data_dir);
+            app.state::<AppState>()
+                .profile_failover
+                .set(crate::core::profile_failover::ProfileFailoverManager::load(&data_dir))
+                .ok();
 
             // 便携包复制/移动/改名后，修复开机自启注册表里可能指向旧位置的路径
             if let Err(e) = crate::util::autostart::repair_autostart() {
@@ -554,6 +560,8 @@ pub fn run() {
             crate::commands::proxy::relaunch_for_tun,
             crate::commands::proxy::set_proxy_mode,
             crate::commands::proxy::test_proxy_latency,
+            crate::commands::proxy::test_node_health,
+            crate::commands::proxy::get_node_health,
             crate::commands::proxy::get_proxy_groups,
             crate::commands::proxy::select_proxy_group,
             // Rules commands
@@ -579,6 +587,8 @@ pub fn run() {
             crate::commands::profiles::update_profile_subscription,
             crate::commands::profiles::set_profile_user_agent,
             crate::commands::profiles::export_profile,
+            crate::commands::profile_failover::get_profile_failover,
+            crate::commands::profile_failover::set_backup_profile,
             // Tray commands
             crate::commands::tray::get_tray_menu_state,
             crate::commands::tray::update_tray_menu,
@@ -599,6 +609,11 @@ pub fn run() {
             crate::commands::update::get_staged_update,
             crate::commands::update::discard_staged_update,
             crate::commands::update::restart_and_apply_update,
+            // Independent signed Mihomo core update channel
+            crate::commands::core_update::core_update_chain_ready,
+            crate::commands::core_update::check_core_update,
+            crate::commands::core_update::download_core_update,
+            crate::commands::core_update::get_staged_core_update,
             // Auto-update status (shown on the dashboard)
             crate::commands::update_status::get_auto_update_status,
             crate::commands::update_status::trigger_auto_recovery,

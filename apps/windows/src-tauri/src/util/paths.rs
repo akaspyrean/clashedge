@@ -156,6 +156,30 @@ pub fn get_sidecar_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
 ///
 /// 依次尝试候选路径，命中即返回；全部缺失才报错（不再回退 %APPDATA%）。
 pub fn get_mihomo_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
+    let data_dir = get_app_data_dir(app_handle)?;
+    let mut integrity_errors = Vec::new();
+
+    // 独立更新的内核按版本保存在用户可写目录，优先选择高于随包版本的
+    // 最新可信版本；若校验失败，忽略它并继续寻找锁定哈希匹配的随包内核。
+    let bundled_version = crate::core::integrity::bundled_core_version()?;
+    for updated in crate::core::integrity::updated_core_candidates(&data_dir) {
+        let version = updated
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if !crate::core::integrity::is_newer_version(version, &bundled_version) {
+            continue;
+        }
+        match crate::core::integrity::verify_core_binary(&updated, &data_dir) {
+            Ok(()) => return Ok(updated),
+            Err(e) => {
+                tracing::warn!("Ignoring untrusted updated Mihomo binary: {}", e);
+                integrity_errors.push(e.to_string());
+            }
+        }
+    }
+
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     // 候选 1/2：参考包布局——exe 旁 sidecar/ 目录，两种内核名都认。
@@ -182,11 +206,24 @@ pub fn get_mihomo_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
     }
 
     for path in candidates {
-        if path.exists() {
-            return Ok(path);
+        if !path.is_file() {
+            continue;
+        }
+        match crate::core::integrity::verify_core_binary(&path, &data_dir) {
+            Ok(()) => return Ok(path),
+            Err(e) => {
+                tracing::warn!("Ignoring Mihomo binary with failed integrity check: {}", e);
+                integrity_errors.push(e.to_string());
+            }
         }
     }
 
+    if !integrity_errors.is_empty() {
+        return Err(Error::Other(format!(
+            "No trusted Mihomo binary is available: {}",
+            integrity_errors.join("; ")
+        )));
+    }
     Err(mihomo_missing_error(app_handle))
 }
 
