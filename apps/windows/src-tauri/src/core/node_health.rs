@@ -119,7 +119,10 @@ impl NodeHealthHistory {
                 .map(|(name, sessions)| {
                     (
                         name.clone(),
-                        sessions.back().map(|session| session.tested_at_ms).unwrap_or(0),
+                        sessions
+                            .back()
+                            .map(|session| session.tested_at_ms)
+                            .unwrap_or(0),
                     )
                 })
                 .collect();
@@ -142,10 +145,15 @@ impl NodeHealthHistory {
         points: Vec<NodeProbePoint>,
     ) -> Result<NodeHealthSummary> {
         if node.trim().is_empty() || node.len() > MAX_NODE_NAME_BYTES {
-            return Err(Error::Other("invalid node name for health history".to_string()));
+            return Err(Error::Other(
+                "invalid node name for health history".to_string(),
+            ));
         }
         let history_key = history_key(profile, node);
-        let mut file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut file = self
+            .file
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let sessions = file.nodes.entry(history_key.clone()).or_default();
         sessions.push_back(ProbeSession {
             tested_at_ms: now_ms(),
@@ -162,7 +170,10 @@ impl NodeHealthHistory {
                 .iter()
                 .filter(|(name, _)| name.as_str() != history_key.as_str())
                 .min_by_key(|(_, history)| {
-                    history.back().map(|session| session.tested_at_ms).unwrap_or(0)
+                    history
+                        .back()
+                        .map(|session| session.tested_at_ms)
+                        .unwrap_or(0)
                 })
                 .map(|(name, _)| name.clone());
             if let Some(oldest) = oldest {
@@ -179,7 +190,10 @@ impl NodeHealthHistory {
     }
 
     pub fn summaries(&self, profile: &str, names: Option<&[String]>) -> Vec<NodeHealthSummary> {
-        let file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let file = self
+            .file
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let prefix = history_prefix(profile);
         let mut summaries: Vec<_> = file
             .nodes
@@ -206,7 +220,10 @@ fn history_key(profile: &str, node: &str) -> String {
 }
 
 fn summarize(node: &str, sessions: &VecDeque<ProbeSession>) -> NodeHealthSummary {
-    let successful_sessions = sessions.iter().filter(|session| session.available()).count();
+    let successful_sessions = sessions
+        .iter()
+        .filter(|session| session.available())
+        .count();
     let availability = if sessions.is_empty() {
         0.0
     } else {

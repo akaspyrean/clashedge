@@ -68,7 +68,8 @@ pub fn chain_ready() -> bool {
 pub async fn check_for_core_update(app: &tauri::AppHandle) -> Result<CoreUpdateStatus> {
     if !chain_ready() {
         return Err(Error::Other(
-            "Mihomo core updates are unavailable: the signing public key is not embedded".to_string(),
+            "Mihomo core updates are unavailable: the signing public key is not embedded"
+                .to_string(),
         ));
     }
     let current = current_core_version(app).await?;
@@ -91,7 +92,8 @@ pub async fn check_for_core_update(app: &tauri::AppHandle) -> Result<CoreUpdateS
 pub async fn download_core_update(app: &tauri::AppHandle) -> Result<StagedCoreUpdate> {
     if !chain_ready() {
         return Err(Error::Other(
-            "Mihomo core updates are unavailable: the signing public key is not embedded".to_string(),
+            "Mihomo core updates are unavailable: the signing public key is not embedded"
+                .to_string(),
         ));
     }
 
@@ -119,24 +121,27 @@ pub async fn download_core_update(app: &tauri::AppHandle) -> Result<StagedCoreUp
         });
     }
 
-    crate::util::atomic::atomic_write(
-        &core_dir.join(CORE_MANIFEST_NAME),
-        &verified.raw,
-    )?;
+    crate::util::atomic::atomic_write(&core_dir.join(CORE_MANIFEST_NAME), &verified.raw)?;
     crate::util::atomic::atomic_write(
         &core_dir.join(format!("{}.minisig", CORE_MANIFEST_NAME)),
         verified.signature.as_bytes(),
     )?;
 
-    let response = crate::util::fetch::get_direct_first_streaming(app, &verified.manifest.url).await?;
+    let response =
+        crate::util::fetch::get_direct_first_streaming(app, &verified.manifest.url).await?;
     if !response.status().is_success() {
         return Err(Error::Other(format!(
             "Mihomo core download failed: HTTP {}",
             response.status()
         )));
     }
-    if response.content_length().is_some_and(|size| size > MAX_CORE_BYTES) {
-        return Err(Error::Other("Mihomo core download exceeds the size limit".to_string()));
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_CORE_BYTES)
+    {
+        return Err(Error::Other(
+            "Mihomo core download exceeds the size limit".to_string(),
+        ));
     }
 
     let mut response = response;
@@ -148,7 +153,9 @@ pub async fn download_core_update(app: &tauri::AppHandle) -> Result<StagedCoreUp
         while let Some(chunk) = response.chunk().await? {
             total = total.saturating_add(chunk.len() as u64);
             if total > MAX_CORE_BYTES {
-                return Err(Error::Other("Mihomo core download exceeds the size limit".to_string()));
+                return Err(Error::Other(
+                    "Mihomo core download exceeds the size limit".to_string(),
+                ));
             }
             digest.update(&chunk);
             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
@@ -189,7 +196,9 @@ pub async fn download_core_update(app: &tauri::AppHandle) -> Result<StagedCoreUp
         .map_err(|_| Error::Other("Mihomo core version check timed out".to_string()))??;
     if !output.status.success() {
         let _ = std::fs::remove_file(&partial_path);
-        return Err(Error::Other("Mihomo core failed its version check".to_string()));
+        return Err(Error::Other(
+            "Mihomo core failed its version check".to_string(),
+        ));
     }
     let version_output = format!(
         "{}\n{}",
@@ -208,7 +217,10 @@ pub async fn download_core_update(app: &tauri::AppHandle) -> Result<StagedCoreUp
 
     std::fs::rename(&partial_path, &binary_path)?;
     crate::core::integrity::verify_core_binary(&binary_path, &data_dir)?;
-    info!("Verified Mihomo core {} staged for the next app restart", version);
+    info!(
+        "Verified Mihomo core {} staged for the next app restart",
+        version
+    );
     Ok(StagedCoreUpdate {
         version: version.to_string(),
         sha256: downloaded_hash,
@@ -251,9 +263,8 @@ async fn current_core_version(app: &tauri::AppHandle) -> Result<String> {
         .get()
         .ok_or_else(|| Error::InvalidState("Core not initialized".to_string()))?;
     let output = core.version().await?;
-    extract_version(&output).ok_or_else(|| {
-        Error::Other(format!("unable to parse Mihomo version from {:?}", output))
-    })
+    extract_version(&output)
+        .ok_or_else(|| Error::Other(format!("unable to parse Mihomo version from {:?}", output)))
 }
 
 async fn fetch_latest_core_manifest(app: &tauri::AppHandle) -> Result<VerifiedCoreManifest> {
@@ -280,7 +291,10 @@ async fn fetch_latest_core_manifest(app: &tauri::AppHandle) -> Result<VerifiedCo
     for (name, url) in [
         (CORE_ASSET_NAME, expected_asset_url.as_str()),
         (CORE_MANIFEST_NAME, expected_manifest_url.as_str()),
-        (expected_signature_name.as_str(), expected_signature_url.as_str()),
+        (
+            expected_signature_name.as_str(),
+            expected_signature_url.as_str(),
+        ),
     ] {
         if !release
             .assets
@@ -331,12 +345,19 @@ async fn fetch_small(app: &tauri::AppHandle, url: &str, limit: usize) -> Result<
             response.status()
         )));
     }
-    if response.content_length().is_some_and(|size| size > limit as u64) {
-        return Err(Error::Other("Mihomo update metadata exceeds size limits".to_string()));
+    if response
+        .content_length()
+        .is_some_and(|size| size > limit as u64)
+    {
+        return Err(Error::Other(
+            "Mihomo update metadata exceeds size limits".to_string(),
+        ));
     }
     let body = response.bytes().await?;
     if body.len() > limit {
-        return Err(Error::Other("Mihomo update metadata exceeds size limits".to_string()));
+        return Err(Error::Other(
+            "Mihomo update metadata exceeds size limits".to_string(),
+        ));
     }
     Ok(body.to_vec())
 }

@@ -171,7 +171,8 @@ pub struct AppState {
     /// 应用事务控制器：私有持有配置/运行态事务串行锁，串行所有改
     /// Config + Mihomo + Windows 的入口。见上文结构注释。
     pub controller: crate::core::app_controller::AppController,
-    pub profile_failover: std::sync::OnceLock<crate::core::profile_failover::ProfileFailoverManager>,
+    pub profile_failover:
+        std::sync::OnceLock<crate::core::profile_failover::ProfileFailoverManager>,
     pub tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
     /// 日志流任务句柄（前端日志页启用/停止；std Mutex，abort 为同步调用）
     pub log_stream: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,

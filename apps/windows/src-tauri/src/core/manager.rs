@@ -458,18 +458,12 @@ impl CoreManager {
 
         let profile = self.config.read().general.profile.clone();
         let (first, second, third) = tokio::join!(
-            self.controller.test_proxy_latency(
-                node.clone(),
-                Some(PROBE_ENDPOINTS[0].to_string()),
-            ),
-            self.controller.test_proxy_latency(
-                node.clone(),
-                Some(PROBE_ENDPOINTS[1].to_string()),
-            ),
-            self.controller.test_proxy_latency(
-                node.clone(),
-                Some(PROBE_ENDPOINTS[2].to_string()),
-            ),
+            self.controller
+                .test_proxy_latency(node.clone(), Some(PROBE_ENDPOINTS[0].to_string()),),
+            self.controller
+                .test_proxy_latency(node.clone(), Some(PROBE_ENDPOINTS[1].to_string()),),
+            self.controller
+                .test_proxy_latency(node.clone(), Some(PROBE_ENDPOINTS[2].to_string()),),
         );
         let probe_delay = |result: Result<Vec<serde_json::Value>>| {
             result

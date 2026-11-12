@@ -64,7 +64,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn status(&self) -> ProfileFailoverStatus {
-        let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         ProfileFailoverStatus {
             backup_profile: state.backup_profile.clone(),
             active: state.active.clone(),
@@ -88,7 +91,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn set_backup_profile(&self, profile: Option<String>) -> Result<ProfileFailoverStatus> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.active.is_some() {
             return Err(Error::InvalidState(
                 "cannot change the backup profile while failover is active".to_string(),
@@ -110,7 +116,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn begin(&self, primary_profile: &str, backup_profile: &str) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.active.is_some()
             || state.pending_manual_profile.is_some()
             || state.backup_profile.as_deref() != Some(backup_profile)
@@ -135,7 +144,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn clear_active(&self) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.active = None;
         state.probe_in_progress = false;
         self.persist(&state)
@@ -149,9 +161,14 @@ impl ProfileFailoverManager {
     }
 
     pub fn set_probe_in_progress(&self, in_progress: bool) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.active.is_none() {
-            return Err(Error::InvalidState("no active profile failover to probe".to_string()));
+            return Err(Error::InvalidState(
+                "no active profile failover to probe".to_string(),
+            ));
         }
         let previous = state.probe_in_progress;
         state.probe_in_progress = in_progress;
@@ -165,7 +182,10 @@ impl ProfileFailoverManager {
     /// Persist manual intent before an activation that would supersede failover.
     /// If this write fails, the profile activation must not proceed.
     pub fn begin_manual_profile_activation(&self, profile: &str) -> Result<bool> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let needed = state
             .active
             .as_ref()
@@ -187,7 +207,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn cancel_manual_profile_activation(&self, profile: &str) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.pending_manual_profile.as_deref() != Some(profile) {
             return Ok(());
         }
@@ -202,7 +225,10 @@ impl ProfileFailoverManager {
     /// Reconcile a previously persisted intent after activation or process restart.
     /// A matching active profile is manual; a mismatch means activation never committed.
     pub fn reconcile_pending_manual_activation(&self, profile: &str) -> Result<bool> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(pending_profile) = state.pending_manual_profile.clone() else {
             return Ok(false);
         };
@@ -224,7 +250,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn dismiss_active_for_manual_change(&self, profile: &str) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = state.clone();
         state.pending_manual_profile = Some(profile.to_string());
         if let Err(error) = self.persist(&state) {
@@ -241,7 +270,10 @@ impl ProfileFailoverManager {
     /// Returns true while this profile remains the user's manual override.
     /// A later explicit profile change clears the suppression.
     pub fn is_manually_overridden(&self, profile: &str) -> Result<bool> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match state.manual_override_profile.as_deref() {
             Some(override_profile) if override_profile == profile => Ok(true),
             Some(_) => {
@@ -258,7 +290,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn note_manual_profile_activation(&self, profile: &str) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let should_dismiss = state
             .active
             .as_ref()
@@ -286,7 +321,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn rename_profile(&self, old_name: &str, new_name: &str) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.backup_profile.as_deref() == Some(old_name) {
             state.backup_profile = Some(new_name.to_string());
         }
@@ -311,7 +349,10 @@ impl ProfileFailoverManager {
     }
 
     pub fn delete_profile(&self, name: &str) -> Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.backup_profile.as_deref() == Some(name) {
             state.backup_profile = None;
         }
@@ -334,8 +375,9 @@ impl ProfileFailoverManager {
     }
 
     fn persist(&self, state: &StoredState) -> Result<()> {
-        let bytes = serde_json::to_vec(state)
-            .map_err(|error| Error::Other(format!("serialize profile failover state: {}", error)))?;
+        let bytes = serde_json::to_vec(state).map_err(|error| {
+            Error::Other(format!("serialize profile failover state: {}", error))
+        })?;
         crate::util::atomic::atomic_write(&self.path, &bytes)
     }
 }

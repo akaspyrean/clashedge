@@ -88,29 +88,34 @@ async fn patrol_once(app: &tauri::AppHandle) -> Result<()> {
             .get_config()
             .general
             .profile;
-        let interrupted_probe = current_profile == active.primary_profile
-            && failover.probe_in_progress();
+        let interrupted_probe =
+            current_profile == active.primary_profile && failover.probe_in_progress();
         if current_profile != active.backup_profile && !interrupted_probe {
             // 用户手动切换了 Profile；持久化抑制标记，避免下一轮重新切回备份。
             state.controller.reconcile_profile_failover(app).await?;
         } else if profile_file_exists(app, &active.primary_profile) {
             match state
                 .controller
-                .probe_primary_for_failback(
-                    app,
-                    &active.primary_profile,
-                    &active.backup_profile,
-                )
+                .probe_primary_for_failback(app, &active.primary_profile, &active.backup_profile)
                 .await
             {
                 Ok(true) => {
                     failover.clear_active()?;
-                    info!("Primary profile '{}' recovered; automatic failback completed", active.primary_profile);
+                    info!(
+                        "Primary profile '{}' recovered; automatic failback completed",
+                        active.primary_profile
+                    );
                 }
                 Ok(false) => {
-                    info!("Primary profile '{}' is still unhealthy; backup '{}' restored", active.primary_profile, active.backup_profile);
+                    info!(
+                        "Primary profile '{}' is still unhealthy; backup '{}' restored",
+                        active.primary_profile, active.backup_profile
+                    );
                 }
-                Err(error) => warn!("Primary recovery probe failed; backup restore was attempted: {}", error),
+                Err(error) => warn!(
+                    "Primary recovery probe failed; backup restore was attempted: {}",
+                    error
+                ),
             }
         }
     } else {
@@ -136,9 +141,16 @@ async fn patrol_once(app: &tauri::AppHandle) -> Result<()> {
                         .activate_backup_for_failover(app, &primary, &backup)
                         .await
                     {
-                        Ok(true) => info!("Node pool degraded; switched from '{}' to configured backup '{}'", primary, backup),
-                        Ok(false) => debug!("Primary profile changed during patrol; backup activation skipped"),
-                        Err(error) => warn!("Unable to activate configured backup profile: {}", error),
+                        Ok(true) => info!(
+                            "Node pool degraded; switched from '{}' to configured backup '{}'",
+                            primary, backup
+                        ),
+                        Ok(false) => debug!(
+                            "Primary profile changed during patrol; backup activation skipped"
+                        ),
+                        Err(error) => {
+                            warn!("Unable to activate configured backup profile: {}", error)
+                        }
                     }
                 }
             }

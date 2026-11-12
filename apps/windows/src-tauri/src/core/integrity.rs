@@ -76,7 +76,8 @@ pub fn verify_core_binary(path: &Path, data_dir: &Path) -> Result<()> {
 
 fn is_updated_core(path: &Path, data_dir: &Path) -> bool {
     let root = data_dir.join(UPDATED_CORE_DIR);
-    path.parent().is_some_and(|parent| parent.starts_with(&root))
+    path.parent()
+        .is_some_and(|parent| parent.starts_with(&root))
 }
 
 fn signed_updated_core_hash(core_dir: &Path) -> Result<String> {
@@ -85,7 +86,9 @@ fn signed_updated_core_hash(core_dir: &Path) -> Result<String> {
     let manifest_size = std::fs::metadata(&manifest_path)?.len();
     let signature_size = std::fs::metadata(&signature_path)?.len();
     if manifest_size > MAX_MANIFEST_BYTES || signature_size > MAX_SIGNATURE_BYTES {
-        return Err(Error::Other("mihomo update metadata exceeds size limits".to_string()));
+        return Err(Error::Other(
+            "mihomo update metadata exceeds size limits".to_string(),
+        ));
     }
 
     let manifest_bytes = std::fs::read(&manifest_path)?;
@@ -200,5 +203,8 @@ fn parse_version(version: &str) -> Option<CoreVersion> {
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
     let patch = parts.next()?.parse().ok()?;
-    parts.next().is_none().then_some(CoreVersion(major, minor, patch))
+    parts
+        .next()
+        .is_none()
+        .then_some(CoreVersion(major, minor, patch))
 }

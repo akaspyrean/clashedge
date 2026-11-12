@@ -166,7 +166,9 @@ impl AppController {
         } else {
             false
         };
-        if let Err(activation_error) = crate::core::runtime::activate_profile_locked(app, name).await {
+        if let Err(activation_error) =
+            crate::core::runtime::activate_profile_locked(app, name).await
+        {
             if manual_intent_persisted {
                 if let Some(failover) = failover {
                     if let Err(error) = failover.cancel_manual_profile_activation(name) {
@@ -178,7 +180,10 @@ impl AppController {
         }
         if let Some(failover) = failover {
             if let Err(error) = failover.note_manual_profile_activation(name) {
-                warn!("Profile activated but manual failover override could not be persisted: {}", error);
+                warn!(
+                    "Profile activated but manual failover override could not be persisted: {}",
+                    error
+                );
             }
         }
         Ok(())
@@ -203,7 +208,10 @@ impl AppController {
         if let Some(active) = failover.active() {
             if !profile_file_exists(app, &active.primary_profile) {
                 failover.clear_active()?;
-                warn!("Cleared failover state because primary profile '{}' no longer exists", active.primary_profile);
+                warn!(
+                    "Cleared failover state because primary profile '{}' no longer exists",
+                    active.primary_profile
+                );
             } else if !profile_file_exists(app, &active.backup_profile) {
                 let restore_error = if current_profile == active.backup_profile {
                     crate::core::runtime::activate_profile_locked(app, &active.primary_profile)
@@ -213,15 +221,18 @@ impl AppController {
                     None
                 };
                 if let Some(error) = restore_error {
-                    warn!("Backup profile '{}' is missing; primary restore failed: {}", active.backup_profile, error);
+                    warn!(
+                        "Backup profile '{}' is missing; primary restore failed: {}",
+                        active.backup_profile, error
+                    );
                     return Err(error);
                 }
                 failover.clear_active()?;
                 failover.set_backup_profile(None)?;
                 warn!("Backup profile '{}' is missing; restored primary '{}' and cleared failover state", active.backup_profile, active.primary_profile);
             } else {
-                let interrupted_probe = current_profile == active.primary_profile
-                    && failover.probe_in_progress();
+                let interrupted_probe =
+                    current_profile == active.primary_profile && failover.probe_in_progress();
                 if current_profile != active.backup_profile && !interrupted_probe {
                     failover.dismiss_active_for_manual_change(&current_profile)?;
                 }
@@ -231,7 +242,10 @@ impl AppController {
             if let Some(backup) = failover.backup_profile() {
                 if !profile_file_exists(app, &backup) {
                     failover.set_backup_profile(None)?;
-                    warn!("Cleared configured backup profile '{}' because it no longer exists", backup);
+                    warn!(
+                        "Cleared configured backup profile '{}' because it no longer exists",
+                        backup
+                    );
                 }
             }
         }
@@ -259,14 +273,16 @@ impl AppController {
         if current != primary {
             return Ok(false);
         }
-        let failover = state
-            .profile_failover
-            .get()
-            .ok_or_else(|| Error::InvalidState("profile failover is not initialized".to_string()))?;
+        let failover = state.profile_failover.get().ok_or_else(|| {
+            Error::InvalidState("profile failover is not initialized".to_string())
+        })?;
         failover.begin(primary, backup)?;
         if let Err(error) = crate::core::runtime::activate_profile_locked(app, backup).await {
             if let Err(clear_error) = failover.clear_active() {
-                error!("Unable to clear failover state after activation failure: {}", clear_error);
+                error!(
+                    "Unable to clear failover state after activation failure: {}",
+                    clear_error
+                );
             }
             return Err(error);
         }
@@ -286,19 +302,24 @@ impl AppController {
         let _tx = self.tx.lock().await;
         let state = app.state::<crate::AppState>();
         Self::ensure_not_degraded(&state)?;
-        let failover = state
-            .profile_failover
-            .get()
-            .ok_or_else(|| Error::InvalidState("profile failover is not initialized".to_string()))?;
+        let failover = state.profile_failover.get().ok_or_else(|| {
+            Error::InvalidState("profile failover is not initialized".to_string())
+        })?;
         let active = failover
             .active()
             .ok_or_else(|| Error::InvalidState("profile failover is not active".to_string()))?;
         if active.primary_profile.as_str() != primary || active.backup_profile.as_str() != backup {
-            return Err(Error::InvalidState("profile failover state changed during recovery".to_string()));
+            return Err(Error::InvalidState(
+                "profile failover state changed during recovery".to_string(),
+            ));
         }
         failover.set_probe_in_progress(true)?;
-        if let Err(primary_error) = crate::core::runtime::activate_profile_locked(app, primary).await {
-            if let Err(restore_error) = crate::core::runtime::activate_profile_locked(app, backup).await {
+        if let Err(primary_error) =
+            crate::core::runtime::activate_profile_locked(app, primary).await
+        {
+            if let Err(restore_error) =
+                crate::core::runtime::activate_profile_locked(app, backup).await
+            {
                 return Err(Error::Other(format!(
                     "primary recovery activation failed ({}); restoring backup '{}' also failed ({})",
                     primary_error, backup, restore_error
@@ -484,7 +505,10 @@ impl AppController {
         let state = app.state::<crate::AppState>();
         if let Some(failover) = state.profile_failover.get() {
             if let Err(error) = failover.delete_profile(name) {
-                warn!("Profile was deleted but failover settings could not be persisted: {}", error);
+                warn!(
+                    "Profile was deleted but failover settings could not be persisted: {}",
+                    error
+                );
             }
         }
         Ok(())
@@ -508,7 +532,10 @@ impl AppController {
         let state = app.state::<crate::AppState>();
         if let Some(failover) = state.profile_failover.get() {
             if let Err(error) = failover.rename_profile(old_name, new_name) {
-                warn!("Profile was renamed but failover settings could not be persisted: {}", error);
+                warn!(
+                    "Profile was renamed but failover settings could not be persisted: {}",
+                    error
+                );
             }
         }
         Ok(())
@@ -894,12 +921,18 @@ fn failback_probe_candidates(groups: &[serde_json::Value]) -> Vec<String> {
         const MAX_CANDIDATES: usize = 3;
         let mut current = name;
         for _ in 0..4 {
-            let Some(group) = by_name.get(current) else { break };
-            let Some(next) = group.get("now").and_then(serde_json::Value::as_str) else { break };
+            let Some(group) = by_name.get(current) else {
+                break;
+            };
+            let Some(next) = group.get("now").and_then(serde_json::Value::as_str) else {
+                break;
+            };
             current = next;
         }
         if !by_name.contains_key(current)
-            && !NON_NODES.iter().any(|built_in| built_in.eq_ignore_ascii_case(current))
+            && !NON_NODES
+                .iter()
+                .any(|built_in| built_in.eq_ignore_ascii_case(current))
             && !candidates.iter().any(|candidate| candidate == current)
             && candidates.len() < MAX_CANDIDATES
         {
