@@ -396,7 +396,14 @@ pub fn build_tray(app: &AppHandle) -> crate::util::error::Result<()> {
         let cfg_mgr = state.config_manager.lock().unwrap();
         cfg_mgr.get_config()
     };
-    let i18n = I18n::new(config.locale.clone());
+    // Follow the configured locale so the startup tooltip matches the UI;
+    // fall back to the default locale when the setting is empty.
+    let locale = if config.locale.trim().is_empty() {
+        crate::i18n::loader::default_locale()
+    } else {
+        config.locale.as_str()
+    };
+    let i18n = I18n::new(locale);
     let (menu, id_map) = build_tray_menu(app, &CoreStatus::default(), &[], &config, &i18n)?;
 
     let mut builder = TrayIconBuilder::with_id("main")

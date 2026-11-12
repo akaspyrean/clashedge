@@ -49,7 +49,7 @@ pub fn updated_core_candidates(data_dir: &Path) -> Vec<PathBuf> {
             binary.is_file().then_some((parsed, binary))
         })
         .collect();
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
     candidates.into_iter().map(|(_, path)| path).collect()
 }
 
@@ -176,7 +176,16 @@ fn sha256_file(path: &Path) -> Result<String> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(hex_encode(&digest.finalize()))
+}
+
+/// Lower-case hexadecimal encoding of raw bytes (sha2 output has no `LowerHex`).
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn safe_version_component(version: &str) -> String {

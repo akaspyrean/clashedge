@@ -238,10 +238,8 @@ impl ProfileFailoverManager {
             state.active = None;
             state.probe_in_progress = false;
             state.manual_override_profile = Some(profile.to_string());
-            if let Err(error) = self.persist(&state) {
-                // The on-disk pending intent still protects this profile on restart.
-                return Err(error);
-            }
+            // The on-disk pending intent still protects this profile on restart.
+            self.persist(&state)?;
         } else if let Err(error) = self.persist(&state) {
             state.pending_manual_profile = Some(pending_profile);
             return Err(error);
@@ -314,9 +312,7 @@ impl ProfileFailoverManager {
             state.manual_override_profile = None;
         }
         state.pending_manual_profile = None;
-        if let Err(error) = self.persist(&state) {
-            return Err(error);
-        }
+        self.persist(&state)?;
         Ok(())
     }
 
@@ -342,9 +338,7 @@ impl ProfileFailoverManager {
         if state.pending_manual_profile.as_deref() == Some(old_name) {
             state.pending_manual_profile = Some(new_name.to_string());
         }
-        if let Err(error) = self.persist(&state) {
-            return Err(error);
-        }
+        self.persist(&state)?;
         Ok(())
     }
 
@@ -368,9 +362,7 @@ impl ProfileFailoverManager {
         if state.pending_manual_profile.as_deref() == Some(name) {
             state.pending_manual_profile = None;
         }
-        if let Err(error) = self.persist(&state) {
-            return Err(error);
-        }
+        self.persist(&state)?;
         Ok(())
     }
 
