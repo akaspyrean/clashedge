@@ -16,9 +16,7 @@ pub async fn check_core_update(app: AppHandle) -> Result<crate::update::core::Co
 }
 
 #[command]
-pub async fn download_core_update(
-    app: AppHandle,
-) -> Result<crate::update::core::StagedCoreUpdate> {
+pub async fn download_core_update(app: AppHandle) -> Result<crate::update::core::StagedCoreUpdate> {
     crate::update::core::download_core_update(&app).await
 }
 

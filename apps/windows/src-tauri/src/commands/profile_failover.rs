@@ -4,9 +4,7 @@ use crate::core::profile_failover::ProfileFailoverStatus;
 use crate::util::error::{Error, Result};
 
 #[command]
-pub fn get_profile_failover(
-    state: State<'_, crate::AppState>,
-) -> Result<ProfileFailoverStatus> {
+pub fn get_profile_failover(state: State<'_, crate::AppState>) -> Result<ProfileFailoverStatus> {
     let manager = state
         .profile_failover
         .get()
