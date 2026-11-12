@@ -88,6 +88,8 @@ pub struct CoreManager {
     pub(super) init_error: Option<String>,
     /// 数据目录（含 runtime-config.yaml / profiles / 地理数据）
     pub(super) data_dir: PathBuf,
+    /// 最近多点测速记录（本地保留每节点最多 50 轮）
+    pub(super) node_health: crate::core::node_health::NodeHealthHistory,
     /// 外部控制器 REST 客户端（Config + HTTP client 都封装在此，
     /// 与进程生命周期字段解耦，见 core/controller.rs）
     pub(super) controller: ControllerClient,
@@ -145,6 +147,7 @@ impl CoreManager {
         info!("mihomo path: {:?}", mihomo_path);
 
         let controller = ControllerClient::new(config.clone())?;
+        let node_health = crate::core::node_health::NodeHealthHistory::load(&data_dir);
         Ok(CoreManager {
             child: Arc::new(Mutex::new(None)),
             // 共享配置 Arc 需要 clone 一份给 CoreManager 字段、一份给 ControllerClient
@@ -154,6 +157,7 @@ impl CoreManager {
             mihomo_path,
             init_error,
             data_dir,
+            node_health,
             // REST 客户端（config Arc + HTTP client）收敛到 ControllerClient
             controller_override: controller.override_handle(),
             controller,
@@ -235,6 +239,7 @@ impl CoreManager {
         }
 
         let mihomo_path = self.mihomo_path.clone();
+        crate::core::integrity::verify_core_binary(&mihomo_path, &self.data_dir)?;
         let mut cmd = tokio::process::Command::new(&mihomo_path);
         cmd.arg("-v");
         #[cfg(target_os = "windows")]
@@ -442,6 +447,55 @@ impl CoreManager {
         url: Option<String>,
     ) -> Result<Vec<serde_json::Value>> {
         self.controller.test_proxy_latency(group, url).await
+    }
+
+    /// 对单个节点做三点并发探测，并把本轮结果写入本地滚动历史。
+    pub async fn probe_node_health(
+        &self,
+        node: String,
+    ) -> Result<crate::core::node_health::NodeHealthSummary> {
+        use crate::core::node_health::{NodeProbePoint, PROBE_ENDPOINTS};
+
+        let profile = self.config.read().general.profile.clone();
+        let (first, second, third) = tokio::join!(
+            self.controller
+                .test_proxy_latency(node.clone(), Some(PROBE_ENDPOINTS[0].to_string()),),
+            self.controller
+                .test_proxy_latency(node.clone(), Some(PROBE_ENDPOINTS[1].to_string()),),
+            self.controller
+                .test_proxy_latency(node.clone(), Some(PROBE_ENDPOINTS[2].to_string()),),
+        );
+        let probe_delay = |result: Result<Vec<serde_json::Value>>| {
+            result
+                .ok()
+                .and_then(|values| values.first().cloned())
+                .and_then(|value| value.get("delay").and_then(serde_json::Value::as_u64))
+                .filter(|delay| *delay > 0)
+        };
+        let points = vec![
+            NodeProbePoint {
+                url: PROBE_ENDPOINTS[0].to_string(),
+                delay_ms: probe_delay(first),
+            },
+            NodeProbePoint {
+                url: PROBE_ENDPOINTS[1].to_string(),
+                delay_ms: probe_delay(second),
+            },
+            NodeProbePoint {
+                url: PROBE_ENDPOINTS[2].to_string(),
+                delay_ms: probe_delay(third),
+            },
+        ];
+        self.node_health.record(&profile, &node, points)
+    }
+
+    /// 读取所有节点或给定节点的滚动健康摘要。
+    pub fn get_node_health(
+        &self,
+        names: Option<&[String]>,
+    ) -> Vec<crate::core::node_health::NodeHealthSummary> {
+        let profile = self.config.read().general.profile.clone();
+        self.node_health.summaries(&profile, names)
     }
 
     /// 获取活动连接（GET /connections）

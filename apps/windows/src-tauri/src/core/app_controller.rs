@@ -21,7 +21,7 @@
 use std::path::Path;
 
 use tauri::{AppHandle, Manager};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::config::model::Config;
 use crate::proxy::system_proxy::SystemProxyConfig;
@@ -158,8 +158,207 @@ impl AppController {
     /// 会回退到内置模板。
     pub async fn activate_profile(&self, app: &AppHandle, name: &str) -> Result<()> {
         let _tx = self.tx.lock().await;
-        Self::ensure_not_degraded(&app.state::<crate::AppState>())?;
-        crate::core::runtime::activate_profile_locked(app, name).await
+        let state = app.state::<crate::AppState>();
+        Self::ensure_not_degraded(&state)?;
+        let failover = state.profile_failover.get();
+        let manual_intent_persisted = if let Some(failover) = failover {
+            failover.begin_manual_profile_activation(name)?
+        } else {
+            false
+        };
+        if let Err(activation_error) =
+            crate::core::runtime::activate_profile_locked(app, name).await
+        {
+            if manual_intent_persisted {
+                if let Some(failover) = failover {
+                    if let Err(error) = failover.cancel_manual_profile_activation(name) {
+                        warn!("Profile activation failed and pending manual intent could not be cleared: {}", error);
+                    }
+                }
+            }
+            return Err(activation_error);
+        }
+        if let Some(failover) = failover {
+            if let Err(error) = failover.note_manual_profile_activation(name) {
+                warn!(
+                    "Profile activated but manual failover override could not be persisted: {}",
+                    error
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Reconcile persisted manual activation intent and observed profile state
+    /// while serialized against user profile changes.
+    pub async fn reconcile_profile_failover(&self, app: &AppHandle) -> Result<()> {
+        let _tx = self.tx.lock().await;
+        let state = app.state::<crate::AppState>();
+        let Some(failover) = state.profile_failover.get() else {
+            return Ok(());
+        };
+        let current_profile = state
+            .config_manager
+            .lock()
+            .unwrap()
+            .get_config()
+            .general
+            .profile;
+        failover.reconcile_pending_manual_activation(&current_profile)?;
+        if let Some(active) = failover.active() {
+            if !profile_file_exists(app, &active.primary_profile) {
+                failover.clear_active()?;
+                warn!(
+                    "Cleared failover state because primary profile '{}' no longer exists",
+                    active.primary_profile
+                );
+            } else if !profile_file_exists(app, &active.backup_profile) {
+                let restore_error = if current_profile == active.backup_profile {
+                    crate::core::runtime::activate_profile_locked(app, &active.primary_profile)
+                        .await
+                        .err()
+                } else {
+                    None
+                };
+                if let Some(error) = restore_error {
+                    warn!(
+                        "Backup profile '{}' is missing; primary restore failed: {}",
+                        active.backup_profile, error
+                    );
+                    return Err(error);
+                }
+                failover.clear_active()?;
+                failover.set_backup_profile(None)?;
+                warn!("Backup profile '{}' is missing; restored primary '{}' and cleared failover state", active.backup_profile, active.primary_profile);
+            } else {
+                let interrupted_probe =
+                    current_profile == active.primary_profile && failover.probe_in_progress();
+                if current_profile != active.backup_profile && !interrupted_probe {
+                    failover.dismiss_active_for_manual_change(&current_profile)?;
+                }
+            }
+        }
+        if failover.active().is_none() {
+            if let Some(backup) = failover.backup_profile() {
+                if !profile_file_exists(app, &backup) {
+                    failover.set_backup_profile(None)?;
+                    warn!(
+                        "Cleared configured backup profile '{}' because it no longer exists",
+                        backup
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Switch to the explicitly configured backup only if the expected primary
+    /// is still active, under the same lock used by interactive profile changes.
+    pub async fn activate_backup_for_failover(
+        &self,
+        app: &AppHandle,
+        primary: &str,
+        backup: &str,
+    ) -> Result<bool> {
+        let _tx = self.tx.lock().await;
+        let state = app.state::<crate::AppState>();
+        Self::ensure_not_degraded(&state)?;
+        let current = state
+            .config_manager
+            .lock()
+            .unwrap()
+            .get_config()
+            .general
+            .profile;
+        if current != primary {
+            return Ok(false);
+        }
+        let failover = state.profile_failover.get().ok_or_else(|| {
+            Error::InvalidState("profile failover is not initialized".to_string())
+        })?;
+        failover.begin(primary, backup)?;
+        if let Err(error) = crate::core::runtime::activate_profile_locked(app, backup).await {
+            if let Err(clear_error) = failover.clear_active() {
+                error!(
+                    "Unable to clear failover state after activation failure: {}",
+                    clear_error
+                );
+            }
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    /// Temporarily activate a recovered primary profile, probe its selected
+    /// routes from multiple endpoints, then either keep it or restore backup.
+    /// Holding the app transaction lock prevents user actions from being
+    /// overwritten while the recovery probe is in progress.
+    pub async fn probe_primary_for_failback(
+        &self,
+        app: &AppHandle,
+        primary: &str,
+        backup: &str,
+    ) -> Result<bool> {
+        let _tx = self.tx.lock().await;
+        let state = app.state::<crate::AppState>();
+        Self::ensure_not_degraded(&state)?;
+        let failover = state.profile_failover.get().ok_or_else(|| {
+            Error::InvalidState("profile failover is not initialized".to_string())
+        })?;
+        let active = failover
+            .active()
+            .ok_or_else(|| Error::InvalidState("profile failover is not active".to_string()))?;
+        if active.primary_profile.as_str() != primary || active.backup_profile.as_str() != backup {
+            return Err(Error::InvalidState(
+                "profile failover state changed during recovery".to_string(),
+            ));
+        }
+        failover.set_probe_in_progress(true)?;
+        if let Err(primary_error) =
+            crate::core::runtime::activate_profile_locked(app, primary).await
+        {
+            if let Err(restore_error) =
+                crate::core::runtime::activate_profile_locked(app, backup).await
+            {
+                return Err(Error::Other(format!(
+                    "primary recovery activation failed ({}); restoring backup '{}' also failed ({})",
+                    primary_error, backup, restore_error
+                )));
+            }
+            failover.set_probe_in_progress(false)?;
+            return Err(primary_error);
+        }
+
+        let healthy = async {
+            let state = app.state::<crate::AppState>();
+            let core = state
+                .core_manager
+                .get()
+                .ok_or_else(|| Error::InvalidState("Core not initialized".to_string()))?;
+            let groups = core.get_proxy_groups().await?;
+            let mut node_available = false;
+            for node in failback_probe_candidates(&groups) {
+                if core.probe_node_health(node).await?.last_available {
+                    node_available = true;
+                    break;
+                }
+            }
+            if !node_available {
+                return Ok::<bool, Error>(false);
+            }
+            let current_pool = core.get_proxies_raw().await?;
+            Ok(!crate::core::patrol::analyze(&current_pool).should_recover())
+        }
+        .await
+        .unwrap_or(false);
+
+        if healthy {
+            Ok(true)
+        } else {
+            crate::core::runtime::activate_profile_locked(app, backup).await?;
+            failover.set_probe_in_progress(false)?;
+            Ok(false)
+        }
     }
 
     /// 用户在降级横幅里显式确认"覆盖损坏的配置文件"：持锁写盘并退出降级模式。
@@ -302,7 +501,17 @@ impl AppController {
         file_path: &Path,
     ) -> Result<()> {
         let _tx = self.tx.lock().await;
-        crate::commands::profiles::delete_profile_locked(app, name, file_path).await
+        crate::commands::profiles::delete_profile_locked(app, name, file_path).await?;
+        let state = app.state::<crate::AppState>();
+        if let Some(failover) = state.profile_failover.get() {
+            if let Err(error) = failover.delete_profile(name) {
+                warn!(
+                    "Profile was deleted but failover settings could not be persisted: {}",
+                    error
+                );
+            }
+        }
+        Ok(())
     }
 
     /// 重命名 Profile 复合事务（前置校验已由命令完成）：rename 文件 →
@@ -319,7 +528,17 @@ impl AppController {
         crate::commands::profiles::rename_profile_locked(
             app, old_name, new_name, old_path, new_path,
         )
-        .await
+        .await?;
+        let state = app.state::<crate::AppState>();
+        if let Some(failover) = state.profile_failover.get() {
+            if let Err(error) = failover.rename_profile(old_name, new_name) {
+                warn!(
+                    "Profile was renamed but failover settings could not be persisted: {}",
+                    error
+                );
+            }
+        }
+        Ok(())
     }
 
     /// 保存 Profile 内容复合事务（前置校验已由命令完成）：写入临时文件 →
@@ -663,4 +882,92 @@ async fn reload_running_core(state: &tauri::State<'_, crate::AppState>) -> Resul
         core.reload_config().await?;
     }
     Ok(())
+}
+
+fn profile_file_exists(app: &AppHandle, name: &str) -> bool {
+    let Ok(safe_name) = crate::util::paths::sanitize_profile_name(name) else {
+        return false;
+    };
+    let Ok(profiles_dir) = crate::util::paths::get_profiles_dir(app) else {
+        return false;
+    };
+    profiles_dir.join(format!("{}.yaml", safe_name)).is_file()
+}
+
+fn failback_probe_candidates(groups: &[serde_json::Value]) -> Vec<String> {
+    use crate::config::model::product_data::{GROUP_AUTO, GROUP_MANUAL};
+
+    const MAX_CANDIDATES: usize = 3;
+    let by_name: std::collections::HashMap<&str, &serde_json::Value> = groups
+        .iter()
+        .filter_map(|group| Some((group.get("name")?.as_str()?, group)))
+        .collect();
+    let mut candidates = Vec::new();
+
+    fn append_candidate(
+        name: &str,
+        by_name: &std::collections::HashMap<&str, &serde_json::Value>,
+        candidates: &mut Vec<String>,
+    ) {
+        const NON_NODES: &[&str] = &[
+            "DIRECT",
+            "REJECT",
+            "REJECT-DROP",
+            "PASS",
+            "COMPATIBLE",
+            "自动优选",
+            "人工优选",
+        ];
+        const MAX_CANDIDATES: usize = 3;
+        let mut current = name;
+        for _ in 0..4 {
+            let Some(group) = by_name.get(current) else {
+                break;
+            };
+            let Some(next) = group.get("now").and_then(serde_json::Value::as_str) else {
+                break;
+            };
+            current = next;
+        }
+        if !by_name.contains_key(current)
+            && !NON_NODES
+                .iter()
+                .any(|built_in| built_in.eq_ignore_ascii_case(current))
+            && !candidates.iter().any(|candidate| candidate == current)
+            && candidates.len() < MAX_CANDIDATES
+        {
+            candidates.push(current.to_string());
+        }
+    }
+
+    for preferred in [GROUP_AUTO, GROUP_MANUAL] {
+        if let Some(group) = by_name.get(preferred) {
+            if let Some(now) = group.get("now").and_then(serde_json::Value::as_str) {
+                append_candidate(now, &by_name, &mut candidates);
+            }
+            if preferred == GROUP_MANUAL {
+                if let Some(nodes) = group.get("all").and_then(serde_json::Value::as_array) {
+                    for node in nodes.iter().filter_map(serde_json::Value::as_str) {
+                        append_candidate(node, &by_name, &mut candidates);
+                        if candidates.len() >= MAX_CANDIDATES {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if candidates.len() >= MAX_CANDIDATES {
+            return candidates;
+        }
+    }
+
+    for group in groups {
+        if let Some(now) = group.get("now").and_then(serde_json::Value::as_str) {
+            append_candidate(now, &by_name, &mut candidates);
+        }
+        if candidates.len() >= MAX_CANDIDATES {
+            break;
+        }
+    }
+    candidates
 }

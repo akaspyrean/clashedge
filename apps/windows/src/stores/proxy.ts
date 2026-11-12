@@ -7,7 +7,7 @@
 //   供「人工优选」手动测速选择节点使用）
 
 import { defineStore } from "pinia";
-import { proxyApi, type ProxyGroup } from "@/api/proxy";
+import { proxyApi, type NodeHealthSummary, type ProxyGroup } from "@/api/proxy";
 import { isNodePoolDegraded } from "@/utils/latency";
 
 export const useProxyStore = defineStore("proxy", {
@@ -17,6 +17,8 @@ export const useProxyStore = defineStore("proxy", {
     delays: {} as Record<string, number | null>,
     /** nodeName -> delay(ms)；undefined=未测，null=测过失败 */
     nodeDelays: {} as Record<string, number | undefined | null>,
+    /** 节点名 -> 本地滚动可用率/延迟摘要 */
+    nodeHealth: {} as Record<string, NodeHealthSummary>,
     testing: false,
     groupsStale: false,
     latencyEpoch: 0,
@@ -34,8 +36,17 @@ export const useProxyStore = defineStore("proxy", {
         // Preserve the last known-good list on a transient controller failure.
         this.groups = await proxyApi.getGroups();
         this.groupsStale = false;
+        await this.loadNodeHealth();
       } catch {
         this.groupsStale = true;
+      }
+    },
+    async loadNodeHealth() {
+      try {
+        const summaries = await proxyApi.getNodeHealth();
+        this.nodeHealth = Object.fromEntries(summaries.map((summary) => [summary.node, summary]));
+      } catch {
+        // Health history is an enhancement; retain cached summaries on read failure.
       }
     },
     async select(group: string, proxy: string) {
@@ -64,12 +75,15 @@ export const useProxyStore = defineStore("proxy", {
         this.testing = false;
       }
     },
-    /** 重新测试单个节点（节点格上的延迟标签点击）；结果写入 nodeDelays。 */
+    /** 重新测试单个节点：三点并发探测并持久化滚动健康摘要。 */
     async testNode(name: string) {
       const epoch = this.latencyEpoch;
       try {
-        const r = (await proxyApi.testLatency(name))[0];
-        if (epoch === this.latencyEpoch) this.nodeDelays[name] = r ? r.delay : null;
+        const summary = await proxyApi.testNodeHealth(name);
+        if (epoch === this.latencyEpoch) {
+          this.nodeHealth[name] = summary;
+          this.nodeDelays[name] = summary.last_available ? summary.last_latency_ms : null;
+        }
       } catch {
         if (epoch === this.latencyEpoch) this.nodeDelays[name] = null;
       }
@@ -101,8 +115,11 @@ export const useProxyStore = defineStore("proxy", {
           await Promise.allSettled(
             batch.map(async (n) => {
               try {
-                const r = (await proxyApi.testLatency(n))[0];
-                if (epoch === this.latencyEpoch) this.nodeDelays[n] = r ? r.delay : null;
+                const summary = await proxyApi.testNodeHealth(n);
+                if (epoch === this.latencyEpoch) {
+                  this.nodeHealth[n] = summary;
+                  this.nodeDelays[n] = summary.last_available ? summary.last_latency_ms : null;
+                }
               } catch {
                 if (epoch === this.latencyEpoch) this.nodeDelays[n] = null;
               }

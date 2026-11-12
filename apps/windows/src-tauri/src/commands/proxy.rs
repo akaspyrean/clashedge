@@ -1,4 +1,4 @@
-﻿// src-tauri/src/commands/proxy.rs
+// src-tauri/src/commands/proxy.rs
 //! 代理命令：系统代理、TUN 模式、代理模式、延迟测试、代理组
 //!
 //! 三个开关类命令不再直接操作 CoreManager 或注册表，而是路由到统一编排层
@@ -58,6 +58,33 @@ pub async fn test_proxy_latency(
             "Core not initialized".to_string(),
         ))
     }
+}
+
+#[command]
+pub async fn test_node_health(
+    state: tauri::State<'_, crate::AppState>,
+    node: String,
+) -> Result<crate::core::node_health::NodeHealthSummary> {
+    let core_guard = state.core_manager.get();
+    if let Some(core) = core_guard.as_ref() {
+        core.probe_node_health(node).await
+    } else {
+        Err(crate::util::error::Error::InvalidState(
+            "Core not initialized".to_string(),
+        ))
+    }
+}
+
+#[command]
+pub fn get_node_health(
+    state: tauri::State<'_, crate::AppState>,
+    nodes: Option<Vec<String>>,
+) -> Vec<crate::core::node_health::NodeHealthSummary> {
+    let core_guard = state.core_manager.get();
+    core_guard
+        .as_ref()
+        .map(|core| core.get_node_health(nodes.as_deref()))
+        .unwrap_or_default()
 }
 
 #[command]

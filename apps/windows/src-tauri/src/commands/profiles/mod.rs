@@ -220,7 +220,11 @@ pub async fn delete_profile(app: AppHandle, name: String) -> Result<()> {
     state
         .controller
         .delete_profile(&app, &name, &file_path)
-        .await
+        .await?;
+    if let Err(error) = crate::core::runtime::refresh_tray(&app).await {
+        warn!("Profile was deleted but tray refresh failed: {}", error);
+    }
+    Ok(())
 }
 
 /// 删除 Profile 复合事务主体（调用方 AppController 已持有事务锁）。
@@ -273,7 +277,11 @@ pub async fn rename_profile(app: AppHandle, old_name: String, new_name: String) 
     state
         .controller
         .rename_profile(&app, &old_name, &new_name, &old_path, &new_path)
-        .await
+        .await?;
+    if let Err(error) = crate::core::runtime::refresh_tray(&app).await {
+        warn!("Profile was renamed but tray refresh failed: {}", error);
+    }
+    Ok(())
 }
 
 #[command]

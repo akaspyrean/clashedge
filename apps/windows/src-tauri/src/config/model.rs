@@ -421,6 +421,10 @@ pub struct DnsConfig {
     #[serde(default = "default_dns_fake_ip_range")]
     pub fake_ip_range: String,
 
+    /// DoH 优先使用 HTTP/3
+    #[serde(default = "default_dns_prefer_h3")]
+    pub prefer_h3: bool,
+
     /// 假 IP 过滤器
     #[serde(default = "default_dns_fake_ip_filter")]
     pub fake_ip_filter: Vec<String>,
@@ -455,6 +459,7 @@ impl Default for DnsConfig {
             ipv6: false,
             enhanced_mode: default_dns_enhanced_mode(),
             fake_ip_range: default_dns_fake_ip_range(),
+            prefer_h3: default_dns_prefer_h3(),
             fake_ip_filter: default_dns_fake_ip_filter(),
             default_nameserver: default_dns_default_nameserver(),
             nameserver: default_dns_nameserver(),
@@ -476,6 +481,9 @@ fn default_dns_enhanced_mode() -> String {
 fn default_dns_fake_ip_range() -> String {
     "198.18.0.1/16".to_string()
 }
+fn default_dns_prefer_h3() -> bool {
+    true
+}
 fn default_dns_fake_ip_filter() -> Vec<String> {
     vec![
         "+.lan".to_string(),
@@ -492,6 +500,7 @@ fn default_dns_fake_ip_filter() -> Vec<String> {
         "time.*.gov".to_string(),
         "pool.ntp.org".to_string(),
         "time.windows.com".to_string(),
+        "stun.*".to_string(),
         "*.n.n.srv.nintendo.net".to_string(),
     ]
 }
@@ -718,20 +727,21 @@ pub fn default_rules() -> Vec<String> {
 
 /// 自动迁移与保全 TUN / DNS 关键网络兼容性条目：
 /// 1. 若旧配置缺失 dns-hijack 则补齐默认 hijack（any:53 + tcp://any:53）；
-/// 2. 补齐关键 Windows NCSI 连通性探测域名至 fake-ip-filter，防止 Windows Wi-Fi 状态栏误报「无 Internet 连接」。
+/// 2. 补齐 Windows NCSI 与 WebRTC STUN 域名至 fake-ip-filter，避免连通性误报和 STUN 假 IP。
 pub fn migrate_tun_and_dns(config: &mut Config) -> bool {
     let mut changed = false;
     if config.tun.dns_hijack.is_empty() {
         config.tun.dns_hijack = default_dns_hijack();
         changed = true;
     }
-    const NCSI_DOMAINS: &[&str] = &[
+    const REQUIRED_FAKE_IP_FILTER: &[&str] = &[
         "+.msftconnecttest.com",
         "+.msftncsi.com",
         "msftconnecttest.com",
         "msftncsi.com",
+        "stun.*",
     ];
-    for domain in NCSI_DOMAINS {
+    for domain in REQUIRED_FAKE_IP_FILTER {
         if !config.dns.fake_ip_filter.iter().any(|d| d == domain) {
             config.dns.fake_ip_filter.push(domain.to_string());
             changed = true;

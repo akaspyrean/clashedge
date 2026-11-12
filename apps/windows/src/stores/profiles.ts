@@ -2,18 +2,29 @@
 // 配置文件状态：列表、增删改、重命名、激活。
 
 import { defineStore } from "pinia";
-import { profilesApi, type ProfileInfo } from "@/api/profiles";
+import {
+  profilesApi,
+  type ProfileFailoverStatus,
+  type ProfileInfo,
+} from "@/api/profiles";
 
 export const useProfilesStore = defineStore("profiles", {
   state: () => ({
     profiles: [] as ProfileInfo[],
     loading: false,
     stale: false,
+    failover: null as ProfileFailoverStatus | null,
   }),
   getters: {
     activeProfile: (s) => s.profiles.find((p) => p.active) ?? null,
   },
   actions: {
+    async loadFailover() {
+      this.failover = await profilesApi.getFailover();
+    },
+    async setBackupProfile(name: string | null) {
+      this.failover = await profilesApi.setBackupProfile(name);
+    },
     async list() {
       this.loading = true;
       try {
@@ -32,10 +43,12 @@ export const useProfilesStore = defineStore("profiles", {
     async remove(name: string) {
       await profilesApi.remove(name);
       await this.list();
+      await this.loadFailover();
     },
     async rename(oldName: string, newName: string) {
       await profilesApi.rename(oldName, newName);
       await this.list();
+      await this.loadFailover();
     },
     async importFromUrl(name: string, url: string, userAgent?: string) {
       await profilesApi.importFromUrl(name, url, userAgent);
@@ -60,6 +73,7 @@ export const useProfilesStore = defineStore("profiles", {
     updateContent: (name: string, content: string) => profilesApi.updateContent(name, content),
     async activate(name: string) {
       await profilesApi.activate(name);
+      await this.loadFailover();
       this.profiles = this.profiles.map((p) => ({
         ...p,
         active: p.name === name,

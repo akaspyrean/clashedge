@@ -359,15 +359,56 @@ pub fn build_tray_icon(
     Ok(tauri::image::Image::new_owned(rgba, w, h))
 }
 
+const TRAY_APP_NAME: &str = "ClashEdge";
+const TRAY_PROFILE_TOOLTIP_MAX_CHARS: usize = 72;
+
+/// Windows may show an empty tooltip surface when the tray icon has no text.
+/// Always provide the app name; append the active profile when one is selected.
+fn tray_tooltip(app: &AppHandle, config: &Config, i18n: &I18n) -> String {
+    let profile = config.general.profile.trim();
+    if profile.is_empty() || profile.eq_ignore_ascii_case("DIRECT") {
+        return TRAY_APP_NAME.to_string();
+    }
+    let is_backup = app
+        .state::<crate::AppState>()
+        .profile_failover
+        .get()
+        .and_then(|manager| manager.active())
+        .is_some_and(|active| active.backup_profile.as_str() == profile);
+    let label = elide_middle(profile, TRAY_PROFILE_TOOLTIP_MAX_CHARS);
+    if is_backup {
+        format!(
+            "{} · {} · {}",
+            TRAY_APP_NAME,
+            i18n.t("tray.backup_active"),
+            label
+        )
+    } else {
+        format!("{} · {}", TRAY_APP_NAME, label)
+    }
+}
+
 /// Create the tray icon, set the initial menu, install the on_menu_event handler,
 /// and store the TrayIcon into AppState.tray. Called from main.rs setup.
 pub fn build_tray(app: &AppHandle) -> crate::util::error::Result<()> {
-    let i18n = I18n::new(crate::i18n::loader::default_locale());
-    let (menu, id_map) =
-        build_tray_menu(app, &CoreStatus::default(), &[], &Config::default(), &i18n)?;
+    let config = {
+        let state = app.state::<crate::AppState>();
+        let cfg_mgr = state.config_manager.lock().unwrap();
+        cfg_mgr.get_config()
+    };
+    // Follow the configured locale so the startup tooltip matches the UI;
+    // fall back to the default locale when the setting is empty.
+    let locale = if config.locale.trim().is_empty() {
+        crate::i18n::loader::default_locale()
+    } else {
+        config.locale.as_str()
+    };
+    let i18n = I18n::new(locale);
+    let (menu, id_map) = build_tray_menu(app, &CoreStatus::default(), &[], &config, &i18n)?;
 
     let mut builder = TrayIconBuilder::with_id("main")
         .menu(&menu)
+        .tooltip(tray_tooltip(app, &config, &i18n))
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
             let app = app.clone();
@@ -380,11 +421,6 @@ pub fn build_tray(app: &AppHandle) -> crate::util::error::Result<()> {
 
     // 初始图标按真实系统代理状态着色（config_mgr 已在 setup 中 init；
     // 启动 async 恢复系统代理阶段会再刷新一次，保证最终态一致）。
-    let config = {
-        let state = app.state::<crate::AppState>();
-        let cfg_mgr = state.config_manager.lock().unwrap();
-        cfg_mgr.get_config()
-    };
     builder = builder.icon(build_tray_icon(&config)?);
 
     let tray = builder
@@ -416,8 +452,11 @@ pub fn update_tray_menu(
     tray.set_menu(Some(menu))
         .map_err(crate::util::error::Error::from)?;
     crate::tray::replace_tray_menu_map(id_map);
-    // 图标随系统代理状态着色（refresh_tray 每次调用都会刷新）
+    // 图标随系统代理状态着色（refresh_tray 每次调用都会刷新）。
     tray.set_icon(Some(build_tray_icon(config)?))
+        .map_err(crate::util::error::Error::from)?;
+    let tooltip = tray_tooltip(app, config, i18n);
+    tray.set_tooltip(Some(&tooltip))
         .map_err(crate::util::error::Error::from)
 }
 

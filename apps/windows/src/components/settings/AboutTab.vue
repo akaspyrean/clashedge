@@ -11,6 +11,7 @@ import { useNotify } from "@/composables/useNotify";
 import { useAppStore } from "@/stores/app";
 import { useCoreStore } from "@/stores/core";
 import { useUpdateStore } from "@/stores/update";
+import { useCoreUpdateStore } from "@/stores/coreUpdate";
 import { friendlyError } from "@/errors";
 import { formatAppVersion } from "@/utils/format";
 
@@ -18,6 +19,7 @@ const { t } = useI18n();
 const appStore = useAppStore();
 const coreStore = useCoreStore();
 const update = useUpdateStore();
+const coreUpdate = useCoreUpdateStore();
 const confirm = useConfirm();
 const notify = useNotify();
 
@@ -42,6 +44,24 @@ async function onDownload() {
   }
 }
 
+async function onCheckCore() {
+  try {
+    const status = await coreUpdate.check();
+    if (status.status === "up_to_date") notify.ok(t("about.core_up_to_date"));
+  } catch (e) {
+    notify.error(t("about.core_update_failed", { error: friendlyError(e) }));
+  }
+}
+
+async function onDownloadCore() {
+  try {
+    const staged = await coreUpdate.download();
+    notify.ok(t("about.core_update_staged", { version: staged.version }));
+  } catch (e) {
+    notify.error(t("about.core_update_failed", { error: friendlyError(e) }));
+  }
+}
+
 async function onDiscard() {
   await discarding.run(() => update.discard(), { success: t("about.discarded_staged") });
 }
@@ -60,6 +80,8 @@ let unlisten: UnlistenFn | undefined;
 onMounted(async () => {
   void update.loadStaged();
   void update.loadChainReady();
+  void coreUpdate.loadStaged();
+  void coreUpdate.loadChainReady();
   unlisten = await listen("update-available", () => void onCheck(true));
 });
 onUnmounted(() => unlisten?.());
@@ -100,6 +122,35 @@ onUnmounted(() => unlisten?.());
       </el-button>
       <el-button v-if="update.staged" plain :loading="discarding.busy.value" @click="onDiscard">
         {{ t("about.discard_staged") }}
+      </el-button>
+    </PrefRow>
+    <!-- Core updates use the same signed trust root, but a separate release channel. -->
+    <PrefRow
+      v-if="coreUpdate.chainReady"
+      :title="t('about.core_update_title')"
+      :hint="t('about.core_update_hint')"
+    >
+      <template #info>
+        <div v-if="coreUpdate.availableVersion" class="pref-hint" role="status">
+          {{ t("about.core_update_available", { version: coreUpdate.availableVersion }) }}
+        </div>
+        <div v-else-if="coreUpdate.upToDate" class="pref-hint" role="status">
+          {{ t("about.core_up_to_date") }}
+        </div>
+        <div v-if="coreUpdate.staged" class="pref-hint" role="status">
+          {{ t("about.core_update_staged", { version: coreUpdate.staged.version }) }}
+          · {{ t("about.core_update_restart_hint") }}
+        </div>
+      </template>
+      <el-button :loading="coreUpdate.checking" @click="onCheckCore">
+        {{ coreUpdate.checking ? t("about.checking") : t("about.check_now") }}
+      </el-button>
+      <el-button
+        v-if="coreUpdate.availableVersion && !coreUpdate.staged"
+        :loading="coreUpdate.downloading"
+        @click="onDownloadCore"
+      >
+        {{ coreUpdate.downloading ? t("about.downloading") : t("about.download_btn") }}
       </el-button>
     </PrefRow>
   </PrefList>

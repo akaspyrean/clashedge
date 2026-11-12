@@ -18,6 +18,17 @@ export interface DelayResult {
   message?: string;
 }
 
+export interface NodeHealthSummary {
+  node: string;
+  score: number;
+  availability: number;
+  median_latency_ms: number | null;
+  sessions: number;
+  last_available: boolean;
+  last_latency_ms: number | null;
+  last_tested_at_ms: number;
+}
+
 export const proxyApi = {
   setSystemProxy: (enable: boolean) => invoke<void>("set_system_proxy", { enable }),
   setTunMode: (enable: boolean) => invoke<void>("set_tun_mode", { enable }),
@@ -26,6 +37,10 @@ export const proxyApi = {
   setProxyMode: (mode: string) => invoke<void>("set_proxy_mode", { mode }),
   testLatency: (group: string, url?: string) =>
     invoke<DelayResult[]>("test_proxy_latency", { group, url }),
+  testNodeHealth: (node: string) =>
+    invoke<NodeHealthSummary>("test_node_health", { node }),
+  getNodeHealth: (nodes?: string[]) =>
+    invoke<NodeHealthSummary[]>("get_node_health", { nodes }),
   getGroups: () => invoke<ProxyGroup[]>("get_proxy_groups"),
   select: (group: string, proxy: string) =>
     invoke<void>("select_proxy_group", { group, proxy }),

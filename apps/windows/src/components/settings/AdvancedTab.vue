@@ -1,6 +1,6 @@
 <!-- 设置 · 高级：低频技术项集中在此（日志 / 地理数据 / 进程查找 / URL 覆写）。 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ClashConfig } from "@/api/config";
@@ -9,12 +9,29 @@ import PrefRow from "@/components/PrefRow.vue";
 import { useNotify } from "@/composables/useNotify";
 import { useConfigStore } from "@/stores/config";
 import { useGeodataStore } from "@/stores/geodata";
+import { useProfilesStore } from "@/stores/profiles";
 import { formatBytes } from "@/utils/format";
 
 const { t } = useI18n();
 const configStore = useConfigStore();
 const geoStore = useGeodataStore();
+const profilesStore = useProfilesStore();
 const notify = useNotify();
+const backupSelection = ref("");
+const backupProfiles = computed(() =>
+  profilesStore.profiles.filter((profile) => !profile.active),
+);
+const failoverHint = computed(() => {
+  const active = profilesStore.failover?.active;
+  return active
+    ? t("profile_failover.active", { backup: active.backup_profile })
+    : t("profile_failover.hint");
+});
+watch(
+  () => profilesStore.failover?.backup_profile,
+  (name) => (backupSelection.value = name ?? ""),
+  { immediate: true },
+);
 
 const cfg = computed(() => configStore.config as ClashConfig);
 
@@ -37,11 +54,26 @@ async function onUpdateGeo() {
   }
 }
 
+async function onBackupChange(value: string) {
+  try {
+    await profilesStore.setBackupProfile(value || null);
+    notify.ok(t("profile_failover.saved"));
+  } catch (e) {
+    backupSelection.value = profilesStore.failover?.backup_profile ?? "";
+    notify.fail(e);
+  }
+}
+
 // 托盘触发 geo 更新时，本页的文件大小要跟随刷新。
 let unlisten: UnlistenFn | undefined;
 onMounted(async () => {
   void geoStore.refresh();
   unlisten = await listen("geodata-updated", () => void geoStore.refresh());
+  try {
+    await Promise.all([profilesStore.list(), profilesStore.loadFailover()]);
+  } catch (e) {
+    notify.fail(e);
+  }
 });
 onUnmounted(() => unlisten?.());
 </script>
@@ -84,6 +116,20 @@ onUnmounted(() => unlisten?.());
     </PrefRow>
     <PrefRow :title="t('advanced.unified_delay')" :hint="t('advanced.unified_delay_hint')">
       <el-switch v-model="cfg.advanced['unified-delay']" :aria-label="t('advanced.unified_delay')" />
+    </PrefRow>
+    <PrefRow :title="t('profile_failover.title')" :hint="failoverHint" wide>
+      <template #default="{ label }">
+        <el-select
+          v-model="backupSelection"
+          :aria-label="label"
+          :disabled="profilesStore.failover?.active != null"
+          style="width: min(100%, 300px)"
+          @change="onBackupChange"
+        >
+          <el-option :label="t('profile_failover.none')" value="" />
+          <el-option v-for="profile in backupProfiles" :key="profile.name" :label="profile.name" :value="profile.name" />
+        </el-select>
+      </template>
     </PrefRow>
     <PrefRow :title="t('geodata.title')">
       <div class="geo-row">

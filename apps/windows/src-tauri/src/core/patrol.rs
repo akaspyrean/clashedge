@@ -41,6 +41,9 @@ const BUILTIN_NON_NODES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS", 
 
 /// 巡检主循环（应用启动时 spawn 一次，随进程退出）。
 pub async fn run(app: tauri::AppHandle) {
+    if let Err(e) = patrol_once(&app).await {
+        debug!("Initial node pool patrol skipped: {}", e);
+    }
     loop {
         tokio::time::sleep(PATROL_INTERVAL).await;
         if let Err(e) = patrol_once(&app).await {
@@ -51,32 +54,142 @@ pub async fn run(app: tauri::AppHandle) {
 
 /// 单轮巡检：内核在跑 → 取 /proxies → 失活判定 → 必要时触发自动恢复。
 async fn patrol_once(app: &tauri::AppHandle) -> Result<()> {
-    // state 与 core 的借用必须贯穿整个函数：State 的 Deref 生命周期
-    // 绑定在 state 上，不能把 core 引用带出 state 的作用域。
     let state = app.state::<crate::AppState>();
-    let Some(core) = state.core_manager.get() else {
-        return Ok(()); // 内核尚未初始化（应用启动早期）
+    let Some(failover) = state.profile_failover.get() else {
+        return Ok(());
     };
-    if !core.is_running() {
-        return Ok(()); // 内核未运行：巡检静默跳过
+    // Reconcile persisted profile state even when Mihomo failed to start.
+    state.controller.reconcile_profile_failover(app).await?;
+    // Capture the profile before reading its proxy report. If a user changes
+    // profiles while the report is collected, backup activation must be skipped.
+    let report_profile = state
+        .config_manager
+        .lock()
+        .unwrap()
+        .get_config()
+        .general
+        .profile;
+    let proxies = {
+        let Some(core) = state.core_manager.get() else {
+            return Ok(()); // 内核尚未初始化（应用启动早期）
+        };
+        if !core.is_running() {
+            return Ok(()); // 内核未运行：巡检静默跳过
+        }
+        core.get_proxies_raw().await?
+    };
+    let report = analyze(&proxies);
+
+    if let Some(active) = failover.active() {
+        let current_profile = state
+            .config_manager
+            .lock()
+            .unwrap()
+            .get_config()
+            .general
+            .profile;
+        let interrupted_probe =
+            current_profile == active.primary_profile && failover.probe_in_progress();
+        if current_profile != active.backup_profile && !interrupted_probe {
+            // 用户手动切换了 Profile；持久化抑制标记，避免下一轮重新切回备份。
+            state.controller.reconcile_profile_failover(app).await?;
+        } else if profile_file_exists(app, &active.primary_profile) {
+            match state
+                .controller
+                .probe_primary_for_failback(app, &active.primary_profile, &active.backup_profile)
+                .await
+            {
+                Ok(true) => {
+                    failover.clear_active()?;
+                    info!(
+                        "Primary profile '{}' recovered; automatic failback completed",
+                        active.primary_profile
+                    );
+                }
+                Ok(false) => {
+                    info!(
+                        "Primary profile '{}' is still unhealthy; backup '{}' restored",
+                        active.primary_profile, active.backup_profile
+                    );
+                }
+                Err(error) => warn!(
+                    "Primary recovery probe failed; backup restore was attempted: {}",
+                    error
+                ),
+            }
+        }
+    } else {
+        let primary = state
+            .config_manager
+            .lock()
+            .unwrap()
+            .get_config()
+            .general
+            .profile;
+        let manually_overridden = failover.is_manually_overridden(&primary)?;
+        // Only use a report captured for the still-active profile, and only an
+        // explicitly selected, still-existing backup can be activated.
+        if report_profile == primary && report.should_recover() && !manually_overridden {
+            if let Some(backup) = failover.backup_profile() {
+                if !primary.trim().is_empty()
+                    && primary != backup
+                    && profile_file_exists(app, &primary)
+                    && profile_file_exists(app, &backup)
+                {
+                    match state
+                        .controller
+                        .activate_backup_for_failover(app, &primary, &backup)
+                        .await
+                    {
+                        Ok(true) => info!(
+                            "Node pool degraded; switched from '{}' to configured backup '{}'",
+                            primary, backup
+                        ),
+                        Ok(false) => debug!(
+                            "Primary profile changed during patrol; backup activation skipped"
+                        ),
+                        Err(error) => {
+                            warn!("Unable to activate configured backup profile: {}", error)
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    let proxies = core.get_proxies_raw().await?;
-    let report = analyze(&proxies);
-    if report.should_recover() {
+    let recovery_report = if let Some(core) = state.core_manager.get() {
+        if core.is_running() {
+            analyze(&core.get_proxies_raw().await?)
+        } else {
+            report
+        }
+    } else {
+        report
+    };
+    if recovery_report.should_recover() {
         warn!(
             "Node pool degraded (tested={}, dead={}, ratio={:.2}, routing groups broken {}/{}); \
              triggering auto recovery",
-            report.tested,
-            report.dead,
-            report.dead_ratio,
-            report.routing_broken,
-            report.routing_total
+            recovery_report.tested,
+            recovery_report.dead,
+            recovery_report.dead_ratio,
+            recovery_report.routing_broken,
+            recovery_report.routing_total
         );
         let outcome = crate::commands::update_status::run_auto_recovery(app).await?;
         info!("Auto recovery outcome: {}", outcome);
     }
     Ok(())
+}
+
+fn profile_file_exists(app: &tauri::AppHandle, name: &str) -> bool {
+    let Ok(safe_name) = crate::util::paths::sanitize_profile_name(name) else {
+        return false;
+    };
+    let Ok(profiles_dir) = crate::util::paths::get_profiles_dir(app) else {
+        return false;
+    };
+    profiles_dir.join(format!("{}.yaml", safe_name)).is_file()
 }
 
 /// 一次巡检的节点池体检结果（全部为可观测计数，便于断言）。
