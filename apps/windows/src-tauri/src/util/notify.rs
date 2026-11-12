@@ -18,10 +18,17 @@ pub fn send(app: &AppHandle, title: &str, body: &str) -> std::result::Result<(),
 }
 
 /// Deduplicate repeated threshold notices within one application session.
-pub fn send_once(app: &AppHandle, key: String, title: &str, body: &str) -> std::result::Result<(), String> {
+pub fn send_once(
+    app: &AppHandle,
+    key: String,
+    title: &str,
+    body: &str,
+) -> std::result::Result<(), String> {
     let keys = SENT_KEYS.get_or_init(|| Mutex::new(HashSet::new()));
     {
-        let mut sent = keys.lock().map_err(|_| "notification state lock poisoned".to_string())?;
+        let mut sent = keys
+            .lock()
+            .map_err(|_| "notification state lock poisoned".to_string())?;
         if !sent.insert(key.clone()) {
             return Ok(());
         }

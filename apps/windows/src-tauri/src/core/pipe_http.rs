@@ -12,7 +12,7 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -59,11 +59,15 @@ impl fmt::Display for PipeHttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "named-pipe HTTP I/O failed: {e}"),
-            Self::InvalidRequest(message) => write!(f, "invalid named-pipe HTTP request: {message}"),
+            Self::InvalidRequest(message) => {
+                write!(f, "invalid named-pipe HTTP request: {message}")
+            }
             Self::Protocol(message) => write!(f, "invalid named-pipe HTTP response: {message}"),
             Self::Url(message) => write!(f, "invalid named-pipe HTTP URL: {message}"),
             Self::Json(error) => write!(f, "named-pipe HTTP JSON error: {error}"),
-            Self::InvalidHeader => f.write_str("named-pipe HTTP header cannot be represented as text"),
+            Self::InvalidHeader => {
+                f.write_str("named-pipe HTTP header cannot be represented as text")
+            }
             Self::Timeout => f.write_str("named-pipe HTTP request timed out"),
         }
     }
@@ -102,7 +106,9 @@ impl PipeHttpClient {
     where
         F: Fn() -> String + Send + Sync + 'static,
     {
-        Self { pipe_name: std::sync::Arc::new(pipe_name) }
+        Self {
+            pipe_name: std::sync::Arc::new(pipe_name),
+        }
     }
 
     pub(crate) fn get<U: IntoPipeUrl>(&self, url: U) -> PipeRequestBuilder {
@@ -171,7 +177,9 @@ impl IntoPipeUrl for &String {
 
 fn validate_pipe_url(url: Url) -> Result<Url, PipeHttpError> {
     if url.scheme() != "http" {
-        return Err(PipeHttpError::InvalidRequest("named-pipe controller URLs must use http"));
+        return Err(PipeHttpError::InvalidRequest(
+            "named-pipe controller URLs must use http",
+        ));
     }
     Ok(url)
 }
@@ -193,7 +201,8 @@ impl PipeRequestBuilder {
 
     pub(crate) fn json<T: Serialize + ?Sized>(mut self, value: &T) -> Self {
         if !self.headers.contains_key(CONTENT_TYPE) {
-            self.headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            self.headers
+                .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         }
         match serde_json::to_vec(value) {
             Ok(body) => self.body = body,
@@ -215,10 +224,14 @@ impl PipeRequestBuilder {
             path.push('?');
             path.push_str(query);
         }
-        let headers = self.headers.iter().map(|(name, value)| {
-            let value = value.to_str().map_err(|_| PipeHttpError::InvalidHeader)?;
-            Ok((name.as_str().to_string(), value.to_string()))
-        }).collect::<Result<Vec<_>, PipeHttpError>>()?;
+        let headers = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let value = value.to_str().map_err(|_| PipeHttpError::InvalidHeader)?;
+                Ok((name.as_str().to_string(), value.to_string()))
+            })
+            .collect::<Result<Vec<_>, PipeHttpError>>()?;
         let pipe_name = (self.client.pipe_name)();
         let operation = request(&pipe_name, &self.method, &path, &headers, &self.body);
         tokio::time::timeout(std::time::Duration::from_secs(10), operation)
@@ -258,7 +271,9 @@ pub(crate) async fn request(
     _headers: &[(String, String)],
     _body: &[u8],
 ) -> Result<PipeHttpResponse, PipeHttpError> {
-    Err(PipeHttpError::InvalidRequest("named-pipe HTTP is only available on Windows"))
+    Err(PipeHttpError::InvalidRequest(
+        "named-pipe HTTP is only available on Windows",
+    ))
 }
 
 #[cfg(windows)]
@@ -267,8 +282,12 @@ async fn connect_pipe(
 ) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, PipeHttpError> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    if !pipe_name.starts_with(r"\\.\pipe\") || pipe_name.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
-        return Err(PipeHttpError::InvalidRequest("pipe name must be a local \\\\.\\pipe\\ path"));
+    if !pipe_name.starts_with(r"\\.\pipe\")
+        || pipe_name.chars().any(|c| matches!(c, '\r' | '\n' | '\0'))
+    {
+        return Err(PipeHttpError::InvalidRequest(
+            "pipe name must be a local \\\\.\\pipe\\ path",
+        ));
     }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
@@ -298,14 +317,19 @@ fn encode_request(
     request.extend_from_slice(path.as_bytes());
     request.extend_from_slice(b" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
     request.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
-    let header_bytes = headers.iter().try_fold(request.len(), |length, (name, value)| {
-        length
-            .checked_add(name.len())
-            .and_then(|length| length.checked_add(value.len()))
-            .and_then(|length| length.checked_add(4)) // ": " + CRLF
-    }).and_then(|length| length.checked_add(2)); // End of headers
+    let header_bytes = headers
+        .iter()
+        .try_fold(request.len(), |length, (name, value)| {
+            length
+                .checked_add(name.len())
+                .and_then(|length| length.checked_add(value.len()))
+                .and_then(|length| length.checked_add(4)) // ": " + CRLF
+        })
+        .and_then(|length| length.checked_add(2)); // End of headers
     if header_bytes.is_none_or(|length| length > MAX_HEADER_BYTES) {
-        return Err(PipeHttpError::InvalidRequest("request line and headers exceed size limit"));
+        return Err(PipeHttpError::InvalidRequest(
+            "request line and headers exceed size limit",
+        ));
     }
     for (name, value) in headers {
         request.extend_from_slice(name.as_bytes());
@@ -325,23 +349,42 @@ fn validate_request(
     body_len: usize,
 ) -> Result<(), PipeHttpError> {
     if method.is_empty() || !method.bytes().all(is_token_byte) {
-        return Err(PipeHttpError::InvalidRequest("method must be an HTTP token"));
+        return Err(PipeHttpError::InvalidRequest(
+            "method must be an HTTP token",
+        ));
     }
-    if !path.starts_with('/') || path.len() > MAX_HEADER_BYTES || path.bytes().any(|b| b <= b' ' || b == b'\x7f') {
-        return Err(PipeHttpError::InvalidRequest("path must be a bounded origin-form URL path"));
+    if !path.starts_with('/')
+        || path.len() > MAX_HEADER_BYTES
+        || path.bytes().any(|b| b <= b' ' || b == b'\x7f')
+    {
+        return Err(PipeHttpError::InvalidRequest(
+            "path must be a bounded origin-form URL path",
+        ));
     }
     if body_len > MAX_BODY_BYTES {
-        return Err(PipeHttpError::InvalidRequest("request body exceeds size limit"));
+        return Err(PipeHttpError::InvalidRequest(
+            "request body exceeds size limit",
+        ));
     }
     for (name, value) in headers {
         if name.is_empty() || !name.bytes().all(is_token_byte) {
             return Err(PipeHttpError::InvalidRequest("header name is invalid"));
         }
-        if value.bytes().any(|b| (b < b' ' && b != b'\t') || b == b'\x7f') {
-            return Err(PipeHttpError::InvalidRequest("header value contains a forbidden byte"));
+        if value
+            .bytes()
+            .any(|b| (b < b' ' && b != b'\t') || b == b'\x7f')
+        {
+            return Err(PipeHttpError::InvalidRequest(
+                "header value contains a forbidden byte",
+            ));
         }
-        if matches!(name.to_ascii_lowercase().as_str(), "host" | "content-length" | "transfer-encoding" | "connection") {
-            return Err(PipeHttpError::InvalidRequest("framing headers are managed by the client"));
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "host" | "content-length" | "transfer-encoding" | "connection"
+        ) {
+            return Err(PipeHttpError::InvalidRequest(
+                "framing headers are managed by the client",
+            ));
         }
     }
     Ok(())
@@ -374,14 +417,17 @@ async fn read_response<R: AsyncRead + Unpin>(
             }
             continue;
         }
-        let body = if request_method.eq_ignore_ascii_case("HEAD")
-            || matches!(status, 204 | 205 | 304)
-        {
-            Vec::new()
-        } else {
-            read_body(&mut buffered, &headers).await?
-        };
-        return Ok(PipeHttpResponse { status, headers, body });
+        let body =
+            if request_method.eq_ignore_ascii_case("HEAD") || matches!(status, 204 | 205 | 304) {
+                Vec::new()
+            } else {
+                read_body(&mut buffered, &headers).await?
+            };
+        return Ok(PipeHttpResponse {
+            status,
+            headers,
+            body,
+        });
     }
 }
 
@@ -398,7 +444,8 @@ async fn read_header_line<R: AsyncBufRead + Unpin>(
         return Err(PipeHttpError::Protocol("HTTP lines must end with CRLF"));
     }
     line.truncate(line.len() - 2);
-    String::from_utf8(line).map_err(|_| PipeHttpError::Protocol("HTTP header line is not valid UTF-8"))
+    String::from_utf8(line)
+        .map_err(|_| PipeHttpError::Protocol("HTTP header line is not valid UTF-8"))
 }
 
 async fn read_bounded_line_bytes<R: AsyncBufRead + Unpin>(
@@ -414,7 +461,11 @@ async fn read_bounded_line_bytes<R: AsyncBufRead + Unpin>(
             }
             let newline = available.iter().position(|byte| *byte == b'\n');
             let consumed = newline.map_or(available.len(), |index| index + 1);
-            if line.len().checked_add(consumed).is_none_or(|length| length > max) {
+            if line
+                .len()
+                .checked_add(consumed)
+                .is_none_or(|length| length > max)
+            {
                 return Err(PipeHttpError::Protocol("HTTP line exceeds size limit"));
             }
             line.extend_from_slice(&available[..consumed]);
@@ -432,9 +483,13 @@ fn parse_status_line(line: &str) -> Result<u16, PipeHttpError> {
     match (parts.next(), parts.next(), parts.next()) {
         (Some(version), Some(status), _) if version == "HTTP/1.0" || version == "HTTP/1.1" => {
             if status.len() != 3 || !status.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(PipeHttpError::Protocol("status code must contain three digits"));
+                return Err(PipeHttpError::Protocol(
+                    "status code must contain three digits",
+                ));
             }
-            let code = status.parse::<u16>().map_err(|_| PipeHttpError::Protocol("invalid status code"))?;
+            let code = status
+                .parse::<u16>()
+                .map_err(|_| PipeHttpError::Protocol("invalid status code"))?;
             if !(100..=599).contains(&code) {
                 return Err(PipeHttpError::Protocol("status code is out of range"));
             }
@@ -454,11 +509,16 @@ async fn read_headers<R: AsyncBufRead + Unpin>(
         if line.is_empty() {
             return Ok(headers);
         }
-        let (name, value) = line.split_once(':').ok_or(PipeHttpError::Protocol("malformed header"))?;
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(PipeHttpError::Protocol("malformed header"))?;
         if name.is_empty() || !name.bytes().all(is_token_byte) {
             return Err(PipeHttpError::Protocol("invalid header name"));
         }
-        if value.bytes().any(|b| (b < b' ' && b != b'\t') || b == b'\x7f') {
+        if value
+            .bytes()
+            .any(|b| (b < b' ' && b != b'\t') || b == b'\x7f')
+        {
             return Err(PipeHttpError::Protocol("invalid header value"));
         }
         headers.push((name.to_ascii_lowercase(), value.trim().to_string()));
@@ -493,15 +553,27 @@ async fn read_body<R: AsyncBufRead + Unpin>(
     let length = lengths[0]
         .parse::<usize>()
         .map_err(|_| PipeHttpError::Protocol("invalid Content-Length"))?;
-    if length > MAX_BODY_BYTES || lengths.iter().any(|value| value.parse::<usize>().ok() != Some(length)) {
-        return Err(PipeHttpError::Protocol("Content-Length is invalid or exceeds size limit"));
+    if length > MAX_BODY_BYTES
+        || lengths
+            .iter()
+            .any(|value| value.parse::<usize>().ok() != Some(length))
+    {
+        return Err(PipeHttpError::Protocol(
+            "Content-Length is invalid or exceeds size limit",
+        ));
     }
     let mut body = vec![0; length];
-    reader.read_exact(&mut body).await.map_err(|_| PipeHttpError::Protocol("truncated Content-Length body"))?;
+    reader
+        .read_exact(&mut body)
+        .await
+        .map_err(|_| PipeHttpError::Protocol("truncated Content-Length body"))?;
     Ok(body)
 }
 
-async fn read_to_eof_bounded<R: AsyncBufRead + Unpin>(reader: &mut R, max: usize) -> Result<Vec<u8>, PipeHttpError> {
+async fn read_to_eof_bounded<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> Result<Vec<u8>, PipeHttpError> {
     let mut body = Vec::new();
     loop {
         let count = {
@@ -511,7 +583,9 @@ async fn read_to_eof_bounded<R: AsyncBufRead + Unpin>(reader: &mut R, max: usize
             }
             let remaining = max.saturating_sub(body.len());
             if available.len() > remaining {
-                return Err(PipeHttpError::Protocol("close-delimited body exceeds size limit"));
+                return Err(PipeHttpError::Protocol(
+                    "close-delimited body exceeds size limit",
+                ));
             }
             body.extend_from_slice(available);
             available.len()
@@ -539,14 +613,24 @@ async fn read_chunked<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Vec<u8>
                 }
             }
         }
-        if body.len().checked_add(size).is_none_or(|n| n > MAX_BODY_BYTES) {
+        if body
+            .len()
+            .checked_add(size)
+            .is_none_or(|n| n > MAX_BODY_BYTES)
+        {
             return Err(PipeHttpError::Protocol("chunked body exceeds size limit"));
         }
         let old_len = body.len();
         body.resize(old_len + size, 0);
-        reader.read_exact(&mut body[old_len..]).await.map_err(|_| PipeHttpError::Protocol("truncated chunk"))?;
+        reader
+            .read_exact(&mut body[old_len..])
+            .await
+            .map_err(|_| PipeHttpError::Protocol("truncated chunk"))?;
         let mut crlf = [0; 2];
-        reader.read_exact(&mut crlf).await.map_err(|_| PipeHttpError::Protocol("missing chunk terminator"))?;
+        reader
+            .read_exact(&mut crlf)
+            .await
+            .map_err(|_| PipeHttpError::Protocol("missing chunk terminator"))?;
         if crlf != *b"\r\n" {
             return Err(PipeHttpError::Protocol("invalid chunk terminator"));
         }
@@ -597,8 +681,14 @@ mod tests {
         assert_eq!(url.path(), "/configs");
         assert_eq!(url.query(), Some("force=true"));
         assert_eq!(builder.method, "PATCH");
-        assert_eq!(builder.headers.get(CONTENT_TYPE).unwrap(), "application/json");
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&builder.body).unwrap()["mode"], "rule");
+        assert_eq!(
+            builder.headers.get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&builder.body).unwrap()["mode"],
+            "rule"
+        );
 
         let get = client.get("http://127.0.0.1:9090/version");
         assert_eq!(get.method, "GET");
@@ -616,7 +706,11 @@ mod tests {
         let value: serde_json::Value = json.json().await.unwrap();
         assert_eq!(value["version"], "test");
 
-        let text = PipeHttpResponse { status: 404, headers: Vec::new(), body: b"missing".to_vec() };
+        let text = PipeHttpResponse {
+            status: 404,
+            headers: Vec::new(),
+            body: b"missing".to_vec(),
+        };
         assert_eq!(text.status(), StatusCode::NOT_FOUND);
         assert_eq!(text.text().await.unwrap(), "missing");
     }
@@ -626,7 +720,10 @@ mod tests {
         let request = encode_request(
             "PATCH",
             "/configs?force=true",
-            &[("Authorization".into(), "Bearer test".into()), ("Content-Type".into(), "application/json".into())],
+            &[
+                ("Authorization".into(), "Bearer test".into()),
+                ("Content-Type".into(), "application/json".into()),
+            ],
             br#"{"mode":"rule"}"#,
         )
         .unwrap();
@@ -652,7 +749,13 @@ mod tests {
         assert!(validate_request("GET\r\nX: y", "/version", &[], 0).is_err());
         assert!(validate_request("GET", "http://localhost/", &[], 0).is_err());
         assert!(validate_request("GET", "/", &[("Content-Length".into(), "9".into())], 0).is_err());
-        assert!(validate_request("GET", "/", &[("X-Test".into(), "ok\r\nInjected: yes".into())], 0).is_err());
+        assert!(validate_request(
+            "GET",
+            "/",
+            &[("X-Test".into(), "ok\r\nInjected: yes".into())],
+            0
+        )
+        .is_err());
     }
 
     async fn parse(raw: &[u8], method: &str) -> Result<PipeHttpResponse, PipeHttpError> {
@@ -672,7 +775,10 @@ mod tests {
         .unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"hello");
-        assert!(response.headers.iter().any(|(name, value)| name == "content-type" && value == "application/json"));
+        assert!(response
+            .headers
+            .iter()
+            .any(|(name, value)| name == "content-type" && value == "application/json"));
     }
 
     #[tokio::test]
@@ -688,20 +794,25 @@ mod tests {
 
     #[tokio::test]
     async fn reads_close_delimited_response_until_eof() {
-        let response = parse(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nbody without framing", "GET")
-            .await
-            .unwrap();
+        let response = parse(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nbody without framing",
+            "GET",
+        )
+        .await
+        .unwrap();
         assert_eq!(response.body, b"body without framing");
     }
 
     #[tokio::test]
     async fn bounds_close_delimited_body_and_http_lines() {
-        let (mut writer, mut reader) = tokio::io::duplex(16);
+        let (mut writer, reader) = tokio::io::duplex(16);
+        let mut reader = BufReader::new(reader);
         writer.write_all(b"12345").await.unwrap();
         drop(writer);
         assert!(read_to_eof_bounded(&mut reader, 4).await.is_err());
 
-        let (mut writer, mut reader) = tokio::io::duplex(16);
+        let (mut writer, reader) = tokio::io::duplex(16);
+        let mut reader = BufReader::new(reader);
         writer.write_all(b"12345\r\n").await.unwrap();
         drop(writer);
         assert!(read_bounded_line_bytes(&mut reader, 4).await.is_err());
@@ -709,8 +820,14 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_truncated_and_oversized_header_responses() {
-        assert!(parse(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nxy", "GET").await.is_err());
-        assert!(parse(b"HTTP/1.1 101 Switching Protocols\r\n\r\n", "GET").await.is_err());
+        assert!(
+            parse(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nxy", "GET")
+                .await
+                .is_err()
+        );
+        assert!(parse(b"HTTP/1.1 101 Switching Protocols\r\n\r\n", "GET")
+            .await
+            .is_err());
 
         let oversized_status = vec![b'x'; MAX_HEADER_BYTES + 1];
         assert!(parse(&oversized_status, "GET").await.is_err());
@@ -718,9 +835,11 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_three_digit_status_and_handles_reset_content() {
-        assert!(parse(b"HTTP/1.1 0200 OK\r\nContent-Length: 0\r\n\r\n", "GET")
-            .await
-            .is_err());
+        assert!(
+            parse(b"HTTP/1.1 0200 OK\r\nContent-Length: 0\r\n\r\n", "GET")
+                .await
+                .is_err()
+        );
         let response = parse(b"HTTP/1.1 205 Reset Content\r\n\r\n", "GET")
             .await
             .unwrap();

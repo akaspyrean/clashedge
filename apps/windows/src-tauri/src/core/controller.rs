@@ -104,7 +104,11 @@ fn fuzzy_proxy_match<'a>(stale: &str, candidates: &[&'a str]) -> Option<&'a str>
     let name_len = wanted.chars().count();
     // Short labels carry little identifying information; only allow an exact
     // normalized match below six characters.
-    let threshold = if name_len < 6 { 0 } else { (name_len / 5).min(3) };
+    let threshold = if name_len < 6 {
+        0
+    } else {
+        (name_len / 5).min(3)
+    };
     (best <= threshold).then_some(name)
 }
 
@@ -419,7 +423,10 @@ impl ControllerClient {
                         let names: Vec<&str> = nodes.iter().filter_map(|v| v.as_str()).collect();
                         if !names.iter().any(|name| *name == proxy) {
                             if let Some(replacement) = fuzzy_proxy_match(&proxy, &names) {
-                                info!("Resolved stale proxy selection '{}' -> '{}'", proxy, replacement);
+                                info!(
+                                    "Resolved stale proxy selection '{}' -> '{}'",
+                                    proxy, replacement
+                                );
                                 proxy = replacement.to_string();
                             }
                         }
@@ -827,10 +834,16 @@ mod tests {
 
     #[test]
     fn tun_enable_parser_defaults_missing_or_malformed_state_to_false() {
-        assert!(parse_tun_enable(&serde_json::json!({ "tun": { "enable": true } })));
-        assert!(!parse_tun_enable(&serde_json::json!({ "tun": { "enable": false } })));
+        assert!(parse_tun_enable(
+            &serde_json::json!({ "tun": { "enable": true } })
+        ));
+        assert!(!parse_tun_enable(
+            &serde_json::json!({ "tun": { "enable": false } })
+        ));
         assert!(!parse_tun_enable(&serde_json::json!({ "tun": {} })));
-        assert!(!parse_tun_enable(&serde_json::json!({ "tun": { "enable": "true" } })));
+        assert!(!parse_tun_enable(
+            &serde_json::json!({ "tun": { "enable": "true" } })
+        ));
     }
 
     #[test]
@@ -854,7 +867,10 @@ mod tests {
 
     #[test]
     fn fuzzy_proxy_match_rejects_ambiguous_or_distant_names() {
-        assert_eq!(fuzzy_proxy_match("US node 1", &["US node 2", "US node 3"]), None);
+        assert_eq!(
+            fuzzy_proxy_match("US node 1", &["US node 2", "US node 3"]),
+            None
+        );
         assert_eq!(fuzzy_proxy_match("old", &["a very different node"]), None);
         assert_eq!(fuzzy_proxy_match("US", &["JP"]), None);
     }
@@ -923,5 +939,4 @@ mod tests {
             s
         );
     }
-
 }

@@ -17,8 +17,8 @@ use tracing::{debug, error, info, warn};
 use crate::config::model::Config;
 use crate::core::controller::api_url;
 use crate::core::health::parse_bind_error;
-use crate::core::pipe_http::PipeHttpClient;
 use crate::core::manager::{CoreManager, CoreStatus, READY_POLL_INTERVAL, READY_TIMEOUT};
+use crate::core::pipe_http::PipeHttpClient;
 use crate::core::spawn;
 use crate::util::error::{Error, Result};
 

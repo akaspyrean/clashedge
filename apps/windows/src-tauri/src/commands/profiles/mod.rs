@@ -424,11 +424,7 @@ pub async fn import_profile_from_url(
         &name,
         userinfo.as_deref(),
     );
-    let mut header = build_header(
-        parsed.as_str(),
-        userinfo.as_deref(),
-        custom_ua.as_deref(),
-    );
+    let mut header = build_header(parsed.as_str(), userinfo.as_deref(), custom_ua.as_deref());
     append_etag(&mut header, downloaded.etag.as_deref());
 
     // 校验 YAML 合法 + 资源限制（节点数量/名称长度/字段值长度）；失败清理临时文件
@@ -527,7 +523,11 @@ mod metadata_tests {
             "clash-edge-profile-metadata-{}.yaml",
             std::process::id()
         ));
-        std::fs::write(&path, "# subscription-url: https://example.com\nproxies: []\n").unwrap();
+        std::fs::write(
+            &path,
+            "# subscription-url: https://example.com\nproxies: []\n",
+        )
+        .unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
         file.set_modified(old).unwrap();

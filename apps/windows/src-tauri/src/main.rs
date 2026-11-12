@@ -38,7 +38,9 @@ fn ipv4_route_identity() -> Option<String> {
 
 #[cfg(windows)]
 fn ipv4_default_routes_identity() -> Option<String> {
-    use windows_sys::Win32::NetworkManagement::IpHelper::{GetIpForwardTable, MIB_IPFORWARDROW, MIB_IPFORWARDTABLE};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetIpForwardTable, MIB_IPFORWARDROW, MIB_IPFORWARDTABLE,
+    };
 
     const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
     let mut size = 0u32;
@@ -72,7 +74,10 @@ fn ipv4_default_routes_identity() -> Option<String> {
         .filter(|row| row.dwForwardDest == 0 && row.dwForwardMask == 0)
         .map(|row| {
             let gateway = std::net::Ipv4Addr::from(row.dwForwardNextHop.to_ne_bytes());
-            format!("if{}:gw{}:metric{}", row.dwForwardIfIndex, gateway, row.dwForwardMetric1)
+            format!(
+                "if{}:gw{}:metric{}",
+                row.dwForwardIfIndex, gateway, row.dwForwardMetric1
+            )
         })
         .collect();
     if defaults.is_empty() {
@@ -103,7 +108,10 @@ fn ipv4_route_identity() -> Option<String> {
         socket.connect("1.1.1.1:53").ok()?;
         Some(socket.local_addr().ok()?.ip().to_string())
     })();
-    Some(format!("if{}:gw{}:src{:?}", route.dwForwardIfIndex, gateway, source))
+    Some(format!(
+        "if{}:gw{}:src{:?}",
+        route.dwForwardIfIndex, gateway, source
+    ))
 }
 
 fn ipv6_route_source() -> Option<String> {
@@ -128,11 +136,7 @@ async fn network_fingerprint() -> Option<String> {
     )
     .await
     .is_ok_and(|result| result.is_ok());
-    if ipv4_route.is_none()
-        && ipv4_defaults.is_none()
-        && ipv6_source.is_none()
-        && !dns_reachable
-    {
+    if ipv4_route.is_none() && ipv4_defaults.is_none() && ipv6_source.is_none() && !dns_reachable {
         None
     } else {
         Some(format!(

@@ -150,7 +150,9 @@ pub(super) fn sanitize_userinfo(raw: &str) -> Option<String> {
 }
 
 pub(super) fn notify_subscription_health(app: &AppHandle, name: &str, userinfo: Option<&str>) {
-    let Some(userinfo) = userinfo else { return; };
+    let Some(userinfo) = userinfo else {
+        return;
+    };
     let value = |key: &str| -> Option<u64> {
         userinfo.split(';').find_map(|item| {
             let (field, number) = item.trim().split_once('=')?;
@@ -183,7 +185,10 @@ pub(super) fn notify_subscription_health(app: &AppHandle, name: &str, userinfo: 
                 app,
                 key,
                 "Subscription traffic almost exhausted",
-                &format!("The subscription '{}' has 10% or less traffic remaining.", name),
+                &format!(
+                    "The subscription '{}' has 10% or less traffic remaining.",
+                    name
+                ),
             ) {
                 warn!("Could not show subscription quota notification: {}", error);
             }
@@ -383,13 +388,9 @@ async fn download_subscription_inner(
             validators.insert(reqwest::header::IF_NONE_MATCH, value);
         }
     }
-    let mut resp = crate::util::fetch::get_direct_first_with_validators(
-        app,
-        url,
-        user_agent,
-        &validators,
-    )
-    .await?;
+    let mut resp =
+        crate::util::fetch::get_direct_first_with_validators(app, url, user_agent, &validators)
+            .await?;
     let response_etag = resp
         .headers()
         .get(reqwest::header::ETAG)
@@ -514,7 +515,10 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         let userinfo = downloaded.userinfo.as_deref().or(old_userinfo.as_deref());
         notify_subscription_health(app, name, userinfo);
         let mut updated_header = build_header(parsed.as_str(), userinfo, custom_ua.as_deref());
-        append_etag(&mut updated_header, downloaded.etag.as_deref().or(old_etag.as_deref()));
+        append_etag(
+            &mut updated_header,
+            downloaded.etag.as_deref().or(old_etag.as_deref()),
+        );
         let refreshed = format!("{}{}", updated_header, strip_subscribe_header(&content));
         validate_profile_strict(&refreshed)?;
         std::fs::write(&temp_path, &refreshed)?;
@@ -551,14 +555,21 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     if !warnings.is_empty() {
         warn!("Update '{}': {}", redact_url(&url), warnings.join("；"));
     }
-    notify_subscription_health(app, name, downloaded.userinfo.as_deref().or(old_userinfo.as_deref()));
+    notify_subscription_health(
+        app,
+        name,
+        downloaded.userinfo.as_deref().or(old_userinfo.as_deref()),
+    );
     let mut updated_header = build_header(
         parsed.as_str(),
         // 新响应携带 userinfo 则用新值，否则沿用旧值（防 CDN 剥离导致流量条消失）
         downloaded.userinfo.as_deref().or(old_userinfo.as_deref()),
         custom_ua.as_deref(),
     );
-    append_etag(&mut updated_header, downloaded.etag.as_deref().or(old_etag.as_deref()));
+    append_etag(
+        &mut updated_header,
+        downloaded.etag.as_deref().or(old_etag.as_deref()),
+    );
     let final_text = format!("{}{}", updated_header, normalized);
     if let Err(e) = validate_profile_strict(&final_text) {
         let _ = std::fs::remove_file(&temp_path);
@@ -684,18 +695,41 @@ pub async fn refresh_all_subscriptions(app: &AppHandle) -> usize {
 
 /// Retry only failed subscriptions whose persisted backoff has elapsed.
 pub async fn retry_failed_subscriptions(app: &AppHandle) {
-    let Ok(profiles_dir) = get_profiles_dir(app) else { return; };
-    let Ok(entries) = std::fs::read_dir(profiles_dir) else { return; };
-    let Ok(data_dir) = crate::util::paths::get_app_data_dir(app) else { return; };
+    let Ok(profiles_dir) = get_profiles_dir(app) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(profiles_dir) else {
+        return;
+    };
+    let Ok(data_dir) = crate::util::paths::get_app_data_dir(app) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("yaml") { continue; }
-        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue; };
+        if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
         let key = crate::util::update_status::subscription_key(name);
-        let Some(record) = crate::util::update_status::read_one(&data_dir, &key) else { continue; };
-        if record.ok || !crate::util::update_status::retry_due(&data_dir, &key, crate::util::update_status::now_secs()) { continue; }
+        let Some(record) = crate::util::update_status::read_one(&data_dir, &key) else {
+            continue;
+        };
+        if record.ok
+            || !crate::util::update_status::retry_due(
+                &data_dir,
+                &key,
+                crate::util::update_status::now_secs(),
+            )
+        {
+            continue;
+        }
         let outcome = refresh_subscription(app, name).await;
-        let (ok, error) = match outcome { Ok(()) => (true, String::new()), Err(e) => (false, e.to_string()) };
+        let (ok, error) = match outcome {
+            Ok(()) => (true, String::new()),
+            Err(e) => (false, e.to_string()),
+        };
         crate::util::update_status::record(&data_dir, &key, ok, &error);
     }
 }
@@ -800,8 +834,14 @@ mod tests {
     fn etag_header_is_preserved_and_removed_from_subscription_body() {
         let mut header = build_header("https://example.com/sub", None, None);
         append_etag(&mut header, Some("\"revision-42\""));
-        assert_eq!(extract_subscription_etag(&header), Some("\"revision-42\"".into()));
-        assert_eq!(strip_subscribe_header(&format!("{}proxies: []\n", header)), "proxies: []");
+        assert_eq!(
+            extract_subscription_etag(&header),
+            Some("\"revision-42\"".into())
+        );
+        assert_eq!(
+            strip_subscribe_header(&format!("{}proxies: []\n", header)),
+            "proxies: []"
+        );
         assert_eq!(sanitize_etag("bad\r\nInjected: true"), None);
     }
 

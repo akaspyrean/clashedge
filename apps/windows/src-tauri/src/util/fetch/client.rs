@@ -249,7 +249,11 @@ async fn send_direct_then_proxy(
     )
     .await
     {
-        Ok(resp) if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_MODIFIED => return Ok(resp),
+        Ok(resp)
+            if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_MODIFIED =>
+        {
+            return Ok(resp)
+        }
         Ok(resp) => {
             warn!(
                 "Direct fetch got non-success status {} for {}; retrying via proxy",
@@ -395,12 +399,10 @@ async fn send_and_follow(
             .build()?
         };
 
-        let mut request = req_client
-            .get(&req_url)
-            .header(
-                USER_AGENT,
-                custom_ua.map_or_else(user_agent, str::to_string),
-            );
+        let mut request = req_client.get(&req_url).header(
+            USER_AGENT,
+            custom_ua.map_or_else(user_agent, str::to_string),
+        );
         // Validators may contain credentials for a subscription URL. Never forward
         // them across a redirect to another origin.
         if _hop == 0 {
