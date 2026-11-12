@@ -550,6 +550,13 @@ impl CoreManager {
                     match self.verify_runtime_applied().await {
                         Ok(()) => {
                             info!("Runtime config hot-reloaded via PUT /configs (health OK)");
+                            // P0-4：force 重载重建了全部组；钉在旧节点上的存量
+                            // 连接会半开挂死（“重载完还是断网”）。排空连接表，
+                            // 让新连接立刻按新配置选路。失败只记日志——
+                            // 排空是重载的增强而非前置条件。
+                            if let Err(e) = self.controller.close_all_connections().await {
+                                warn!("Failed to drain stale connections after hot reload: {}", e);
+                            }
                             *self.applied_hash.lock().unwrap() = Some(hash);
                             // 版本缓存失效，重取
                             if let Ok(v) = self.version().await {

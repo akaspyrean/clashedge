@@ -453,6 +453,11 @@ impl CoreManager {
     pub async fn close_all_connections(&self) -> Result<()> {
         self.controller.close_all_connections().await
     }
+
+    /// 获取 /proxies 原始 JSON（含测速历史，节点池巡检用，不裁剪）
+    pub async fn get_proxies_raw(&self) -> Result<serde_json::Value> {
+        self.controller.get_proxies_raw().await
+    }
 }
 
 #[cfg(test)]

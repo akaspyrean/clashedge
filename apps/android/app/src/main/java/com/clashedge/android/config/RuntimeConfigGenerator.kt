@@ -91,6 +91,13 @@ object RuntimeConfigGenerator {
             appendLine("mode: $safeMode")
             appendLine("log-level: info")
             appendLine()
+            // P0-1 选择持久化：与 Windows 端 build_runtime_config 同步。store-selected
+            // 让 mihomo 把手动选择写入 cache.db，配置重载后按名称恢复；
+            // store-fake-ip 持久化 fake-ip 映射，避免重载后解析抖动。
+            appendLine("profile:")
+            appendLine("  store-selected: true")
+            appendLine("  store-fake-ip: true")
+            appendLine()
             appendLine("dns:")
             appendLine("  enable: true")
             appendLine("  listen: 127.0.0.1:1053")
@@ -125,7 +132,10 @@ object RuntimeConfigGenerator {
                 appendLine("  - name: $GROUP_AUTO")
                 appendLine("    type: url-test")
                 appendLine("    url: https://cp.cloudflare.com/generate_204")
-                appendLine("    interval: 300")
+                // P0-2 探测盲区收敛（与 Windows 端 default_proxy_groups 同步）：
+                // interval 300→120；max-failed-times=2 连败即刻强制检查。
+                appendLine("    interval: 120")
+                appendLine("    max-failed-times: 2")
                 appendLine("    tolerance: 100")
                 appendLine("    proxies: [${manualMembers.joinToString(", ")}]")
             }

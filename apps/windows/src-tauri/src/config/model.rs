@@ -542,7 +542,8 @@ pub struct AdvancedConfig {
 
     /// mihomo `unified-delay`（统一延迟计量）：url-test 延迟去掉握手差异
     /// （RTT×2 计量），不同协议间横向可比。默认 false 保持现网行为；
-    /// 不调整 url-test interval（300s）/ tolerance（100ms）——上游压力红线。
+    /// url-test 探测参数（interval 120s / tolerance 100ms / max-failed-times 2）
+    /// 由内置组基线统一，见 `default_proxy_groups`。
     #[serde(default)]
     pub unified_delay: bool,
 }
@@ -643,12 +644,16 @@ pub fn default_proxy_groups() -> Vec<serde_norway::Value> {
 - name: {auto}
   type: url-test
   url: https://cp.cloudflare.com/generate_204
-  interval: 300
+  # P0-2 探测盲区收敛：interval 300→120（死节点最长霸占时间 5 分钟→2 分钟）；
+  # max-failed-times=2：连续失败即刻触发强制检查，不再等下一个定时周期
+  # （被动熔断，mihomo 支持）。
   # tolerance=100ms：只有新节点比当前快 100ms 以上才切换，
-  # 避免延迟抖动导致的频繁跳变；间隔 300s 兼顾反应速率与稳定性。
+  # 避免延迟抖动导致的频繁跳变。
   # expected-status=204 + timeout=5000：与 cp.cloudflare.com 的
   # generate_204 端点契约对齐（仅 204 视为健康），并限制单次测速 5s，
   # 避免慢节点拖累整组切换决策（mihomo 当前版本支持这两个字段）。
+  interval: 120
+  max-failed-times: 2
   tolerance: 100
   expected-status: 204
   timeout: 5000
@@ -786,6 +791,47 @@ mod tests {
         assert_eq!(get("自定义组"), vec!["节点A"]);
         // 幂等：再跑一遍不再变化
         assert!(!migrate_builtin_proxy_groups(&mut groups));
+    }
+
+    /// P0-2 探测盲区收敛：自动优选基线必须是 interval=120 + max-failed-times=2
+    /// （死节点最长霸占 5 分钟→2 分钟，连败 2 次立即触发强制检查）；
+    /// 旧版持久化的 interval=300 骨架在迁移时被重置为新基线。
+    #[test]
+    fn auto_group_baseline_shrinks_probe_blind_window() {
+        let groups = default_proxy_groups();
+        let auto = groups
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选"))
+            .expect("auto group exists");
+        assert_eq!(auto.get("interval").and_then(|v| v.as_u64()), Some(120));
+        assert_eq!(
+            auto.get("max-failed-times").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(auto.get("tolerance").and_then(|v| v.as_u64()), Some(100));
+
+        // 旧版 300s 骨架 → 迁移重置为 120s + max-failed-times
+        let mut old: Vec<serde_norway::Value> = serde_norway::from_str(
+            r#"
+- name: 自动优选
+  type: url-test
+  url: https://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 100
+  proxies: []
+"#,
+        )
+        .expect("parse legacy groups");
+        assert!(migrate_builtin_proxy_groups(&mut old));
+        let migrated = old
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some("自动优选"))
+            .unwrap();
+        assert_eq!(migrated.get("interval").and_then(|v| v.as_u64()), Some(120));
+        assert_eq!(
+            migrated.get("max-failed-times").and_then(|v| v.as_u64()),
+            Some(2)
+        );
     }
 
     /// 旧版 config.yaml：external-controller / secret 位于顶层。

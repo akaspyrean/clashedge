@@ -321,6 +321,17 @@ pub fn run() {
                 });
             }
 
+            // 节点池后台巡检（P0-3）：每 60s 评估一次 mihomo /proxies 的真实状态；
+            // 节点池整体失活（死亡率 ≥80% 或全部路由组生效节点死亡）时，触发与
+            // 手动测速完全相同的自动恢复链（复用 10 分钟限流与用户开关约束）。
+            // 巡检只读测速历史，自身零探测流量。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::core::patrol::run(app_handle).await;
+                });
+            }
+
             // 启动后静默检查一次应用更新（仅提示，不自动下载 / 安装）。
             {
                 let app_handle = app.handle().clone();

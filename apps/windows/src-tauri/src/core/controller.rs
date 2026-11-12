@@ -282,6 +282,26 @@ impl ControllerClient {
         Ok(groups)
     }
 
+    /// 获取 /proxies 原始 JSON（含 history / alive / now / all 全量字段）。
+    /// 与 `get_proxy_groups`（UI 裁剪版）不同，不裁剪任何字段——
+    /// 供节点池巡检（core::patrol）消费测速历史做失活判定。
+    pub(crate) async fn get_proxies_raw(&self) -> Result<serde_json::Value> {
+        let url = self.api_url(&["proxies"], None)?;
+        let resp = self
+            .api_client
+            .get(url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::Other(format!(
+                "Controller returned {}",
+                resp.status()
+            )));
+        }
+        Ok(resp.json().await?)
+    }
+
     /// 获取规则列表（GET /rules），只保留 type / payload / proxy 三个字段。
     ///
     /// mihomo 的规则条目还带 size、index、extra（命中统计）等字段；规则页首期只读展示，
@@ -306,7 +326,13 @@ impl ControllerClient {
         Ok(trim_rules(&json))
     }
 
-    /// 选择代理组中的某个代理（PUT /proxies/{group}，组名 URL 编码）
+    /// 选择代理组中的某个代理（PUT /proxies/{group}，组名 URL 编码）。
+    ///
+    /// 切换成功后按组排空旧连接（P0-4）：mihomo 不会迁移已建立的连接，
+    /// 旧连接继续钉在原节点上——若原节点已死则半开挂死，表现为
+    /// “切了节点仍然断网”。只排空经由该组的连接，不影响其他组
+    /// （用户在“扶梯出行”切节点不应打断“影音视听”的下载）。
+    /// UI 与托盘两条切换路径都经过这里，自动获得排空语义。
     pub(crate) async fn select_proxy_group(&self, group: String, proxy: String) -> Result<()> {
         let url = self.api_url(&["proxies", &group], None)?;
         let resp = self
@@ -319,6 +345,16 @@ impl ControllerClient {
 
         if resp.status().is_success() {
             info!("Selected {} -> {}", group, proxy);
+            match self.close_group_connections(&group).await {
+                Ok(n) if n > 0 => {
+                    info!("Drained {} stale connection(s) of group '{}'", n, group)
+                }
+                Ok(_) => {}
+                Err(e) => warn!(
+                    "Failed to drain connections of group '{}' after switch: {}",
+                    group, e
+                ),
+            }
             Ok(())
         } else {
             warn!("Failed to select proxy group: {}", resp.status());
@@ -327,6 +363,59 @@ impl ControllerClient {
                 resp.status()
             )))
         }
+    }
+
+    /// 关闭经由指定组的全部活动连接（选择性排空，P0-4）。
+    ///
+    /// GET /connections 原始列表 → 过滤 `chains` 含该组 → 逐个
+    /// DELETE /connections/{id}。返回关闭数；单个删除失败只记日志，
+    /// 不影响其余（best-effort：排空是切换的增强而非前置条件）。
+    pub(crate) async fn close_group_connections(&self, group: &str) -> Result<usize> {
+        let url = self.api_url(&["connections"], None)?;
+        let resp = self
+            .api_client
+            .get(url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::Other(format!(
+                "Controller returned {}",
+                resp.status()
+            )));
+        }
+        let json: serde_json::Value = resp.json().await?;
+        let Some(conns) = json.get("connections").and_then(|v| v.as_array()) else {
+            return Ok(0);
+        };
+
+        let mut closed = 0usize;
+        for conn in conns {
+            let in_group = conn
+                .get("chains")
+                .and_then(|c| c.as_array())
+                .map(|chains| chains.iter().any(|c| c.as_str() == Some(group)))
+                .unwrap_or(false);
+            if !in_group {
+                continue;
+            }
+            let Some(id) = conn.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let del = self.api_url(&["connections", id], None)?;
+            match self
+                .api_client
+                .delete(del)
+                .headers(self.api_headers()?)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => closed += 1,
+                Ok(r) => warn!("DELETE /connections/{} returned {}", id, r.status()),
+                Err(e) => warn!("DELETE /connections/{} failed: {}", id, e),
+            }
+        }
+        Ok(closed)
     }
 
     /// 测试代理组延迟（GET /proxies/{group}/delay）
