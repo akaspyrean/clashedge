@@ -29,7 +29,8 @@ jobs:
       # Pinned so a future x/mobile release cannot raise the Go floor again
       X_MOBILE_VERSION: "v0.0.0-20261011034528-197770444867"
       NDK_VERSION: "27.0.12077973"
-      ANDROID_API: "34"
+      # Keep the AAR manifest compatible with apps that support Android 8.0 (API 26).
+      ANDROID_API: "26"
 
     steps:
       - name: Checkout ClashEdge (for wrapper)
