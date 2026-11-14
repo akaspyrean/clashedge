@@ -11,7 +11,10 @@ export function formatBytes(bytes: number): string {
 }
 
 export interface SubscriptionTraffic {
-  /** 已用字节（upload + download） */
+  /** 服务端是否回传了流量字段（upload/download/total 至少其一）。
+   *  false = 仅回传 expire（到期时间），此时流量面板应显示「无用量信息」。 */
+  has_traffic: boolean;
+  /** 已用字节（upload + download）；无流量字段时为 0 */
   used: number;
   /** 总额字节；0 / 缺省 = 不限量 */
   total: number;
@@ -20,7 +23,8 @@ export interface SubscriptionTraffic {
 }
 
 /** 解析 `Subscription-Userinfo`（`upload=..; download=..; total=..; expire=..`）。
- *  无法解析 / 无任何流量字段返回 null。 */
+ *  无任何可识别字段返回 null；仅有 expire（部分机场不回流量字段）也返回对象，
+ *  供卡片显示到期时间——has_traffic 区分「有流量数据」与「仅到期」。 */
 export function parseUserinfo(info?: string | null): SubscriptionTraffic | null {
   if (!info) return null;
   const m: Record<string, number> = {};
@@ -30,8 +34,10 @@ export function parseUserinfo(info?: string | null): SubscriptionTraffic | null 
     const n = Number(v.trim());
     if (Number.isFinite(n)) m[k.trim().toLowerCase()] = n;
   }
-  if (!("total" in m) && !("upload" in m) && !("download" in m)) return null;
+  const hasTraffic = "total" in m || "upload" in m || "download" in m;
+  if (!hasTraffic && !("expire" in m)) return null;
   return {
+    has_traffic: hasTraffic,
     used: (m.upload ?? 0) + (m.download ?? 0),
     total: m.total ?? 0,
     expire: "expire" in m ? m.expire : undefined,
