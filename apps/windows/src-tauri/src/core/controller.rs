@@ -464,7 +464,11 @@ impl ControllerClient {
     }
 
     /// Clear fake-IP mappings and re-test the built-in url-test group after a
-    /// network transition or a long system sleep.
+    /// network transition or a long system sleep (P1-2).
+    ///
+    /// The probe uses msftconnecttest.com — already allow-listed in fake-ip-filter —
+    /// so it never introduces an extra external-domain dependency, and works more
+    /// reliably on Windows Wi-Fi networks than gstatic.com.
     pub(crate) async fn recover_after_network_change(&self) -> Result<()> {
         let flush_url = self.api_url(&["cache", "fakeip", "flush"], None)?;
         let flush = self
@@ -494,7 +498,12 @@ impl ControllerClient {
         {
             return Ok(());
         }
-        let test_url = "https://www.gstatic.com/generate_204";
+        let test_url = "https://www.msftconnecttest.com/connecttest.txt";
+        let fake = {
+            let cfg = self.config.read();
+            crate::util::fetch::fake_ip_range_from_config(&cfg)
+        };
+        crate::util::fetch::validate_url_with(test_url, fake.as_ref()).await?;
         let query = [("url", test_url), ("timeout", "5000")];
         let delay_url = self.api_url(&["group", group, "delay"], Some(&query))?;
         let tested = self
@@ -507,6 +516,53 @@ impl ControllerClient {
             warn!("Automatic proxy-group retest returned {}", tested.status());
         }
         Ok(())
+    }
+
+    /// TUN enabled-after lightweight connectivity probe (diagnostic only, does
+    /// not block the transaction).
+    ///
+    /// Probes the Windows NCSI probe domain via the built-in auto-select group:
+    /// the domain is allow-listed in fake-ip-filter (real resolution), so one
+    /// probe covers the whole chain "DNS resolution → route → node exit".
+    /// Common TUN-break causes — auto-detect-interface picking a wrong adapter,
+    /// DoH upstream blocked, captive portal not authenticated — all make this
+    /// probe fail.
+    ///
+    /// Returns Ok(false) when the auto group is missing or not URLTest, meaning
+    /// the probe cannot run; silently skipped in that case.
+    pub(crate) async fn probe_tun_connectivity(&self) -> Result<bool> {
+        let group = crate::config::model::product_data::GROUP_AUTO;
+        let group_url = self.api_url(&["proxies", group], None)?;
+        let response = self
+            .api_client
+            .get(group_url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Ok(false);
+        }
+        let value: serde_json::Value = response.json().await?;
+        if value.get("type").and_then(|v| v.as_str()) != Some("URLTest")
+            && value.get("type").and_then(|v| v.as_str()) != Some("url-test")
+        {
+            return Ok(false);
+        }
+        let test_url = "https://www.msftconnecttest.com/connecttest.txt";
+        let fake = {
+            let cfg = self.config.read();
+            crate::util::fetch::fake_ip_range_from_config(&cfg)
+        };
+        crate::util::fetch::validate_url_with(test_url, fake.as_ref()).await?;
+        let query = [("url", test_url), ("timeout", "5000")];
+        let delay_url = self.api_url(&["group", group, "delay"], Some(&query))?;
+        let tested = self
+            .api_client
+            .get(delay_url)
+            .headers(self.api_headers()?)
+            .send()
+            .await?;
+        Ok(tested.status().is_success())
     }
 
     /// 关闭经由指定组的全部活动连接（选择性排空，P0-4）。

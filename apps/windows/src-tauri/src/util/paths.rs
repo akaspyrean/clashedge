@@ -58,6 +58,40 @@ fn current_exe_normalized() -> Option<PathBuf> {
     std::env::current_exe().ok().map(strip_verbatim_prefix)
 }
 
+/// 日志脱敏：把绝对路径里的用户主目录前缀替换为 `~`。
+///
+/// 应用日志（`logs/`、Webview 日志面板）常含 `config_path` / `data_dir` 等
+/// 绝对路径；Windows 安装版的数据目录位于 `C:\Users\<用户名>\AppData\...`，
+/// 用户把日志分享给他人排查问题时会顺带暴露 Windows 用户名。写入日志的
+/// 路径统一先经本函数归一（`~\AppData\...`），保持信息足够定位问题的同时
+/// 不泄露用户名。无法归一时原样返回。仅用于日志展示，不用于任何文件操作。
+pub fn redact_path_for_log(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if raw.is_empty() {
+        return String::new();
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
+        if home.as_os_str().is_empty() {
+            return raw.to_string();
+        }
+        if let Ok(rest) = path.strip_prefix(&home) {
+            if rest.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~\\{}", rest.display());
+        }
+        // 大小写 / 短路径名差异导致 strip_prefix 失败时按字符串前缀再试一次。
+        let home_str = home.to_string_lossy();
+        if let Some(rest) = raw.strip_prefix(home_str.as_ref()) {
+            if rest.is_empty() {
+                return "~".to_string();
+            }
+            return format!("~\\{}", rest.trim_start_matches(['\\', '/']));
+        }
+    }
+    raw.to_string()
+}
+
 /// 是否为便携模式：
 /// - `CLASH_EDGE_DATA_DIR` 环境变量已设置（参考包 C# 启动器布局）→ 便携；
 /// - **或** exe 同目录下 `App/portable.dat` 存在，或 `App/clash-edge-core.exe` 存在
@@ -545,5 +579,29 @@ mod tests {
         assert!(sanitize_profile_name("foo").is_ok());
         assert!(sanitize_profile_name("foo.bar").is_ok());
         assert!(sanitize_profile_name("foo ").is_ok());
+    }
+
+    /// 日志脱敏：用户主目录替换为 `~`；非主目录下路径原样保留。
+    #[test]
+    fn redact_path_for_log_strips_home_prefix() {
+        let home =
+            PathBuf::from(std::env::var_os("USERPROFILE").expect("USERPROFILE set on Windows"));
+        let under = home.join("AppData").join("Local").join("ClashEdge");
+        let redacted = redact_path_for_log(&under);
+        assert!(
+            redacted.starts_with(r"~\AppData") || redacted.starts_with("~/AppData"),
+            "expected '~/AppData...', got '{}'",
+            redacted
+        );
+        assert!(
+            redacted == r"~\AppData\Local\ClashEdge" || redacted == "~/AppData/Local/ClashEdge",
+            "unexpected form: {}",
+            redacted
+        );
+        let root_redacted = redact_path_for_log(&home);
+        assert_eq!(root_redacted, "~");
+        // 用户主目录外的路径不应被修改
+        let external = PathBuf::from(r"D:\Program Files\ClashEdge\Data");
+        assert_eq!(redact_path_for_log(&external), external.to_string_lossy());
     }
 }

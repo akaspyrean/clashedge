@@ -194,9 +194,9 @@ impl CoreManager {
                 self.spawn_watcher(generation);
                 info!(
                     "mihomo started ({} -d {} -f {})",
-                    mihomo_path.display(),
-                    data_dir.display(),
-                    runtime_config.display()
+                    crate::util::paths::redact_path_for_log(&mihomo_path),
+                    crate::util::paths::redact_path_for_log(&data_dir),
+                    crate::util::paths::redact_path_for_log(&runtime_config)
                 );
                 // 启动成功也推送状态事件（含 restart 场景），前端据此刷新核心状态与代理组。
                 let _ = self.app_handle.emit(

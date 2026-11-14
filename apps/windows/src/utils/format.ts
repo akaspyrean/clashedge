@@ -102,6 +102,13 @@ export function maskUrl(url: string): string {
   }
 }
 
+/** 把一段日志文本里出现的所有 http(s) URL 逐个打码（复用 maskUrl 规则）。
+ *  mihomo / 应用日志行常内嵌订阅地址，用户复制日志分享时可能带出 token；
+ *  渲染前统一过一遍本函数兜底。无 URL 的行原样返回。 */
+export function maskUrlsInText(text: string): string {
+  return text.replace(/https?:\/\/[^\s]+/g, (u) => maskUrl(u));
+}
+
 /** 常用地区名到国旗 Emoji 的映射 */
 const REGION_FLAGS: Record<string, string> = {
   香港: "🇭🇰",

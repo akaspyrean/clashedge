@@ -82,7 +82,10 @@ impl ConfigManager {
                 *self.config.write() = validated;
             }
         }
-        info!("ConfigManager initialized at {}", data_dir.display());
+        info!(
+            "ConfigManager initialized at {}",
+            crate::util::paths::redact_path_for_log(&data_dir)
+        );
         Ok(())
     }
 
@@ -336,10 +339,13 @@ fn backup_corrupt_config(config_path: &Path) {
     }
     let backup = config_path.with_file_name(format!("{}.corrupt-{}.bak", file_name, stamp));
     match std::fs::copy(config_path, &backup) {
-        Ok(_) => info!("Original config backed up to {}", backup.display()),
+        Ok(_) => info!(
+            "Original config backed up to {}",
+            crate::util::paths::redact_path_for_log(&backup)
+        ),
         Err(e) => error!(
             "Failed to back up corrupt config to {}: {}",
-            backup.display(),
+            crate::util::paths::redact_path_for_log(&backup),
             e
         ),
     }

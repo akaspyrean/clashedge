@@ -86,6 +86,18 @@ async function bootstrap() {
   registerListener("tun-mode-changed", reloadConfig);
   registerListener("config-mixin-changed", reloadConfig);
 
+  // TUN 开启后连通性探测失败：弹可操作的排查建议。探测由后端在
+  // apply_tun 成功后异步执行（PATCH 成功 ≠ 网络真的通），失败场景常见于
+  // 多网卡自动检测选错网卡 / DoH 上游被阻断 / 门户网络未认证。
+  registerListener("tun-connectivity-degraded", () => {
+    ElNotification({
+      title: tr("tun.degraded_title"),
+      message: tr("tun.degraded_body"),
+      type: "warning",
+      duration: 15000,
+    });
+  });
+
   // 托盘里切换代理组后，前端代理组选中态也要跟随刷新。
   registerListener("proxy-group-changed", () => {
     void useProxyStore().loadGroups();
