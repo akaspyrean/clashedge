@@ -19,6 +19,7 @@ describe("formatBytes", () => {
 describe("parseUserinfo", () => {
   it("parses a Subscription-Userinfo header", () => {
     expect(parseUserinfo("upload=10; download=20; total=100; expire=1700000000")).toEqual({
+      has_traffic: true,
       used: 30,
       total: 100,
       expire: 1700000000,
@@ -28,11 +29,16 @@ describe("parseUserinfo", () => {
     expect(parseUserinfo("download=1; total=2; expire=0")?.expire).toBe(0);
     expect(parseUserinfo("download=1; total=2")?.expire).toBeUndefined();
   });
+  it("keeps expire-only userinfo (has_traffic=false) for expiry display", () => {
+    const info = parseUserinfo("expire=1");
+    expect(info).not.toBeNull();
+    expect(info!.has_traffic).toBe(false);
+    expect(info!.expire).toBe(1);
+  });
   it("returns null for empty / unusable input", () => {
     expect(parseUserinfo(null)).toBeNull();
     expect(parseUserinfo("")).toBeNull();
     expect(parseUserinfo("garbage")).toBeNull();
-    expect(parseUserinfo("expire=1")).toBeNull();
   });
 });
 

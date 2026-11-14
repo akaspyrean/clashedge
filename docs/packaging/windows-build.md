@@ -236,19 +236,14 @@ dist/
 | `C:\Users\<username>` | Error | 用户配置目录硬编码 |
 | `C:\Program Files` | Warning | 系统目录假设 |
 | `%APPDATA%` / `%LOCALAPPDATA%` | Error | 环境变量依赖 (便携模式不应用) |
-| `D:\900 AIWork` | Error | 开发机路径泄露 |
+| `$env:USERPROFILE` (自动推导) | Error | 当前用户主目录绝对路径（含 CI 运行器） |
+| 仓库根目录 (自动推导) | Error | 本地检出目录的绝对路径泄露 |
 | `\\?\` / `\\.\` | Info | 设备路径 (通常无害) |
 
 ### 运行方式
 ```powershell
-# 扫描指定目录 (默认 dist/ClashEdge-portable-win64 解压后)
-.\scripts\windows\scan-portable-paths.ps1 -Path "dist/extracted"
-
-# 严格模式 (Warning 视为 Error)
-.\scripts\windows\scan-portable-paths.ps1 -Strict
-
-# 输出 JSON (CI 解析)
-.\scripts\windows\scan-portable-paths.ps1 -OutputJson "scan-result.json"
+# 扫描指定的便携包目录；发现泄漏时以非零码退出（CI 直接失败）
+.\scripts\windows\scan-portable-paths.ps1 -Root "dist\ClashEdge-portable-win64"
 ```
 
 ### CI 集成

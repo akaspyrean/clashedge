@@ -25,10 +25,21 @@ if (-not (Test-Path $Root)) { throw "Root not found: $Root" }
 # configuration/assets. Rust dependency panic locations under Cargo's immutable
 # registry source are diagnostic metadata and do not affect relocatability; those
 # prefixes are normalized before matching (same treatment for local and CI builds).
-$DevSourcePatterns = @(
-    "D:\\900 AIWork",
-    "C:\\Users\\Fong"
-)
+#
+# Patterns are derived at runtime from the *current* build environment, so no
+# personal machine paths are committed to this repository:
+#   - the current user's home directory (covers C:\Users\<name> on any machine,
+#     including CI runners);
+#   - this checkout's repository root (covers e.g. D:\<workspace>\<repo> paths
+#     baked into artifacts by local builds).
+$DevSourcePatterns = [System.Collections.Generic.List[string]]::new()
+if ($env:USERPROFILE) {
+    $DevSourcePatterns.Add([regex]::Escape($env:USERPROFILE))
+}
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+if ($repoRoot -and (Test-Path $repoRoot)) {
+    $DevSourcePatterns.Add([regex]::Escape($repoRoot))
+}
 
 $TextExt = @(
     ".json", ".toml", ".cfg", ".config", ".ini", ".conf", ".yaml", ".yml",

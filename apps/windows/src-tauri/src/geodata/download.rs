@@ -156,7 +156,7 @@ pub fn replace_all(pairs: &[(std::path::PathBuf, std::path::PathBuf)]) -> Result
                 }
                 return Err(Error::Other(format!(
                     "failed to replace {}: {} (all changes rolled back)",
-                    target.display(),
+                    crate::util::paths::redact_path_for_log(&target),
                     e
                 )));
             }

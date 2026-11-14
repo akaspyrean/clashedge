@@ -247,6 +247,12 @@ pub async fn export_config(app: AppHandle, state: State<'_, crate::AppState>) ->
         );
     }
     let yaml = serde_norway::to_string(&runtime)?;
+    // 文件头警示：导出文件包含节点密码 / UUID 等敏感信息（secret 已脱敏，
+    // 但 proxies 仍明文），用户误分享或上传公开仓库会泄露节点凭据。
+    let yaml = format!(
+        "# ⚠️ Warning: this file contains proxy node passwords/UUIDs — do not share publicly.\n\
+         # 注意：本文件包含节点密码 / UUID 等敏感信息，请勿外传或上传到公开仓库。\n{yaml}"
+    );
     let data_dir = crate::util::paths::get_app_data_dir(&app)?;
     let export_path = data_dir.join("config-export.yaml");
     crate::util::atomic::atomic_write(&export_path, yaml.as_bytes())?;
