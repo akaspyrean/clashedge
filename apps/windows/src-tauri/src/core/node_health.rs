@@ -21,9 +21,11 @@ const MAX_TRACKED_NODES: usize = 500;
 const MAX_NODE_NAME_BYTES: usize = 256;
 const REQUIRED_SUCCESSFUL_POINTS: usize = 2;
 pub const PROBE_ENDPOINTS: &[&str] = &[
+    // msftconnecttest 优先：Windows NCSI 同源域名，已在 fake-ip-filter 白名单，
+    // 不额外触境外连接；后两个端点提供多源冗余（两点成功才计可用）。
+    "https://www.msftconnecttest.com/connecttest.txt",
     "http://www.gstatic.com/generate_204",
     "https://cp.cloudflare.com/generate_204",
-    "https://www.msftconnecttest.com/connecttest.txt",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -624,7 +624,10 @@ impl ControllerClient {
         group: String,
         url: Option<String>,
     ) -> Result<Vec<serde_json::Value>> {
-        let test_url = url.unwrap_or_else(|| "http://www.gstatic.com/generate_204".to_string());
+        // 默认探测 URL 用 msftconnecttest（Windows NCSI 同源，已在 fake-ip-filter
+        // 白名单且不额外触境外连接）；调用方传入自定义 URL 时以调用方为准。
+        let test_url =
+            url.unwrap_or_else(|| "https://www.msftconnecttest.com/connecttest.txt".to_string());
         // C2 SSRF 防护：该 URL 会作为参数传给 mihomo 由内核去拉取（非本地 client），
         // 同样必须通过禁段校验，防止被当作跳板探测内网。
         let fake = {

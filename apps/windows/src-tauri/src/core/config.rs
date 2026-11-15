@@ -259,6 +259,20 @@ pub fn build_runtime_config(
     // 同时强力保全 Windows NCSI 探测域名（msftconnecttest.com / msftncsi.com）在 fake-ip-filter 中，
     // 防止连通性误报，并让 WebRTC STUN 获得真实地址。
     let mut dns_val = serde_norway::to_value(&app.dns)?;
+    // 应用级 DoH 故障兜底（不透传 mihomo）：disable_doh=true 时 nameserver
+    // 仅输出明文 IP（复用 proxy_server_nameserver），用于 TUN 断网且确认
+    // DoH 被当前网络/运营商阻断时的一键回退。该键本身是应用级开关，
+    // mihomo 不认识，无论开关状态都必须从运行时 DNS 段剔除。
+    if let Some(dns_map) = dns_val.as_mapping_mut() {
+        dns_map.remove(serde_norway::Value::String("disable-doh".to_string()));
+        if app.dns.disable_doh {
+            let plain_ips: Vec<String> = app.dns.proxy_server_nameserver.clone();
+            dns_map.insert(
+                serde_norway::Value::String("nameserver".to_string()),
+                serde_norway::to_value(&plain_ips)?,
+            );
+        }
+    }
     if app.tun.enable {
         if let Some(dns_map) = dns_val.as_mapping_mut() {
             dns_map.insert(
@@ -561,6 +575,66 @@ mod tests {
         assert!(map.get("rules").is_some());
         assert!(map.get("proxy-groups").is_some());
         assert!(map.get("rule-providers").is_some());
+    }
+
+    /// 应用级 DoH 故障兜底（disable_doh）：开启时运行时 nameserver 必须仅含
+    /// 明文 IP（复用 proxy_server_nameserver），关闭时保持原 nameserver。
+    #[test]
+    fn build_runtime_config_disable_doh_falls_back_to_plain_nameservers() {
+        let mut app = Config::default();
+
+        // 默认（disable_doh=false）：nameserver 保持 DoH 形态
+        let runtime = build_runtime_config(&app, None).unwrap();
+        let dns = runtime
+            .as_mapping()
+            .unwrap()
+            .get("dns")
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let ns = dns
+            .get("nameserver")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            ns.iter().any(|s| s.starts_with("https://")),
+            "default nameserver must keep DoH endpoints"
+        );
+
+        // disable_doh=true：nameserver 仅输出明文 IP
+        app.dns.disable_doh = true;
+        let runtime = build_runtime_config(&app, None).unwrap();
+        let dns = runtime
+            .as_mapping()
+            .unwrap()
+            .get("dns")
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let ns = dns
+            .get("nameserver")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            !ns.is_empty() && ns.iter().all(|s| !s.starts_with("https://")),
+            "disable_doh must replace nameserver with plain-IP entries"
+        );
+        assert_eq!(
+            ns, app.dns.proxy_server_nameserver,
+            "plain fallback must reuse proxy_server_nameserver addresses"
+        );
+        assert!(
+            dns.get("disable-doh").is_none(),
+            "disable-doh must not be written into runtime config (mihomo unknown key)"
+        );
     }
 
     #[test]

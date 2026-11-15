@@ -132,7 +132,7 @@ async fn network_fingerprint() -> Option<String> {
     // intentionally excluded so ordinary CDN rotation cannot trigger recovery.
     let dns_reachable = tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        tokio::net::lookup_host(("connectivitycheck.gstatic.com", 443)),
+        tokio::net::lookup_host(("www.msftconnecttest.com", 443)),
     )
     .await
     .is_ok_and(|result| result.is_ok());

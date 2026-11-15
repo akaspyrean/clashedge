@@ -417,6 +417,15 @@ pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> 
 
     // 2. 所有接管/释放均走 proxy journal 的统一 ownership helper。
     //    释放失败时 helper 保留 journal；调用方回滚配置并保持 Mihomo 运行。
+    //    开启前快照用户原状态：若原有 PAC（AutoConfigURL），接管期间会被暂时
+    //    停用（关闭时经 journal 精确恢复），随后向前端推送轻提示事件。
+    let original_pac = if enable {
+        crate::proxy::system_proxy::get_system_proxy()
+            .ok()
+            .and_then(|before| before.auto_config_url)
+    } else {
+        None
+    };
     let reg_result = if enable {
         crate::proxy::journal::acquire_system_proxy(&data_dir, mixed_port)
     } else {
@@ -449,6 +458,19 @@ pub(crate) async fn apply_system_proxy_locked(app: &AppHandle, enable: bool) -> 
         "system-proxy-changed",
         serde_json::json!({ "enable": enable }),
     );
+
+    // 开启时若检测到用户原有 PAC（AutoConfigURL）：通知前端轻提示
+    // 「原有 PAC 将暂时停用，关闭系统代理后自动恢复」。PAC 本身已由
+    // journal 快照接管/精确恢复，这里只补用户感知，不改变行为。
+    // 事件载荷经 redact_url_for_log 脱敏——PAC 地址可能携带敏感 token。
+    if let Some(pac) = original_pac {
+        let _ = app.emit(
+            "system-proxy-pac-paused",
+            serde_json::json!({
+                "autoConfigUrl": crate::util::fetch::redact_url_for_log(&pac)
+            }),
+        );
+    }
     Ok(())
 }
 

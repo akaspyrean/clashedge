@@ -117,4 +117,17 @@ describe("formatNodeDisplay", () => {
     expect(res3.displayName).toBe("香港 01");
     expect(res3.regionCode).toBe("HK");
   });
+
+  it("does not over-strip short legitimate names ending in a TLD", async () => {
+    const { formatNodeDisplay } = await import("./format");
+    // 短合法名（剥离后 <2 字符）不应用顶级域剥离："a.io" 不变成 "a"
+    const short = formatNodeDisplay("a.io");
+    expect(short.cleanName).toBe("a.io");
+    // 正常剥离仍生效："c37s1.com" → "c37s1"
+    const normal = formatNodeDisplay("c37s1.com");
+    expect(normal.cleanName).toBe("c37s1");
+    // 两字符前缀保留剥离："hk.io" → "hk"
+    const twoChar = formatNodeDisplay("hk.io");
+    expect(twoChar.cleanName).toBe("hk");
+  });
 });

@@ -103,6 +103,18 @@ async function bootstrap() {
     void useProxyStore().loadGroups();
   });
 
+  // 开启系统代理时若检测到用户原有 PAC：轻提示，说明 PAC 暂停与自动恢复。
+  // 载荷中的 URL 已由后端 redact_url_for_log 脱敏，前端只负责展示。
+  registerListener("system-proxy-pac-paused", (e) => {
+    const payload = e.payload as { autoConfigUrl?: string } | undefined;
+    ElNotification({
+      title: tr("proxy.system_proxy"),
+      message: tr("proxy.pac_hint").replace("{url}", payload?.autoConfigUrl ?? "–"),
+      type: "info",
+      duration: 10000,
+    });
+  });
+
   // 自启开关在托盘与设置页都可能改动；这里做生命周期级监听，把真实状态写进
   // 共享 app store（设置页从该店读），避免只在设置页挂载时监听导致的「有时不联动」。
   registerListener("autostart-changed", (e) => {

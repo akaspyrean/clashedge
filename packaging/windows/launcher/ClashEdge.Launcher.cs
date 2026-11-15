@@ -1402,8 +1402,8 @@ internal static class ClashEdgeLauncher
             Console.WriteLine(++total + ". T-s1 json roundtrip: " + (ExtractJsonField(json, "zip_path") == nasty ? "PASS" : "FAIL"));
             Console.WriteLine(++total + ". T-s1 json sibling field: " + (ExtractJsonField(json, "sha256") == "abc" ? "PASS" : "FAIL"));
             // serde_json 风格（\\ 转义反斜杠、\uXXXX）
-            string serde = "{\"zip_path\":\"D:\\\\Tools\\\\Clash Edge\\\\x.zip\",\"v\":\"\\u0041\"}";
-            Console.WriteLine(++total + ". T-s1 serde path: " + (ExtractJsonField(serde, "zip_path") == "D:\\Tools\\Clash Edge\\x.zip" ? "PASS" : "FAIL"));
+            string serde = "{\"zip_path\":\"C:\\\\Users\\\\<user>\\\\Clash Edge\\\\x.zip\",\"v\":\"\\u0041\"}";
+            Console.WriteLine(++total + ". T-s1 serde path: " + (ExtractJsonField(serde, "zip_path") == "C:\\Users\\<user>\\Clash Edge\\x.zip" ? "PASS" : "FAIL"));
             Console.WriteLine(++total + ". T-s1 unicode escape: " + (ExtractJsonField(serde, "v") == "A" ? "PASS" : "FAIL"));
             Console.WriteLine(++total + ". T-s1 missing field: " + (ExtractJsonField(json, "nope") == null ? "PASS" : "FAIL"));
         }

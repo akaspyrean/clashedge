@@ -180,6 +180,7 @@ general:
 proxy:
   title: "代理设置"
   system_proxy: "系统代理"
+  pac_hint: "开启系统代理时，原有 PAC（{url}）将暂时停用；关闭系统代理后自动恢复。"
   tun_mode: "TUN 模式"
   proxy_groups: "代理组"
   latency_test: "延迟测试"

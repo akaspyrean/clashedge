@@ -204,8 +204,10 @@ export function formatNodeDisplay(rawName: string, region?: string | null): {
   // 3. 去除长域名后缀（如 .portablesubmarines.com、.portablesub.net、.sub.xyz 等）
   clean = clean.replace(/\.(portablesub[a-z0-9_-]*|sub|node|server|v2ray|shadowsocks|vpn)\.[a-zA-Z0-9.-]+$/i, "");
   // 如果剩余部分仍带有域名尾缀（如 c37s1.com / c37s1.net），去除常见二级或顶级域
+  // 仅在剥离后结果非空且长度 ≥ 2 时应用，避免误伤短合法节点名（如 "a.io" → "a"）
   clean = clean.replace(/\.[a-zA-Z0-9_-]+\.(com|net|org|xyz|top|io|me|info|vip|club|co|cc)$/i, "");
-  clean = clean.replace(/\.(com|net|org|xyz|top|io|me|info|vip|club|co|cc)$/i, "");
+  const afterTldStrip = clean.replace(/\.(com|net|org|xyz|top|io|me|info|vip|club|co|cc)$/i, "");
+  if (afterTldStrip.length >= 2) clean = afterTldStrip;
 
   // 4. 去除类似 "【VIP专线】" 或头部方括号广告
   clean = clean.replace(/^\[[^\]]+\]/, "").trim();
