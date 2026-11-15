@@ -628,8 +628,7 @@ mod tests {
             "disable_doh must replace nameserver with plain-IP entries"
         );
         assert_eq!(
-            ns,
-            app.dns.proxy_server_nameserver,
+            ns, app.dns.proxy_server_nameserver,
             "plain fallback must reuse proxy_server_nameserver addresses"
         );
         assert!(
