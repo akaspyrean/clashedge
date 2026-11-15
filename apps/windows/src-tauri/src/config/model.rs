@@ -447,6 +447,12 @@ pub struct DnsConfig {
     /// 避免节点域名解析走 DoH 导致循环依赖（DoH 域名自身需要先解析）。
     #[serde(default = "default_dns_proxy_server_nameserver")]
     pub proxy_server_nameserver: Vec<String>,
+
+    /// 应用级 DoH 故障兜底开关（不透传 mihomo）：true 时 `build_runtime_config`
+    /// 的 `nameserver` 仅输出明文 IP（复用 `proxy_server_nameserver` 同源地址），
+    /// 用于 TUN 断网且确认 DoH 被当前网络/运营商阻断时的一键回退。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_doh: bool,
 }
 
 /// 派生 Default 会让 dns 所有字段变成空值，写进 config.yaml 后 mihomo 报
@@ -465,6 +471,7 @@ impl Default for DnsConfig {
             nameserver: default_dns_nameserver(),
             doh_endpoints: default_dns_doh_endpoints(),
             proxy_server_nameserver: default_dns_proxy_server_nameserver(),
+            disable_doh: false,
         }
     }
 }
@@ -482,7 +489,9 @@ fn default_dns_fake_ip_range() -> String {
     "198.18.0.1/16".to_string()
 }
 fn default_dns_prefer_h3() -> bool {
-    true
+    // false：UDP 443 受限 WiFi 下 DoH 首选 H3 会先超时再回退，拖慢首解析；
+    // mihomo 官方示例默认不开 H3。用户可在设置页手动开启。
+    false
 }
 fn default_dns_fake_ip_filter() -> Vec<String> {
     vec![
