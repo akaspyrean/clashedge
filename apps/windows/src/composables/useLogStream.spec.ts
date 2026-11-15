@@ -92,4 +92,24 @@ describe("useLogStream", () => {
     api.resume();
     expect(api.entries.value).toEqual([]);
   });
+
+  it("masks URLs embedded in incoming log lines", async () => {
+    const { api } = setup();
+    await flushPromises();
+    api.clear();
+    handlers["log-line"]({
+      payload: {
+        level: "info",
+        message:
+          "updating provider from https://sub.example.com/api/v1/client/subscribe?token=abcdef123456 done",
+      },
+    });
+    const msg = api.entries.value[0].message;
+    expect(msg).not.toContain("abcdef123456");
+    expect(msg).toContain("••••••••");
+    expect(msg).toContain("done");
+    // 无 URL 的行保持原样
+    handlers["log-line"]({ payload: { level: "info", message: "plain line" } });
+    expect(api.entries.value[1].message).toBe("plain line");
+  });
 });

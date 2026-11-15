@@ -69,7 +69,7 @@ const onTun = (v: boolean | string | number) => {
         <el-switch v-model="cfg.tun['endpoint-independent-nat']" :aria-label="label" />
       </template>
     </PrefRow>
-    <PrefRow :title="t('tun.interface_name')">
+    <PrefRow :title="t('tun.interface_name')" :hint="t('tun.interface_name_hint')">
       <template #default="{ label }">
         <el-input
           v-model="interfaceName"

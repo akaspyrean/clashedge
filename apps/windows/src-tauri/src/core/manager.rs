@@ -298,6 +298,11 @@ impl CoreManager {
         self.controller.recover_after_network_change().await
     }
 
+    /// TUN 开启后的连通性探测（转发给控制器客户端）。
+    pub async fn probe_tun_connectivity(&self) -> Result<bool> {
+        self.controller.probe_tun_connectivity().await
+    }
+
     /// 获取代理组列表（GET /proxies）。
     pub async fn get_proxy_groups(&self) -> Result<Vec<serde_json::Value>> {
         let mut groups = self.controller.get_proxy_groups().await?;

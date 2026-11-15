@@ -66,6 +66,18 @@ describe("ProfileCard", () => {
     expect(w.find(".usage").exists()).toBe(false);
   });
 
+  it("shows the expiry date alone when the server sends only expire (no traffic fields)", () => {
+    const day = 86_400;
+    const now = Math.floor(Date.now() / 1000);
+    const w = mountApp(ProfileCard, {
+      props: { profile: { ...sub, userinfo: `expire=${now + 30 * day}` } },
+    });
+    // 无流量字段：不显示流量条与流量文字，只显示到期日期
+    expect(w.find('[role="progressbar"]').exists()).toBe(false);
+    expect(w.text()).not.toContain("profiles.traffic:");
+    expect(w.text()).toContain("profiles.traffic_expire");
+  });
+
   it("status tags combine colour with text: active, expiring, expired, failed", () => {
     const day = 86_400;
     const now = Math.floor(Date.now() / 1000);

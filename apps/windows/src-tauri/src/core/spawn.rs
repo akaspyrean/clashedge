@@ -54,8 +54,9 @@ pub fn read_active_profile(data_dir: &Path, config: &Config) -> Option<String> {
         Err(_) => {
             if !safe.eq_ignore_ascii_case("DIRECT") {
                 warn!(
-                    "Active profile '{}' not found at {:?}; using builtin preset",
-                    safe, path
+                    "Active profile '{}' not found at {}; using builtin preset",
+                    safe,
+                    crate::util::paths::redact_path_for_log(&path)
                 );
             }
             None
@@ -77,7 +78,11 @@ pub fn write_runtime_config(data_dir: &Path, config: &Config) -> Result<(PathBuf
         .take(8)
         .map(|b| format!("{:02x}", b))
         .collect();
-    info!("Runtime config written to {:?} (hash {})", path, hash);
+    info!(
+        "Runtime config written to {} (hash {})",
+        crate::util::paths::redact_path_for_log(&path),
+        hash
+    );
     Ok((path, hash))
 }
 
@@ -341,7 +346,7 @@ fn open_log_append(path: &Path, label: &str) -> Result<(std::fs::File, u64)> {
         .map_err(|e| {
             Error::Io(std::io::Error::other(format!(
                 "open {}: {}",
-                path.display(),
+                crate::util::paths::redact_path_for_log(path),
                 e
             )))
         })?;

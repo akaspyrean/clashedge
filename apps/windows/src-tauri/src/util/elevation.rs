@@ -46,17 +46,7 @@ pub fn is_elevated() -> bool {
     true
 }
 
-/// 以管理员身份（UAC）重启当前应用。
-///
-/// 成功返回后调用方应立即退出当前进程——新实例启动时会先通过
-/// [`wait_for_previous_instance`] 等待旧 PID 退出，避开单实例锁把新实例挡掉。
-/// 附带参数：
-/// - `--clash-edge-elevated-relaunch=<旧 PID>`：新实例等待旧实例退出；
-/// - `--clash-edge-enable-tun`：新实例在内核就绪后自动开启 TUN。
-///
-/// 用户在 UAC 弹窗点「否」→ `ShellExecuteExW` 返回 0 且 `GetLastError`
-/// 为 `ERROR_CANCELLED`，映射为明确的取消文案（前端据此提示，不误导为故障）。
-/// 提权重启时携带的数据目录参数前缀。
+/// 提权重启时携带的数据目录参数前缀（`--clash-edge-data-dir=`）。
 ///
 /// **便携数据目录必须显式透传**：参考包 C# 启动器靠 `CLASH_EDGE_DATA_DIR`
 /// （以及 `HOME`/`APPDATA`/`LOCALAPPDATA`）把内层应用的数据目录指向包根

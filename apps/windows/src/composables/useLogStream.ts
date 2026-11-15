@@ -6,6 +6,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logsApi } from "@/api/logs";
+import { maskUrlsInText } from "@/utils/format";
 
 export interface LogEntry {
   id: number;
@@ -77,7 +78,9 @@ export function useLogStream() {
   }
 
   function push(level: string, message: string) {
-    const entry: LogEntry = { id: idSeq++, time: clock(), level, message };
+    // 入队前打码日志行内嵌的订阅/下载 URL（mihomo 在 info 级会打印 provider
+    // 更新地址，含 token；用户复制日志分享时不应带出）。
+    const entry: LogEntry = { id: idSeq++, time: clock(), level, message: maskUrlsInText(message) };
     if (paused.value) {
       pending.push(entry);
       if (pending.length > MAX_LOG_LINES) pending.splice(0, pending.length - MAX_LOG_LINES);

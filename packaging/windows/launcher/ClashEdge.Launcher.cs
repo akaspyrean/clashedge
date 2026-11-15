@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -1397,7 +1397,7 @@ internal static class ClashEdgeLauncher
 
         // T-s1 JSON 转义往返：Windows 路径 / 引号 / 反斜杠 / Unicode
         {
-            string nasty = "C:\\Users\\张 三\\Clash \"Edge\"\\Data\\a.zip";
+            string nasty = "C:\\Users\\<user>\\Clash \"Edge\"\\Data\\a.zip";
             string json = "{\n  \"zip_path\": \"" + JsonEscape(nasty) + "\",\n  \"sha256\": \"abc\"\n}";
             Console.WriteLine(++total + ". T-s1 json roundtrip: " + (ExtractJsonField(json, "zip_path") == nasty ? "PASS" : "FAIL"));
             Console.WriteLine(++total + ". T-s1 json sibling field: " + (ExtractJsonField(json, "sha256") == "abc" ? "PASS" : "FAIL"));

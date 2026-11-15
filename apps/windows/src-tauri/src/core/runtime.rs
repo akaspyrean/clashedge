@@ -274,7 +274,41 @@ pub(crate) async fn apply_tun_locked(app: &AppHandle, enable: bool) -> Result<()
     sync_doh_endpoints(app);
     refresh_tray(app).await?;
     let _ = app.emit("tun-mode-changed", serde_json::json!({ "enable": enable }));
+
+    // TUN 开启后的异步连通性探测：不阻塞事务，失败只推事件供前端给出排查建议。
+    if enable {
+        spawn_tun_connectivity_probe(app.clone());
+    }
     Ok(())
+}
+
+/// TUN 应用成功后的延迟连通性探测（后台独立任务，不参与开关成败判定）。
+///
+/// 等路由与 DNS 稳定后，对 Windows NCSI 探测域名测一次真实连通；失败推送
+/// `tun-connectivity-degraded`，前据此弹可操作的排查建议（多网卡自动检测
+/// 选错网卡、DoH 上游被阻断、门户未认证等常见根因均会导致探测失败）。
+/// 探测本身不回滚、不改配置——「PATCH 成功但网络不通」的场景让用户立即
+/// 得到提示，而不是表现为「开了 TUN 却断网」。
+fn spawn_tun_connectivity_probe(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let state = app.state::<crate::AppState>();
+        let core_guard = state.core_manager.get();
+        let Some(core) = core_guard.as_ref() else {
+            return;
+        };
+        match core.probe_tun_connectivity().await {
+            Ok(true) => info!("TUN connectivity probe OK"),
+            Ok(false) => {} // 自动优选组缺失，无法探测，静默跳过
+            Err(e) => {
+                warn!("TUN connectivity probe failed: {}", e);
+                let _ = app.emit(
+                    "tun-connectivity-degraded",
+                    serde_json::json!({ "reason": e.to_string() }),
+                );
+            }
+        }
+    });
 }
 
 /// 对运行中核心执行一次「PATCH TUN → 回读确认」。返回 Ok 表示 Mihomo 实际状态

@@ -33,7 +33,9 @@ const EXPIRING_DAYS = 7;
 
 const info = computed(() => parseUserinfo(props.profile.userinfo));
 const pct = computed(() =>
-  info.value && info.value.total > 0 ? Math.min(100, Math.round((info.value.used / info.value.total) * 100)) : null,
+  info.value && info.value.has_traffic && info.value.total > 0
+    ? Math.min(100, Math.round((info.value.used / info.value.total) * 100))
+    : null,
 );
 const barTone = computed(() => (pct.value === null ? "" : pct.value >= 90 ? "is-danger" : pct.value >= 75 ? "is-warning" : ""));
 const usage = computed(() => {
@@ -128,6 +130,8 @@ function onPrimary() {
       <span v-if="errorMessage" class="error-detail" :title="errorMessage">{{ errorMessage }}</span>
     </p>
 
+    <!-- 用量/到期：info 为 null（服务端未回 Subscription-Userinfo）时整个区块不显示；
+         有流量字段时显示流量条 + 流量文字 + 到期；仅回 expire 时只显示到期时间。 -->
     <div v-if="info" class="usage">
       <div
         v-if="pct !== null"
@@ -142,7 +146,7 @@ function onPrimary() {
         <i :style="{ width: pct + '%' }"></i>
       </div>
       <div class="usage-row">
-        <span class="usage-text">{{ t("profiles.traffic") }}: {{ usage }}</span>
+        <span v-if="info.has_traffic" class="usage-text">{{ t("profiles.traffic") }}: {{ usage }}</span>
         <span class="usage-expire" :class="{ 'is-warning': daysLeft !== null && daysLeft >= 0 && daysLeft <= EXPIRING_DAYS, 'is-danger': daysLeft !== null && daysLeft < 0 }">
           {{ expireText }}
         </span>
