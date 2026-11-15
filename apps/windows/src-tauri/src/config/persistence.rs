@@ -84,7 +84,7 @@ impl ConfigManager {
         }
         info!(
             "ConfigManager initialized at {}",
-            crate::util::paths::redact_path_for_log(&data_dir)
+            crate::util::paths::redact_path_for_log(data_dir)
         );
         Ok(())
     }
