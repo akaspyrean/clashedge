@@ -180,6 +180,7 @@ general:
 proxy:
   title: "Proxy Settings"
   system_proxy: "System Proxy"
+  pac_hint: "Your existing PAC ({url}) will be paused while the system proxy is on; it will be restored automatically once the system proxy is turned off."
   tun_mode: "TUN Mode"
   proxy_groups: "Proxy Groups"
   latency_test: "Latency Test"
