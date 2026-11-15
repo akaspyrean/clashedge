@@ -264,7 +264,7 @@ pub fn build_runtime_config(
     // DoH 被当前网络/运营商阻断时的一键回退。该键本身是应用级开关，
     // mihomo 不认识，无论开关状态都必须从运行时 DNS 段剔除。
     if let Some(dns_map) = dns_val.as_mapping_mut() {
-        dns_map.remove(&serde_norway::Value::String("disable-doh".to_string()));
+        dns_map.remove(serde_norway::Value::String("disable-doh".to_string()));
         if app.dns.disable_doh {
             let plain_ips: Vec<String> = app.dns.proxy_server_nameserver.clone();
             dns_map.insert(
