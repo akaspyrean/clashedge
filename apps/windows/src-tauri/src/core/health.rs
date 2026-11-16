@@ -35,9 +35,11 @@ pub(crate) async fn probe_str_addr(addr: &str) -> Result<()> {
 }
 
 /// 把 mihomo `dns.listen` 归一化为可探测的 "127.0.0.1:<port>"。
-/// 兼容 ":1053" / "0.0.0.0:1053" / "127.0.0.1:1053" 三种写法。
+/// 兼容 ":1053" / "0.0.0.0:1053" / "127.0.0.1:1053" 三种写法；IPv6 通配地址
+/// `[::]:<port>` 规范化为回环 `[::1]:<port>`，避免探测外部可路由的任意地址。
 pub(crate) fn normalize_dns_listen(listen: &str) -> String {
-    let normalized = listen.replacen("0.0.0.0:", "127.0.0.1:", 1);
+    let normalized = listen.replacen("[::]:", "[::1]:", 1);
+    let normalized = normalized.replacen("0.0.0.0:", "127.0.0.1:", 1);
     if normalized.starts_with(':') {
         format!("127.0.0.1{}", normalized)
     } else {
@@ -50,20 +52,25 @@ pub(crate) fn normalize_dns_listen(listen: &str) -> String {
 /// 忽略规则拉取等其他 error，避免误报。
 pub(crate) fn parse_bind_error(content: &str) -> Option<String> {
     content.lines().find_map(|line| {
-        if line.contains("level=error") && line.contains("bind") {
-            let detail = line
-                .split("msg=")
-                .nth(1)
-                .unwrap_or_default()
-                .trim_matches('"')
-                .trim();
-            Some(format!(
-                "端口绑定失败：{}。请先关闭占用该端口的程序（如旧版 Clash.F.Win 仍在后台运行）后重试。",
-                detail
-            ))
-        } else {
-            None
+        if !line.contains("level=error") {
+            return None;
         }
+        let detail = line
+            .split("msg=")
+            .nth(1)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .trim();
+        let bind_error = detail.contains("bind:")
+            || detail.contains("address already in use")
+            || detail.contains("Only one usage of each socket address");
+        if !bind_error {
+            return None;
+        }
+        Some(format!(
+            "端口绑定失败：{}。请先关闭占用该端口的程序（如旧版 Clash.F.Win 仍在后台运行）后重试。",
+            detail
+        ))
     })
 }
 
@@ -98,6 +105,12 @@ mod tests {
         assert_eq!(normalize_dns_listen("127.0.0.1:1053"), "127.0.0.1:1053");
         assert_eq!(normalize_dns_listen("0.0.0.0:1053"), "127.0.0.1:1053");
         assert_eq!(normalize_dns_listen(":1053"), "127.0.0.1:1053");
-        assert_eq!(normalize_dns_listen("[::]:1053"), "[::]:1053");
+        assert_eq!(normalize_dns_listen("[::]:1053"), "[::1]:1053");
+    }
+
+    #[test]
+    fn parse_bind_error_ignores_node_names_containing_bind() {
+        let line = "time=\"...\" level=error msg=\"proxy bind-node started: bind-node\"\n";
+        assert_eq!(parse_bind_error(line), None);
     }
 }

@@ -5,6 +5,7 @@
 use std::io::Write;
 use std::path::Path;
 
+use reqwest::header::{HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
@@ -51,6 +52,7 @@ pub(super) fn strip_subscribe_header(content: &str) -> String {
                 || t.starts_with("#subscribe-url:")
                 || t.starts_with("# subscription-userinfo:")
                 || t.starts_with("# subscription-etag:")
+                || t.starts_with("# subscription-last-modified:")
                 || t.starts_with("# subscribe-user-agent:")
                 || t.starts_with("#subscribe-user-agent:"))
         })
@@ -97,6 +99,36 @@ fn sanitize_etag(raw: &str) -> Option<String> {
         return None;
     }
     Some(value.to_string())
+}
+
+fn extract_subscription_last_modified(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("# subscription-last-modified:")?;
+        sanitize_last_modified(rest.trim())
+    })
+}
+
+fn sanitize_last_modified(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() || value.len() > 128 || !value.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn subscription_validators(etag: Option<&str>, last_modified: Option<&str>) -> HeaderMap {
+    let mut validators = HeaderMap::new();
+    if let Some(etag) = etag.and_then(sanitize_etag) {
+        if let Ok(value) = HeaderValue::from_str(&etag) {
+            validators.insert(IF_NONE_MATCH, value);
+        }
+    }
+    if let Some(last_modified) = last_modified.and_then(sanitize_last_modified) {
+        if let Ok(value) = HeaderValue::from_str(&last_modified) {
+            validators.insert(IF_MODIFIED_SINCE, value);
+        }
+    }
+    validators
 }
 
 /// 从 profile 头注释提取自定义 User-Agent（`# subscribe-user-agent: <ua>`，
@@ -212,6 +244,14 @@ pub(super) fn append_etag(header: &mut String, etag: Option<&str>) {
     if let Some(etag) = etag.and_then(sanitize_etag) {
         header.push_str("# subscription-etag: ");
         header.push_str(&etag);
+        header.push('\n');
+    }
+}
+
+pub(super) fn append_last_modified(header: &mut String, last_modified: Option<&str>) {
+    if let Some(last_modified) = last_modified.and_then(sanitize_last_modified) {
+        header.push_str("# subscription-last-modified: ");
+        header.push_str(&last_modified);
         header.push('\n');
     }
 }
@@ -355,6 +395,7 @@ pub(super) struct DownloadOutcome {
     pub(super) not_modified: bool,
     pub(super) userinfo: Option<String>,
     pub(super) etag: Option<String>,
+    pub(super) last_modified: Option<String>,
 }
 
 pub(super) async fn download_subscription_streaming(
@@ -364,8 +405,11 @@ pub(super) async fn download_subscription_streaming(
     temp_path: &Path,
     user_agent: Option<&str>,
     etag: Option<&str>,
+    last_modified: Option<&str>,
 ) -> Result<DownloadOutcome> {
-    let result = download_subscription_inner(app, url, header, temp_path, user_agent, etag).await;
+    let result =
+        download_subscription_inner(app, url, header, temp_path, user_agent, etag, last_modified)
+            .await;
     if result.is_err() {
         let _ = std::fs::remove_file(temp_path);
     }
@@ -379,15 +423,9 @@ async fn download_subscription_inner(
     temp_path: &Path,
     user_agent: Option<&str>,
     etag: Option<&str>,
+    last_modified: Option<&str>,
 ) -> Result<DownloadOutcome> {
-    // 拉取动作直连优先：直连不通自动切应用自身代理兜底（软件代理模式不变）。
-    // 单个订阅可覆盖 User-Agent（审计 B7）；None 用内置 mihomo 兼容 UA。
-    let mut validators = reqwest::header::HeaderMap::new();
-    if let Some(etag) = etag.and_then(sanitize_etag) {
-        if let Ok(value) = reqwest::header::HeaderValue::from_str(&etag) {
-            validators.insert(reqwest::header::IF_NONE_MATCH, value);
-        }
-    }
+    let validators = subscription_validators(etag, last_modified);
     let mut resp =
         crate::util::fetch::get_direct_first_with_validators(app, url, user_agent, &validators)
             .await?;
@@ -396,6 +434,11 @@ async fn download_subscription_inner(
         .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
         .and_then(sanitize_etag);
+    let response_last_modified = resp
+        .headers()
+        .get(LAST_MODIFIED)
+        .and_then(|v| v.to_str().ok())
+        .and_then(sanitize_last_modified);
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(DownloadOutcome {
             not_modified: true,
@@ -405,6 +448,8 @@ async fn download_subscription_inner(
                 .and_then(|v| v.to_str().ok())
                 .and_then(sanitize_userinfo),
             etag: response_etag.or_else(|| etag.and_then(sanitize_etag)),
+            last_modified: response_last_modified
+                .or_else(|| last_modified.and_then(sanitize_last_modified)),
         });
     }
 
@@ -454,6 +499,8 @@ async fn download_subscription_inner(
         not_modified: false,
         userinfo,
         etag: response_etag.or_else(|| etag.and_then(sanitize_etag)),
+        last_modified: response_last_modified
+            .or_else(|| last_modified.and_then(sanitize_last_modified)),
     })
 }
 
@@ -473,6 +520,7 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     // 单个订阅的自定义 UA（审计 B7）：头注释携带，随刷新持久保留
     let custom_ua = extract_subscribe_user_agent(&content);
     let old_etag = extract_subscription_etag(&content);
+    let old_last_modified = extract_subscription_last_modified(&content);
     // 旧 Subscription-Userinfo：新响应不携带该头（CDN/中间代理剥离）时沿用旧值，
     // 避免"刷新订阅后流量条消失"。
     let old_userinfo = extract_subscription_userinfo(&content);
@@ -509,6 +557,7 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         &temp_path,
         custom_ua.as_deref(),
         old_etag.as_deref(),
+        old_last_modified.as_deref(),
     )
     .await?;
     if downloaded.not_modified {
@@ -518,6 +567,13 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
         append_etag(
             &mut updated_header,
             downloaded.etag.as_deref().or(old_etag.as_deref()),
+        );
+        append_last_modified(
+            &mut updated_header,
+            downloaded
+                .last_modified
+                .as_deref()
+                .or(old_last_modified.as_deref()),
         );
         let refreshed = format!("{}{}", updated_header, strip_subscribe_header(&content));
         validate_profile_strict(&refreshed)?;
@@ -569,6 +625,13 @@ pub async fn refresh_subscription(app: &AppHandle, name: &str) -> Result<()> {
     append_etag(
         &mut updated_header,
         downloaded.etag.as_deref().or(old_etag.as_deref()),
+    );
+    append_last_modified(
+        &mut updated_header,
+        downloaded
+            .last_modified
+            .as_deref()
+            .or(old_last_modified.as_deref()),
     );
     let final_text = format!("{}{}", updated_header, normalized);
     if let Err(e) = validate_profile_strict(&final_text) {
@@ -843,6 +906,37 @@ mod tests {
             "proxies: []"
         );
         assert_eq!(sanitize_etag("bad\r\nInjected: true"), None);
+    }
+
+    #[test]
+    fn last_modified_header_is_preserved_and_sent_as_validator() {
+        let mut header = build_header("https://example.com/sub", None, None);
+        append_last_modified(&mut header, Some("Wed, 21 Oct 2015 07:28:00 GMT"));
+        assert_eq!(
+            extract_subscription_last_modified(&header),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT".into())
+        );
+        let validators = subscription_validators(
+            Some("\"revision-42\""),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        assert_eq!(
+            validators
+                .get(IF_NONE_MATCH)
+                .and_then(|value| value.to_str().ok()),
+            Some("\"revision-42\"")
+        );
+        assert_eq!(
+            validators
+                .get(IF_MODIFIED_SINCE)
+                .and_then(|value| value.to_str().ok()),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+        assert_eq!(
+            strip_subscribe_header(&format!("{}proxies: []\n", header)),
+            "proxies: []"
+        );
+        assert_eq!(sanitize_last_modified("bad\r\nInjected: true"), None);
     }
 
     #[test]

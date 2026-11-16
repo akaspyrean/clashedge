@@ -41,10 +41,10 @@ use files::{
     profile_path, reserve_new, temp_path_for,
 };
 use subscription::{
-    append_etag, apply_header_user_agent, build_header, download_subscription_streaming,
-    extract_subscribe_url, extract_subscribe_user_agent, extract_subscription_userinfo,
-    normalize_subscription_body, read_profile_head, redact_subscribe_url, redact_url,
-    sanitize_user_agent, strip_subscribe_header,
+    append_etag, append_last_modified, apply_header_user_agent, build_header,
+    download_subscription_streaming, extract_subscribe_url, extract_subscribe_user_agent,
+    extract_subscription_userinfo, normalize_subscription_body, read_profile_head,
+    redact_subscribe_url, redact_url, sanitize_user_agent, strip_subscribe_header,
 };
 use validate::{validate_profile_strict, validate_subscription_content};
 
@@ -419,6 +419,7 @@ pub async fn import_profile_from_url(
         &temp_path,
         custom_ua.as_deref(),
         None,
+        None,
     )
     .await?;
     if downloaded.not_modified {
@@ -434,6 +435,7 @@ pub async fn import_profile_from_url(
     );
     let mut header = build_header(parsed.as_str(), userinfo.as_deref(), custom_ua.as_deref());
     append_etag(&mut header, downloaded.etag.as_deref());
+    append_last_modified(&mut header, downloaded.last_modified.as_deref());
 
     // 校验 YAML 合法 + 资源限制（节点数量/名称长度/字段值长度）；失败清理临时文件
     let text = match std::fs::read_to_string(&temp_path) {

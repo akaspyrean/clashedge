@@ -27,6 +27,11 @@ const VALID_TUN_STACKS: &[&str] = &["mixed", "system", "gvisor"];
 
 /// mihomo `log-level` 合法值（官方模板：debug / info / warning / error / silent）
 const VALID_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error", "silent"];
+/// 代理组嵌套解析上限：扶梯出行 / 自动优选 → 子组 → 节点最多四层，防止
+/// 恶意订阅构造深层嵌套导致解析盲区或递归开销。
+pub const MAX_GROUP_HOPS: usize = 4;
+
+const MANUAL_FALLBACK_GROUP: &str = "人工兜底";
 
 /// 订阅内容允许透传到运行时配置的顶层键白名单。
 ///
@@ -327,8 +332,8 @@ pub fn build_runtime_config(
 
     // P0-5 TCP keep-alive：显式固定（与 mihomo 推荐值一致，防默认随版本漂移）。
     // NAT 掐断 / 休眠唤醒后的半开连接在约 2 分钟内被内核回收，不再“假在线”。
-    put!("keep-alive-interval", serde_norway::Value::from(30));
-    put!("keep-alive-idle", serde_norway::Value::from(120));
+    put!("keep-alive-interval", serde_norway::Value::from(15));
+    put!("keep-alive-idle", serde_norway::Value::from(60));
     // P0-5 TLS Client Hello 统一伪装为 Chrome 指纹，降低节点侧风控拦截造成的
     // “看起来掉线”（仅对 TLS 类协议生效，对 ss 等无影响）。
     put!(
@@ -461,6 +466,9 @@ pub fn build_runtime_config(
     //    自动优选是 url-test 组，零节点时删除整组并从引用中剔除；
     //    人工优选（select）补 DIRECT 兜底。
     let mut drop_auto_group = false;
+    let has_real_nodes = effective_proxies
+        .as_ref()
+        .is_some_and(|proxies| !proxies.is_empty());
     for group in groups.iter_mut() {
         let Some(gmap) = group.as_mapping_mut() else {
             continue;
@@ -517,6 +525,75 @@ pub fn build_runtime_config(
                         serde_norway::Value::Sequence(vec![serde_norway::Value::from("DIRECT")]),
                     );
                 }
+            }
+        }
+    }
+    if has_real_nodes {
+        groups.retain(|group| {
+            group.get("name").and_then(|name| name.as_str()) != Some(MANUAL_FALLBACK_GROUP)
+        });
+        let mut fallback = serde_norway::Mapping::new();
+        fallback.insert(
+            serde_norway::Value::String("name".to_string()),
+            serde_norway::Value::from(MANUAL_FALLBACK_GROUP),
+        );
+        fallback.insert(
+            serde_norway::Value::String("type".to_string()),
+            serde_norway::Value::from("fallback"),
+        );
+        fallback.insert(
+            serde_norway::Value::String("url".to_string()),
+            serde_norway::Value::from("https://cp.cloudflare.com/generate_204"),
+        );
+        fallback.insert(
+            serde_norway::Value::String("interval".to_string()),
+            serde_norway::Value::from(60),
+        );
+        fallback.insert(
+            serde_norway::Value::String("max-failed-times".to_string()),
+            serde_norway::Value::from(2),
+        );
+        fallback.insert(
+            serde_norway::Value::String("timeout".to_string()),
+            serde_norway::Value::from(5000),
+        );
+        fallback.insert(
+            serde_norway::Value::String("proxies".to_string()),
+            serde_norway::Value::Sequence(vec![
+                serde_norway::Value::from(crate::config::model::product_data::GROUP_MANUAL),
+                serde_norway::Value::from(crate::config::model::product_data::GROUP_AUTO),
+            ]),
+        );
+        groups.push(serde_norway::Value::Mapping(fallback));
+        let route_groups = [
+            crate::config::model::product_data::GROUP_GLOBAL,
+            crate::config::model::product_data::GROUP_LADDER,
+            crate::config::model::product_data::GROUP_AI,
+            crate::config::model::product_data::GROUP_MEDIA,
+        ];
+        for group in groups.iter_mut() {
+            let Some(name) = group.get("name").and_then(|name| name.as_str()) else {
+                continue;
+            };
+            if !route_groups.contains(&name) {
+                continue;
+            }
+            let Some(proxies) = group
+                .get_mut("proxies")
+                .and_then(|proxies| proxies.as_sequence_mut())
+            else {
+                continue;
+            };
+            for value in proxies.iter_mut() {
+                if value.as_str() == Some(crate::config::model::product_data::GROUP_MANUAL) {
+                    *value = serde_norway::Value::from(MANUAL_FALLBACK_GROUP);
+                }
+            }
+            if !proxies
+                .iter()
+                .any(|value| value.as_str() == Some(MANUAL_FALLBACK_GROUP))
+            {
+                proxies.push(serde_norway::Value::from(MANUAL_FALLBACK_GROUP));
             }
         }
     }
@@ -720,8 +797,8 @@ proxies:
         );
         assert_eq!(profile.get("store-fake-ip").unwrap().as_bool(), Some(true));
 
-        assert_eq!(map.get("keep-alive-interval").unwrap().as_u64(), Some(30));
-        assert_eq!(map.get("keep-alive-idle").unwrap().as_u64(), Some(120));
+        assert_eq!(map.get("keep-alive-interval").unwrap().as_u64(), Some(15));
+        assert_eq!(map.get("keep-alive-idle").unwrap().as_u64(), Some(60));
         assert_eq!(
             map.get("global-client-fingerprint").unwrap().as_str(),
             Some("chrome")
@@ -771,6 +848,51 @@ proxies:
         // 默认 false 胜出（profile 键在应用键之后被应用值覆盖 / 白名单不含）
         assert_eq!(map.get("tcp-concurrent").unwrap().as_bool(), Some(false));
         assert_eq!(map.get("unified-delay").unwrap().as_bool(), Some(false));
+    }
+
+    #[test]
+    fn build_runtime_config_provides_manual_fallback_chain() {
+        let app = Config::default();
+        let profile = r#"
+proxies:
+  - name: N1
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-128-gcm
+    password: x
+"#;
+        let runtime = build_runtime_config(&app, Some(profile)).unwrap();
+        let groups = runtime
+            .as_mapping()
+            .unwrap()
+            .get("proxy-groups")
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        let fallback = groups
+            .iter()
+            .find(|group| group.get("name").and_then(|name| name.as_str()) == Some("人工兜底"))
+            .expect("manual fallback group must exist");
+        assert_eq!(
+            fallback.get("type").and_then(|value| value.as_str()),
+            Some("fallback")
+        );
+        assert_eq!(
+            fallback
+                .get("max-failed-times")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        let fallback_names: Vec<&str> = fallback
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        assert_eq!(fallback_names, vec!["人工优选", "自动优选"]);
     }
 
     #[test]
@@ -863,7 +985,8 @@ proxies:
                 "人工智能",
                 "影音视听",
                 "人工优选",
-                "自动优选"
+                "自动优选",
+                "人工兜底"
             ]
         );
 
@@ -933,7 +1056,7 @@ proxies:
             .collect();
         assert_eq!(
             global_names,
-            vec!["DIRECT", "REJECT", "人工优选", "自动优选"]
+            vec!["DIRECT", "REJECT", "人工兜底", "自动优选"]
         );
     }
 
@@ -961,9 +1084,9 @@ rules:
         let runtime = build_runtime_config(&app, Some(profile)).unwrap();
         let map = runtime.as_mapping().unwrap();
 
-        // 应用固定结构不被订阅覆盖：内置 6 组（GLOBAL + 5）
+        // 应用固定结构不被订阅覆盖：内置 6 组（GLOBAL + 5）+ 人工兜底链
         let groups = map.get("proxy-groups").unwrap().as_sequence().unwrap();
-        assert_eq!(groups.len(), 6, "built-in 6 groups kept");
+        assert_eq!(groups.len(), 7, "built-in groups kept");
         let group_names: Vec<&str> = groups
             .iter()
             .filter_map(|g| g.get("name").and_then(|n| n.as_str()))
@@ -976,7 +1099,8 @@ rules:
                 "人工智能",
                 "影音视听",
                 "人工优选",
-                "自动优选"
+                "自动优选",
+                "人工兜底"
             ]
         );
         // 订阅节点强制注入叶子组（即使订阅自带 proxy-groups/rules）：

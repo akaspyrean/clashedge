@@ -1030,7 +1030,7 @@ fn failback_probe_candidates(groups: &[serde_json::Value]) -> Vec<String> {
         ];
         const MAX_CANDIDATES: usize = 3;
         let mut current = name;
-        for _ in 0..4 {
+        for _ in 0..crate::core::config::MAX_GROUP_HOPS {
             let Some(group) = by_name.get(current) else {
                 break;
             };
