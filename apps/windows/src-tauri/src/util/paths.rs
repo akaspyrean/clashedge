@@ -48,9 +48,13 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
 ///
 /// 当前源码同时支持这套布局与原生便携布局（`App/portable.dat`），二者不互斥。
 fn env_data_dir() -> Option<PathBuf> {
-    std::env::var_os("CLASH_EDGE_DATA_DIR")
+    crate::util::elevation::relaunch_data_dir()
         .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("CLASH_EDGE_DATA_DIR")
+                .map(PathBuf::from)
+                .filter(|p| !p.as_os_str().is_empty())
+        })
 }
 
 /// 获取规范化后的当前 exe 路径（去掉 `\\?\` 前缀）。
@@ -357,15 +361,6 @@ pub fn portable_mode_diagnostic() -> String {
 
 fn mihomo_missing_error(app_handle: &tauri::AppHandle) -> Error {
     Error::NotFound(mihomo_missing_hint(app_handle))
-}
-
-/// 测试用：返回当前由环境变量解析出的数据目录（无则 None）。
-///
-/// 供 `util::elevation` 的回归测试断言「提权重启携带的数据目录确实被
-/// 路径模块识别」，避免提权实例退化成安装版判定（配置/订阅看似丢失）。
-#[cfg(test)]
-pub fn get_app_data_dir_for_test() -> Option<PathBuf> {
-    env_data_dir()
 }
 
 /// 获取配置文件目录

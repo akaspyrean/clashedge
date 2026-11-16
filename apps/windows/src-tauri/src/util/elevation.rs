@@ -7,6 +7,9 @@
 //! 提前检测、给出明确提示，用户确认后 `relaunch_elevated` 走 UAC 以管理员
 //! 身份重启，新实例启动时自动开启 TUN。
 
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
 use crate::util::error::{Error, Result};
 
 /// 当前进程是否具备管理员权限（elevated）。
@@ -54,6 +57,41 @@ pub fn is_elevated() -> bool {
 /// 进程的环境块；若不显式携带，新实例会退化成“安装版”判定、写到
 /// `%APPDATA%`，表现为**配置与订阅全部丢失**（原 `Data/` 仍在，只是没被读到）。
 pub const RELAUNCH_DATA_DIR_ARG: &str = "--clash-edge-data-dir=";
+const RELAUNCH_IMAGE_ARG: &str = "--clash-edge-elevated-image=";
+const RELAUNCH_CREATION_TIME_ARG: &str = "--clash-edge-elevated-created=";
+static RELAUNCH_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+fn normalize_data_dir(path: &Path) -> PathBuf {
+    path.components()
+        .fold(PathBuf::new(), |mut normalized, component| {
+            normalized.push(component.as_os_str());
+            normalized
+        })
+}
+
+fn quote_windows_arg(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    let mut backslashes = 0usize;
+    for ch in value.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes));
+                quoted.push(ch);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
+}
 
 /// 以管理员身份（UAC）重启当前应用。
 ///
@@ -72,25 +110,29 @@ pub fn relaunch_elevated(enable_tun: bool, data_dir: Option<&std::path::Path>) -
     use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW};
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+    let pid = std::process::id();
+    let identity = crate::util::process::process_identity(pid)
+        .ok_or_else(|| Error::Other(format!("无法查询当前进程身份（PID {pid}）")))?;
     let exe =
         std::env::current_exe().map_err(|e| Error::Other(format!("无法定位可执行文件：{e}")))?;
-    let mut params = format!("--clash-edge-elevated-relaunch={}", std::process::id());
+    let mut params = format!("--clash-edge-elevated-relaunch={pid}");
     if enable_tun {
         params.push_str(" --clash-edge-enable-tun");
     }
-    // 显式携带数据目录，避免提权实例因环境变量丢失而"丢失配置与订阅"。
-    // 路径含空格/特殊字符时需加引号，否则 std::env::args() 会按空格分割导致路径被截断。
+    params.push(' ');
+    params.push_str(RELAUNCH_IMAGE_ARG);
+    params.push_str(&quote_windows_arg(&identity.image_path.to_string_lossy()));
+    params.push(' ');
+    params.push_str(RELAUNCH_CREATION_TIME_ARG);
+    params.push_str(&identity.creation_time.to_string());
     if let Some(dir) = data_dir {
         params.push(' ');
-        params.push_str(RELAUNCH_DATA_DIR_ARG);
-        let path_str = dir.to_string_lossy();
-        if path_str.contains(|c: char| c.is_whitespace() || c == '"') {
-            params.push('"');
-            params.push_str(&path_str.replace('"', r#"\""#));
-            params.push('"');
-        } else {
-            params.push_str(&path_str);
-        }
+        let dir = normalize_data_dir(dir);
+        params.push_str(&quote_windows_arg(&format!(
+            "{}{}",
+            RELAUNCH_DATA_DIR_ARG,
+            dir.to_string_lossy()
+        )));
     }
     let w = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let verb = w("runas");
@@ -122,11 +164,8 @@ pub fn relaunch_elevated(_enable_tun: bool, _data_dir: Option<&std::path::Path>)
     Err(Error::Other("当前平台不支持提权重启".to_string()))
 }
 
-/// 提权重启的新实例在启动早期应用携带的数据目录：把
-/// `--clash-edge-data-dir=` 落到 `CLASH_EDGE_DATA_DIR` 环境变量，并按
-/// C# 启动器布局一并重定向 `HOME`/`APPDATA`/`LOCALAPPDATA`。
-///
-/// 必须在任何路径解析（`util::paths::get_app_data_dir`）之前调用。
+/// 提权重启的新实例在启动早期应用携带的数据目录。
+/// 数据目录通过 [`OnceLock`] 缓存，避免在多线程启动阶段修改进程环境。
 /// 非提权启动（无该参数）时不做任何事。
 pub fn apply_relaunch_data_dir() {
     let raw =
@@ -137,19 +176,15 @@ pub fn apply_relaunch_data_dir() {
     if raw.is_empty() {
         return;
     }
-    let dir = std::path::PathBuf::from(&raw);
-    // 只接受绝对路径，避免相对路径被解析到不同工作目录。
+    let dir = PathBuf::from(&raw);
     if !dir.is_absolute() {
         return;
     }
-    unsafe {
-        std::env::set_var("CLASH_EDGE_DATA_DIR", &dir);
-        // 与 C# 启动器一致：用户级目录也重定向进 Data/，提权实例的缓存 /
-        // WebView2 数据不会跑到 %APPDATA%，避免看起来像"配置丢失"。
-        std::env::set_var("HOME", dir.join("Home"));
-        std::env::set_var("APPDATA", dir.join("AppData"));
-        std::env::set_var("LOCALAPPDATA", dir.join("LocalAppData"));
-    }
+    let _ = RELAUNCH_DATA_DIR.set(normalize_data_dir(&dir));
+}
+
+pub fn relaunch_data_dir() -> Option<&'static Path> {
+    RELAUNCH_DATA_DIR.get().map(PathBuf::as_path)
 }
 
 /// 提权重启的新实例在初始化（含单实例注册）之前，等待旧实例进程退出。
@@ -163,33 +198,26 @@ pub fn wait_for_previous_instance() {
         a.strip_prefix("--clash-edge-elevated-relaunch=")
             .and_then(|p| p.parse::<u32>().ok())
     });
-    let Some(pid) = pid else { return };
+    let expected_image =
+        std::env::args().find_map(|a| a.strip_prefix(RELAUNCH_IMAGE_ARG).map(PathBuf::from));
+    let expected_creation_time = std::env::args().find_map(|a| {
+        a.strip_prefix(RELAUNCH_CREATION_TIME_ARG)
+            .and_then(|value| value.parse::<u64>().ok())
+    });
+    let (Some(pid), Some(expected_image), Some(expected_creation_time)) =
+        (pid, expected_image, expected_creation_time)
+    else {
+        return;
+    };
     for _ in 0..200 {
-        if !process_alive(pid) {
+        if !crate::util::process::owns_pid_with_creation_time(
+            pid,
+            Some(expected_image.as_path()),
+            expected_creation_time,
+        ) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-}
-
-/// 进程是否存活（`GetExitCodeProcess == STILL_ACTIVE`）。
-#[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    // SAFETY: 只查询退出码，句柄用完即关；OpenProcess 返回 NULL 表示进程不存在。
-    unsafe {
-        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if h.is_null() {
-            return false;
-        }
-        let mut code: u32 = 0;
-        let ok = GetExitCodeProcess(h, &mut code);
-        CloseHandle(h);
-        ok != 0 && code == STILL_ACTIVE as u32
     }
 }
 
@@ -214,7 +242,7 @@ mod tests {
     /// 安装版判定、写到 `%APPDATA%`，用户看到"配置与订阅全部丢失"。
     /// 本测试锁定参数名与解析规则，防止后续再引入同类问题。
     #[test]
-    fn relaunch_data_dir_arg_is_parsed_into_env() {
+    fn relaunch_data_dir_arg_is_parsed() {
         let dir = std::env::temp_dir().join(format!(
             "clash-edge-relaunch-dir-{}-{}",
             std::process::id(),
@@ -235,21 +263,65 @@ mod tests {
         assert_eq!(RELAUNCH_DATA_DIR_ARG, "--clash-edge-data-dir=");
     }
 
-    /// 回归：数据目录环境变量被 path 模块识别（便携判定不退回安装版）。
     #[test]
-    fn relaunch_data_dir_env_is_recognized_by_paths() {
-        let dir = std::env::temp_dir().join(format!(
-            "clash-edge-relaunch-env-{}-{}",
-            std::process::id(),
-            "env"
-        ));
-        unsafe {
-            std::env::set_var("CLASH_EDGE_DATA_DIR", &dir);
+    fn windows_argument_quoting_handles_spaces_quotes_and_trailing_backslashes() {
+        assert_eq!(
+            quote_windows_arg(r"C:\Program Files\ClashEdge\Data\"),
+            r#""C:\Program Files\ClashEdge\Data\\""#
+        );
+        assert_eq!(
+            quote_windows_arg(r#"C:\Data\quoted"name"#),
+            r#""C:\Data\quoted\"name""#
+        );
+        assert_eq!(quote_windows_arg(""), r#""""#);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_argument_quoting_round_trips_through_command_line_to_argv() {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+
+        for original in [
+            r"C:\Program Files\ClashEdge\Data",
+            r"C:\Program Files\ClashEdge\Data\",
+            r#"C:\Data\quoted"name"#,
+            r"C:\Data\\",
+            "",
+        ] {
+            let command_line = format!("app.exe {}", quote_windows_arg(original));
+            let wide: Vec<u16> = command_line
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut count = 0i32;
+            let parsed = unsafe { CommandLineToArgvW(wide.as_ptr(), &mut count) };
+            assert!(!parsed.is_null(), "CommandLineToArgvW must succeed");
+            let args: Vec<String> = (0..count)
+                .map(|index| unsafe {
+                    let ptr = *parsed.add(index as usize);
+                    let mut len = 0usize;
+                    while *ptr.add(len) != 0 {
+                        len += 1;
+                    }
+                    String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+                })
+                .collect();
+            unsafe {
+                LocalFree(parsed.cast());
+            }
+            assert_eq!(args.len(), 2, "argv must contain program + one argument");
+            assert_eq!(args[1], original, "quoted argument must round-trip");
         }
-        assert!(crate::util::paths::is_portable_mode());
-        assert_eq!(crate::util::paths::get_app_data_dir_for_test(), Some(dir));
-        unsafe {
-            std::env::remove_var("CLASH_EDGE_DATA_DIR");
-        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn data_dir_normalization_strips_trailing_separators_without_dropping_root() {
+        assert_eq!(
+            normalize_data_dir(Path::new(r"C:\Portable Data\\\")),
+            PathBuf::from(r"C:\Portable Data")
+        );
+        assert_eq!(normalize_data_dir(Path::new(r"C:\")), PathBuf::from(r"C:\"));
     }
 }

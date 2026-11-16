@@ -108,9 +108,9 @@ pub async fn download_core_update(app: &tauri::AppHandle) -> Result<StagedCoreUp
     }
 
     let data_dir = crate::util::paths::get_app_data_dir(app)?;
-    let core_dir = crate::core::integrity::updated_core_dir(&data_dir, version);
+    let core_dir = crate::core::integrity::updated_core_dir(&data_dir, version)?;
     std::fs::create_dir_all(&core_dir)?;
-    let binary_path = crate::core::integrity::updated_core_binary_path(&data_dir, version);
+    let binary_path = crate::core::integrity::updated_core_binary_path(&data_dir, version)?;
     let partial_path = binary_path.with_extension("exe.part");
     if binary_path.exists() {
         crate::core::integrity::verify_core_binary(&binary_path, &data_dir)?;

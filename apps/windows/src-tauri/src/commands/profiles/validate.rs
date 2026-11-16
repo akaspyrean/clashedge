@@ -13,6 +13,116 @@ const MAX_NODE_COUNT: usize = 1000;
 const MAX_NODE_NAME_LENGTH: usize = 100;
 /// 任意字段值的最大长度（防止异常超长字段）
 const MAX_FIELD_VALUE_LENGTH: usize = 5000;
+const MAX_YAML_NESTING_DEPTH: usize = 32;
+const MAX_YAML_ANCHORS: usize = 32;
+const MAX_YAML_ALIAS_REFERENCES: usize = 32;
+
+fn validate_yaml_complexity(text: &str) -> Result<()> {
+    let mut anchors = 0usize;
+    let mut aliases = 0usize;
+    let mut flow_depth = 0usize;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+    let mut in_comment = false;
+    let mut token_boundary = true;
+    let mut previous_char = None;
+
+    for ch in text.chars() {
+        let previous = previous_char;
+        previous_char = Some(ch);
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+                token_boundary = true;
+            }
+            continue;
+        }
+        if in_single_quote {
+            if ch == '\'' {
+                in_single_quote = false;
+            }
+            token_boundary = false;
+            continue;
+        }
+        if in_double_quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_double_quote = false;
+            }
+            token_boundary = false;
+            continue;
+        }
+        match ch {
+            '\'' => {
+                in_single_quote = true;
+                token_boundary = false;
+            }
+            '"' => {
+                in_double_quote = true;
+                token_boundary = false;
+            }
+            '#' if token_boundary && previous.is_none_or(char::is_whitespace) => in_comment = true,
+            '[' | '{' => {
+                flow_depth += 1;
+                if flow_depth > MAX_YAML_NESTING_DEPTH {
+                    return Err(Error::Subscription(
+                        "YAML nesting depth exceeds limit".to_string(),
+                    ));
+                }
+                token_boundary = true;
+            }
+            ']' | '}' => {
+                flow_depth = flow_depth.saturating_sub(1);
+                token_boundary = true;
+            }
+            '&' if token_boundary => {
+                anchors += 1;
+                if anchors > MAX_YAML_ANCHORS {
+                    return Err(Error::Subscription(
+                        "YAML anchor count exceeds limit".to_string(),
+                    ));
+                }
+                token_boundary = false;
+            }
+            '*' if token_boundary => {
+                aliases += 1;
+                if aliases > MAX_YAML_ALIAS_REFERENCES {
+                    return Err(Error::Subscription(
+                        "YAML alias count exceeds limit".to_string(),
+                    ));
+                }
+                token_boundary = false;
+            }
+            _ => {
+                token_boundary =
+                    ch.is_whitespace() || matches!(ch, ':' | ',' | '[' | '{' | ']' | '}' | '-');
+            }
+        }
+    }
+
+    let mut indents = Vec::new();
+    for line in text.lines() {
+        let content = line.trim_start();
+        if content.is_empty() || content.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - content.len();
+        while indents.last().is_some_and(|current| *current >= indent) {
+            indents.pop();
+        }
+        indents.push(indent);
+        if indents.len().saturating_add(flow_depth) > MAX_YAML_NESTING_DEPTH {
+            return Err(Error::Subscription(
+                "YAML nesting depth exceeds limit".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// 校验订阅内容是否符合资源限制。
 /// 在写入磁盘前调用，防止恶意超大/超长订阅导致资源耗尽或 UI 异常。
@@ -23,12 +133,12 @@ pub(super) fn validate_subscription_content(text: &str) -> Result<()> {
             MAX_YAML_CONTENT_BYTES
         )));
     }
+    validate_yaml_complexity(text)?;
+    let is_uri_list = crate::util::uri_list::looks_like_uri_list(text);
     let value: serde_norway::Value = match serde_norway::from_str(text) {
         Ok(v) => v,
         Err(e) => {
-            // Base64 / 分享链接列表不是合法 YAML 也属正常订阅格式（审计 B7），
-            // 归一化阶段会转成 proxies 后再做完整校验。
-            if crate::util::uri_list::looks_like_uri_list(text) {
+            if is_uri_list {
                 return Ok(());
             }
             return Err(Error::Subscription(format!("Invalid YAML: {}", e)));
@@ -84,6 +194,7 @@ pub(super) fn validate_subscription_content(text: &str) -> Result<()> {
 /// 防止写入后运行时启动失败。
 pub(super) fn validate_profile_strict(text: &str) -> Result<()> {
     validate_subscription_content(text)?;
+    validate_yaml_complexity(text)?;
     let value = serde_norway::from_str::<serde_norway::Value>(text)
         .map_err(|e| Error::Subscription(format!("Invalid YAML: {}", e)))?;
     let proxies = value
@@ -168,6 +279,13 @@ fn validate_node_protocol(node: &serde_norway::Value, index: usize) -> Result<()
             index, name, protocol
         )));
     }
+    let server = get_str("server").unwrap_or_default().trim();
+    crate::util::fetch::guards::validate_node_server(server).map_err(|e| {
+        Error::Subscription(format!(
+            "Node #{} ('{}', {}) has an unsafe server '{}': {}",
+            index, name, protocol, server, e
+        ))
+    })?;
     // 按协议校验
     match protocol {
         "ss" | "shadowsocks" => {
@@ -302,6 +420,38 @@ mod tests {
             validate_node_protocol(&ok, 4).is_ok(),
             "valid node accepted"
         );
+    }
+
+    #[test]
+    fn validate_node_protocol_rejects_internal_servers() {
+        for server in ["127.0.0.1", "169.254.169.254", "localhost", "node.local"] {
+            let node: serde_norway::Value = serde_norway::from_str(&format!(
+                "name: n\ntype: ss\nserver: {server}\nport: 8388\ncipher: aes-128-gcm\npassword: x\n"
+            ))
+            .unwrap();
+            assert!(
+                validate_node_protocol(&node, 1).is_err(),
+                "internal server must be rejected: {server}"
+            );
+        }
+    }
+
+    #[test]
+    fn yaml_complexity_limits_reject_alias_and_depth_bombs() {
+        let aliases = (0..=MAX_YAML_ALIAS_REFERENCES)
+            .map(|index| format!("node{index}: *anchor"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(validate_yaml_complexity(&aliases).is_err());
+
+        let mut nested = String::new();
+        let mut indent = String::new();
+        for _ in 0..=MAX_YAML_NESTING_DEPTH {
+            indent.push_str("  ");
+            nested.push_str(&indent);
+            nested.push_str("value:\n");
+        }
+        assert!(validate_yaml_complexity(&nested).is_err());
     }
 
     #[test]
