@@ -442,14 +442,29 @@ fn free_local_port() -> std::io::Result<u16> {
         .port())
 }
 
-fn try_bind(host: &str, port: u16) -> std::io::Result<()> {
+fn try_bind_tcp(host: &str, port: u16) -> std::io::Result<()> {
     std::net::TcpListener::bind((host, port)).map(|_| ())
+}
+
+fn check_port_available(host: &str, port: u16) -> std::io::Result<()> {
+    try_bind_tcp(host, port)?;
+    std::net::UdpSocket::bind((host, port)).map(|_| ())
+}
+
+fn try_bind(host: &str, port: u16) -> std::io::Result<()> {
+    try_bind_tcp(host, port)
 }
 
 /// 确保 `host:port` 可绑定。被本应用遗留的 mihomo 占用时回收它后重试；
 /// 被其他进程占用时返回带进程名与 PID 的错误。
-fn ensure_bindable(label: &str, host: &str, port: u16, mihomo_path: &Path) -> Result<()> {
-    if try_bind(host, port).is_ok() {
+fn ensure_bindable(
+    label: &str,
+    host: &str,
+    port: u16,
+    mihomo_path: &Path,
+    check: fn(&str, u16) -> std::io::Result<()>,
+) -> Result<()> {
+    if check(host, port).is_ok() {
         return Ok(());
     }
     if let Some((pid, name)) = port_owner(port) {
@@ -462,7 +477,7 @@ fn ensure_bindable(label: &str, host: &str, port: u16, mihomo_path: &Path) -> Re
             );
             terminate_owned(pid, mihomo_path, 3000)?;
             for _ in 0..10 {
-                if try_bind(host, port).is_ok() {
+                if check(host, port).is_ok() {
                     return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -504,6 +519,7 @@ pub fn preflight(mihomo_path: &Path, cfg: &Config) -> Result<Preflight> {
         mixed_host,
         cfg.general.mixed_port,
         mihomo_path,
+        try_bind,
     )?;
 
     if cfg.dns.enable {
@@ -515,12 +531,20 @@ pub fn preflight(mihomo_path: &Path, cfg: &Config) -> Result<Preflight> {
                 .unwrap_or("127.0.0.1");
             let host = host.trim_matches(|c| c == '[' || c == ']');
             let host = if host.is_empty() { "127.0.0.1" } else { host };
-            ensure_bindable("dns.listen", host, port, mihomo_path)?;
+            ensure_bindable("dns.listen", host, port, mihomo_path, check_port_available)?;
         }
     }
 
     if let Some(port) = port_of(&cfg.proxy.external_controller) {
-        if ensure_bindable("external-controller", "127.0.0.1", port, mihomo_path).is_err() {
+        if ensure_bindable(
+            "external-controller",
+            "127.0.0.1",
+            port,
+            mihomo_path,
+            try_bind,
+        )
+        .is_err()
+        {
             let free = free_local_port()
                 .map_err(|e| Error::Other(format!("no free port for controller: {}", e)))?;
             let addr = format!("127.0.0.1:{}", free);
@@ -589,6 +613,13 @@ mod tests {
         assert_eq!(port_of("127.0.0.1:9090"), Some(9090));
         assert_eq!(port_of("[::1]:9090"), Some(9090));
         assert_eq!(port_of("nonsense"), None);
+    }
+
+    #[test]
+    fn dns_port_preflight_checks_udp_occupancy() {
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = udp.local_addr().unwrap().port();
+        assert!(check_port_available("127.0.0.1", port).is_err());
     }
 
     #[test]

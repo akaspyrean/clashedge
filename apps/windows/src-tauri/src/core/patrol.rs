@@ -242,13 +242,13 @@ fn last_delay(v: &Json) -> Option<u64> {
 }
 
 /// 路由组生效节点解析：`now` 可能指向子组（扶梯出行 → 自动优选 → 节点），
-/// 沿链最多追 3 层到叶子节点；返回叶子的名字（不要求已测过）。
+/// 沿链最多追 [`crate::core::config::MAX_GROUP_HOPS`] 层到叶子节点；返回叶子的名字（不要求已测过）。
 fn resolve_effective_now<'a>(
     map: &'a serde_json::Map<String, Json>,
     group: &str,
 ) -> Option<&'a str> {
     let mut cur: &str = group;
-    for _ in 0..3 {
+    for _ in 0..crate::core::config::MAX_GROUP_HOPS {
         let v = map.get(cur)?;
         let now = v.get("now")?.as_str()?;
         match map.get(now) {
@@ -474,6 +474,29 @@ mod tests {
         let r = analyze(&proxies);
         assert_eq!(r.routing_broken, 0);
         assert!(!r.should_recover());
+    }
+
+    #[test]
+    fn group_chain_resolution_uses_common_hop_limit() {
+        assert_eq!(crate::core::config::MAX_GROUP_HOPS, 4);
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "A".to_string(),
+            serde_json::json!({ "type": "Selector", "now": "B" }),
+        );
+        map.insert(
+            "B".to_string(),
+            serde_json::json!({ "type": "Selector", "now": "C" }),
+        );
+        map.insert(
+            "C".to_string(),
+            serde_json::json!({ "type": "Selector", "now": "D" }),
+        );
+        map.insert(
+            "D".to_string(),
+            serde_json::json!({ "type": "Selector", "now": "Leaf" }),
+        );
+        assert_eq!(resolve_effective_now(&map, "A"), Some("Leaf"));
     }
 
     #[test]

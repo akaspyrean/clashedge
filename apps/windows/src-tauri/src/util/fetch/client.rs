@@ -439,7 +439,7 @@ async fn send_and_follow(
             send_fut.await?
         };
 
-        if resp.status().is_success() {
+        if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_MODIFIED {
             return Ok(resp);
         }
         if !resp.status().is_redirection() {

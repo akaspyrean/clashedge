@@ -406,8 +406,7 @@ impl ControllerClient {
     /// （用户在“扶梯出行”切节点不应打断“影音视听”的下载）。
     /// UI 与托盘两条切换路径都经过这里，自动获得排空语义。
     pub(crate) async fn select_proxy_group(&self, group: String, mut proxy: String) -> Result<()> {
-        // A refreshed subscription can rename a node or append a provider multiplier
-        // suffix. Resolve a stale UI choice against the group's current node list.
+        let mut previous_proxy: Option<String> = None;
         if let Ok(group_url) = self.api_url(&["proxies", &group], None) {
             if let Ok(response) = self
                 .api_client
@@ -417,6 +416,11 @@ impl ControllerClient {
                 .await
             {
                 if let Ok(value) = response.json::<serde_json::Value>().await {
+                    previous_proxy = value
+                        .get("now")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
                     if let Some(nodes) = value.get("all").and_then(|v| v.as_array()) {
                         let names: Vec<&str> = nodes.iter().filter_map(|v| v.as_str()).collect();
                         if !names.iter().any(|name| *name == proxy) {
@@ -443,14 +447,23 @@ impl ControllerClient {
 
         if resp.status().is_success() {
             info!("Selected {} -> {}", group, proxy);
-            match self.close_group_connections(&group).await {
+            let mut targets = vec![group.as_str()];
+            if let Some(previous) = previous_proxy.as_deref() {
+                if previous != proxy {
+                    targets.push(previous);
+                }
+            }
+            match self.close_connections_for_targets(&targets).await {
                 Ok(n) if n > 0 => {
-                    info!("Drained {} stale connection(s) of group '{}'", n, group)
+                    info!(
+                        "Drained {} stale connection(s) after switch to '{}'",
+                        n, proxy
+                    )
                 }
                 Ok(_) => {}
                 Err(e) => warn!(
-                    "Failed to drain connections of group '{}' after switch: {}",
-                    group, e
+                    "Failed to drain connections bound to the previous proxy after switch: {}",
+                    e
                 ),
             }
             Ok(())
@@ -566,11 +579,14 @@ impl ControllerClient {
     }
 
     /// 关闭经由指定组的全部活动连接（选择性排空，P0-4）。
-    ///
-    /// GET /connections 原始列表 → 过滤 `chains` 含该组 → 逐个
-    /// DELETE /connections/{id}。返回关闭数；单个删除失败只记日志，
-    /// 不影响其余（best-effort：排空是切换的增强而非前置条件）。
+    /// 保留直接按组关闭的入口；对外优先使用 [`close_connections_for_targets`] 以同时
+    /// 覆盖旧节点链与当前选路。
+    #[allow(dead_code)]
     pub(crate) async fn close_group_connections(&self, group: &str) -> Result<usize> {
+        self.close_connections_for_targets(&[group]).await
+    }
+
+    pub(crate) async fn close_connections_for_targets(&self, targets: &[&str]) -> Result<usize> {
         let url = self.api_url(&["connections"], None)?;
         let resp = self
             .api_client
@@ -591,12 +607,16 @@ impl ControllerClient {
 
         let mut closed = 0usize;
         for conn in conns {
-            let in_group = conn
+            let matches_target = conn
                 .get("chains")
-                .and_then(|c| c.as_array())
-                .map(|chains| chains.iter().any(|c| c.as_str() == Some(group)))
+                .and_then(|chains| chains.as_array())
+                .map(|chains| {
+                    chains
+                        .iter()
+                        .any(|chain| chain.as_str().is_some_and(|chain| targets.contains(&chain)))
+                })
                 .unwrap_or(false);
-            if !in_group {
+            if !matches_target {
                 continue;
             }
             let Some(id) = conn.get("id").and_then(|v| v.as_str()) else {
