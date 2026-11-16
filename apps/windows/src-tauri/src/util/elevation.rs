@@ -278,6 +278,45 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_argument_quoting_round_trips_through_command_line_to_argv() {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+
+        for original in [
+            r"C:\Program Files\ClashEdge\Data",
+            r"C:\Program Files\ClashEdge\Data\",
+            r#"C:\Data\quoted"name"#,
+            r"C:\Data\\",
+            "",
+        ] {
+            let command_line = format!("app.exe {}", quote_windows_arg(original));
+            let wide: Vec<u16> = command_line
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut count = 0i32;
+            let parsed = unsafe { CommandLineToArgvW(wide.as_ptr(), &mut count) };
+            assert!(!parsed.is_null(), "CommandLineToArgvW must succeed");
+            let args: Vec<String> = (0..count)
+                .map(|index| unsafe {
+                    let ptr = *parsed.add(index as usize);
+                    let mut len = 0usize;
+                    while *ptr.add(len) != 0 {
+                        len += 1;
+                    }
+                    String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+                })
+                .collect();
+            unsafe {
+                LocalFree(parsed.cast());
+            }
+            assert_eq!(args.len(), 2, "argv must contain program + one argument");
+            assert_eq!(args[1], original, "quoted argument must round-trip");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn data_dir_normalization_strips_trailing_separators_without_dropping_root() {
         assert_eq!(
             normalize_data_dir(Path::new(r"C:\Portable Data\\\")),
