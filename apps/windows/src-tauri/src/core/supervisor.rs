@@ -125,7 +125,9 @@ impl CoreManager {
                 // 子进程是否已退出：try_wait 非空（进程自然退出/崩溃），
                 // 或 child 已被 stop() 取走（None）。
                 let gone = {
-                    let mut guard = child_handle.lock().unwrap();
+                    let mut guard = child_handle
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     match guard.as_mut() {
                         Some(c) => c.try_wait().ok().flatten().is_some(),
                         None => true,
@@ -136,7 +138,10 @@ impl CoreManager {
                 }
 
                 // 置 child 为 None，is_running() 随之返回 false
-                child_handle.lock().unwrap().take();
+                child_handle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
                 // 子进程确认退出后必须立即清空 PID 缓存：否则崩溃/熔断/重启
                 // 失败后旧 PID 可能被系统复用，应用退出清理会 taskkill 掉
                 // 无关进程（PID 误杀风险）。
@@ -149,7 +154,9 @@ impl CoreManager {
 
                 // 用户主动停止 / 正在停止：不重启，watcher 退出
                 {
-                    let st = status_arc.lock().unwrap();
+                    let st = status_arc
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if *st == CoreStatus::Stopped || *st == CoreStatus::Stopping {
                         break;
                     }
@@ -160,7 +167,9 @@ impl CoreManager {
                     break;
                 }
 
-                *status_arc.lock().unwrap() =
+                *status_arc
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                     CoreStatus::Error("mihomo exited unexpectedly".to_string());
                 error!("mihomo exited unexpectedly");
                 let _ = app_handle.emit(
@@ -175,7 +184,10 @@ impl CoreManager {
                 // 已接管时绝不覆盖。
                 let sys_proxy_intent = {
                     let state = app_handle.state::<crate::AppState>();
-                    let cfg_mgr = state.config_manager.lock().unwrap();
+                    let cfg_mgr = state
+                        .config_manager
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     cfg_mgr.get_config().general.system_proxy
                 };
                 let proxy_restore_target = if sys_proxy_intent {
@@ -221,7 +233,9 @@ impl CoreManager {
                 // - 窗口内崩溃次数达到上限 → 放弃自动重启
                 let now = std::time::Instant::now();
                 let crashes_in_window = {
-                    let mut times = crash_times.lock().unwrap();
+                    let mut times = crash_times
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let stable = started_at
                         .lock()
                         .unwrap()
@@ -274,14 +288,18 @@ impl CoreManager {
                     break;
                 }
                 // 尝试重启
-                *status_arc.lock().unwrap() = CoreStatus::Starting;
+                *status_arc
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoreStatus::Starting;
                 let _ = app_handle.emit(
                     "core-status-changed",
                     serde_json::json!({ "status": "starting" }),
                 );
                 if !mihomo_path.exists() {
                     error!("mihomo binary gone; cannot auto-restart");
-                    *status_arc.lock().unwrap() =
+                    *status_arc
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                         CoreStatus::Error("mihomo binary missing; cannot restart".to_string());
                     break;
                 }
@@ -309,7 +327,9 @@ impl CoreManager {
                                 .core_pid_cache
                                 .store(pid, std::sync::atomic::Ordering::SeqCst);
                         }
-                        *child_handle.lock().unwrap() = Some(child);
+                        *child_handle
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(child);
                         // 就绪探测：/version 可达 + 代理端口健康后才算恢复
                         let core_manager_for_check = AutoRestartChecker {
                             child: child_handle.clone(),
@@ -324,10 +344,19 @@ impl CoreManager {
                         drop(lifecycle_guard);
                         match ready {
                             Ok(()) => {
-                                *status_arc.lock().unwrap() = CoreStatus::Running;
-                                *applied_hash.lock().unwrap() = Some(hash.clone());
+                                *status_arc
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                    CoreStatus::Running;
+                                *applied_hash
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                    Some(hash.clone());
                                 // 新进程的稳定运行基准从现在起算
-                                *started_at.lock().unwrap() = Some(std::time::Instant::now());
+                                *started_at
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                    Some(std::time::Instant::now());
                                 let _ = app_handle.emit(
                                     "core-status-changed",
                                     serde_json::json!({ "status": "running" }),
@@ -385,19 +414,27 @@ impl CoreManager {
                                 info!("mihomo auto-restarted successfully");
                                 // 版本缓存失效：新进程的 /version 可能与旧缓存不同，
                                 // 与热重载路径对齐，下次 version() 重新获取。
-                                *version_cache.lock().unwrap() = None;
+                                *version_cache
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                                 // 继续监视新进程（同一 generation、同一 watcher）
                                 continue;
                             }
                             Err(e) => {
                                 error!("mihomo auto-restart failed readiness check: {}", e);
-                                *status_arc.lock().unwrap() = CoreStatus::Error(e.to_string());
+                                *status_arc
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                    CoreStatus::Error(e.to_string());
                                 let _ = app_handle.emit(
                                     "core-status-changed",
                                     serde_json::json!({ "status": format!("error: {}", e) }),
                                 );
                                 // 清掉起不来的僵尸进程（先取 child 再 await）
-                                let zombie = child_handle.lock().unwrap().take();
+                                let zombie = child_handle
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                    .take();
                                 if let Some(mut c) = zombie {
                                     let _ = c.kill().await;
                                     // 僵尸进程被取走并清理后，PID 缓存必须清空，
@@ -416,7 +453,10 @@ impl CoreManager {
                     }
                     Err(e) => {
                         error!("Failed to spawn mihomo on auto-restart: {}", e);
-                        *status_arc.lock().unwrap() = CoreStatus::Error(e.to_string());
+                        *status_arc
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                            CoreStatus::Error(e.to_string());
                         break;
                     }
                 }

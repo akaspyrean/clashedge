@@ -22,6 +22,7 @@ use tracing::{info, warn};
 use crate::config::model::Config;
 use crate::core::config::build_runtime_config;
 use crate::util::error::{Error, Result};
+use crate::util::job::assign_child_to_job;
 use crate::util::paths::sanitize_profile_name;
 use crate::util::process::{owns_pid, port_owner, terminate_owned};
 
@@ -390,10 +391,16 @@ pub fn spawn_mihomo(mihomo_path: &Path, data_dir: &Path, runtime_config: &Path) 
     {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let child = cmd.spawn().map_err(Error::from)?;
+    let mut child = cmd.spawn().map_err(Error::from)?;
     if let Some(pid) = child.id() {
         record_session(data_dir, pid, mihomo_path);
     }
+    assign_child_to_job(&mut child).map_err(|e| {
+        let _ = child.start_kill();
+        Error::Other(format!(
+            "failed to bind mihomo to kill-on-close job object: {e}"
+        ))
+    })?;
     Ok(Spawned {
         child,
         stdout_offset,

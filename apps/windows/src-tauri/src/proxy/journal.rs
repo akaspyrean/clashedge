@@ -109,6 +109,14 @@ fn canonical_managed(journal: &ProxyJournal) -> SystemProxyConfig {
 /// 端口切换已安全释放旧 ownership、但新端口接管随后失败时，只有 Windows
 /// 仍精确等于释放后的用户基线，才允许把旧 journal/managed 状态写回。
 /// 退避期间用户或其他软件一旦修改任一字段，就拒绝回滚，避免覆盖新接管者。
+fn restore_system_proxy_or_disable(snapshot: &SystemProxyConfig) -> Result<()> {
+    if *snapshot == crate::proxy::system_proxy::disabled_proxy_config() {
+        crate::proxy::system_proxy::disable_system_proxy()
+    } else {
+        crate::proxy::system_proxy::restore_system_proxy(snapshot)
+    }
+}
+
 fn restore_previous_with<Read, Restore, Write>(
     previous: &ProxyJournal,
     expected_baseline: &SystemProxyConfig,
@@ -201,9 +209,40 @@ where
     })?;
     let Some(journal) = journal else {
         let hinted = crate::proxy::system_proxy::managed_proxy_config(expected_port);
-        if journal_exists || points_at_managed_address(&current, &hinted) {
+        if journal_exists && points_at_managed_address(&current, &hinted) {
+            let disabled = crate::proxy::system_proxy::disabled_proxy_config();
+            restore(&disabled).map_err(|e| {
+                Error::Other(format!(
+                    "Corrupt proxy session journal and Windows proxy still targets ClashEdge; failed to disable proxy: {}",
+                    e
+                ))
+            })?;
+            let verified = read().map_err(|e| {
+                Error::Other(format!(
+                    "Corrupt proxy session journal fallback could not be verified: {}",
+                    e
+                ))
+            })?;
+            if verified.enabled {
+                return Err(Error::Other(
+                    "Corrupt proxy session journal fallback failed: Windows proxy remains enabled"
+                        .to_string(),
+                ));
+            }
+            clear();
+            warn!("Corrupt proxy session journal recovered by disabling the managed system proxy");
+            return Ok(ReleaseOutcome::NoOwnership);
+        }
+        if journal_exists {
+            clear();
             return Err(Error::Other(
-                "System proxy still targets ClashEdge but ownership journal is missing or corrupt; refusing to modify registry or stop Mihomo"
+                "Proxy session journal is corrupt but Windows proxy does not target ClashEdge; corrupt journal cleared"
+                    .to_string(),
+            ));
+        }
+        if points_at_managed_address(&current, &hinted) {
+            return Err(Error::Other(
+                "System proxy still targets ClashEdge but ownership journal is missing; refusing to modify registry or stop Mihomo"
                     .to_string(),
             ));
         }
@@ -275,7 +314,7 @@ pub fn release_owned_proxy(
         path.exists(),
         expected_port,
         crate::proxy::system_proxy::get_system_proxy,
-        crate::proxy::system_proxy::restore_system_proxy,
+        restore_system_proxy_or_disable,
         || clear_journal(data_dir),
     )
 }
@@ -702,7 +741,7 @@ mod tests {
     // 停止 Mihomo。journal 只负责系统代理 ownership；Mihomo 的停止成败不得
     // 影响已清除的 journal。E/G/I 已由上方 Cell 版测试覆盖；此处用真实 journal
     // 文件补充两个 Cell 版无法表达的新增解耦场景：F（Mihomo 停止失败不重建
-    // journal）与 J（journal 损坏且系统仍指向 ClashEdge 时的 fail-safe）。
+    // journal）与 J（journal 损坏且系统仍指向 ClashEdge 时降级关闭代理）。
 
     fn journal_file_exists(dir: &std::path::Path) -> bool {
         dir.join(JOURNAL_FILE).exists()
@@ -746,38 +785,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // J：journal 损坏（文件存在但不可解析）且 Windows 仍指向 ClashEdge 时
-    //    保持 fail-safe：不修改注册表、不停止 Mihomo、不创建 journal。
     #[test]
-    fn exit_corrupt_journal_with_live_clashedge_proxy_keeps_fail_safe() {
+    fn exit_corrupt_journal_with_live_clashedge_proxy_disables_proxy_and_clears_file() {
         let dir = temp_data_dir("J");
-        // 写入一份损坏的 journal 文件：存在但不可解析 → read_journal 返回 None。
         std::fs::write(dir.join(JOURNAL_FILE), b"{ not valid json").unwrap();
         let managed = crate::proxy::system_proxy::managed_proxy_config(7890);
-        let restored = std::cell::Cell::new(false);
+        let disabled = crate::proxy::system_proxy::disabled_proxy_config();
+        let reads = std::cell::RefCell::new(std::collections::VecDeque::from([
+            managed,
+            disabled.clone(),
+        ]));
+        let restored = std::cell::RefCell::new(None);
 
         let result = release_with(
             None,
             true,
             7890,
-            || Ok(managed.clone()),
-            |_| {
-                restored.set(true);
+            || Ok(reads.borrow_mut().pop_front().unwrap()),
+            |target| {
+                *restored.borrow_mut() = Some(target.clone());
                 Ok(())
             },
-            || panic!("must not clear a live ClashEdge proxy without a valid journal"),
+            || clear_journal(&dir),
         );
 
-        assert!(
-            result.is_err(),
-            "must keep fail-safe and refuse to modify registry"
-        );
-        assert!(!restored.get(), "must not write registry");
-        // 损坏的 journal 文件保持原样（既未清除也未改写）。
-        assert!(
-            journal_file_exists(&dir),
-            "corrupt journal must be left untouched"
-        );
+        assert!(matches!(result, Ok(ReleaseOutcome::NoOwnership)));
+        assert_eq!(restored.into_inner(), Some(disabled));
+        assert!(!journal_file_exists(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

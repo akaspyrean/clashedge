@@ -39,7 +39,10 @@ impl CoreManager {
     fn transition_to_error_and_emit(&self, err: Error) -> Error {
         let text = err.to_string();
         error!("Core entered error state: {}", text);
-        *self.status.lock().unwrap() = CoreStatus::Error(text.clone());
+        *self
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoreStatus::Error(text.clone());
         let _ = self.app_handle.emit(
             "core-status-changed",
             serde_json::json!({ "status": format!("error: {}", text) }),
@@ -92,7 +95,10 @@ impl CoreManager {
         self.user_stopped
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
-        *self.status.lock().unwrap() = CoreStatus::Starting;
+        *self
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoreStatus::Starting;
 
         let mihomo_path = self.mihomo_path.clone();
         let data_dir = self.data_dir.clone();
@@ -163,7 +169,10 @@ impl CoreManager {
             Err(e) => return Err(self.transition_to_error_and_emit(e)),
         };
         let stdout_offset = spawned.stdout_offset;
-        *self.child.lock().unwrap() = Some(spawned.child);
+        *self
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(spawned.child);
         // 同步 PID 缓存
         self.record_pid_cache();
 
@@ -182,14 +191,27 @@ impl CoreManager {
                     let _ = self.stop_locked().await;
                     return Err(self.transition_to_error_and_emit(bind_err));
                 }
-                *self.status.lock().unwrap() = CoreStatus::Running;
+                *self
+                    .status
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoreStatus::Running;
                 // 缓存版本（REST 优先；失败回退 `-v`）
                 if let Ok(v) = self.version().await {
-                    *self.version_cache.lock().unwrap() = Some(v);
+                    *self
+                        .version_cache
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(v);
                 }
                 // 新进程启动时刻（稳定运行判定基准）
-                *self.started_at.lock().unwrap() = Some(std::time::Instant::now());
-                *self.applied_hash.lock().unwrap() = Some(hash);
+                *self
+                    .started_at
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(std::time::Instant::now());
+                *self
+                    .applied_hash
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hash);
                 // 只 spawn 一个携带当前 generation 的 watcher
                 self.spawn_watcher(generation);
                 info!(
@@ -334,12 +356,25 @@ impl CoreManager {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.user_stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let child = self.child.lock().unwrap().take();
+        let child = self
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         let Some(mut child) = child else {
             // 无子进程：除非已处于 Error，否则回到 Stopped 并清空缓存。
-            let is_error = matches!(*self.status.lock().unwrap(), CoreStatus::Error(_));
+            let is_error = matches!(
+                *self
+                    .status
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                CoreStatus::Error(_)
+            );
             if !is_error {
-                *self.status.lock().unwrap() = CoreStatus::Stopped;
+                *self
+                    .status
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoreStatus::Stopped;
             }
             self.clear_pid_cache();
             spawn::clear_session(&self.data_dir);
@@ -349,7 +384,10 @@ impl CoreManager {
         // 先记下 PID：kill 后未能确认退出时需要按 PID 精确兜底清杀
         let pid = child.id();
         info!("Stopping mihomo (PID {})", pid.unwrap_or(0));
-        *self.status.lock().unwrap() = CoreStatus::Stopping;
+        *self
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoreStatus::Stopping;
 
         // 1. 温和 kill（错误不立即失败——可能进程刚好已退出；交由确认轮询判定）
         let kill_result = child.kill().await;
@@ -408,7 +446,10 @@ impl CoreManager {
             // 进程确认退出后立即清空 PID 缓存，防止 PID 被系统复用后误杀
             self.clear_pid_cache();
             spawn::clear_session(&self.data_dir);
-            *self.status.lock().unwrap() = CoreStatus::Stopped;
+            *self
+                .status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoreStatus::Stopped;
             info!("mihomo stopped");
             Ok(())
         } else {
@@ -418,7 +459,10 @@ impl CoreManager {
             }
             // Keep the handle so a subsequent user-initiated stop can retry the
             // termination instead of clearing the last PID while the process lives.
-            *self.child.lock().unwrap() = Some(child);
+            *self
+                .child
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(child);
             let msg = format!(
                 "failed to stop mihomo (PID {}): {}",
                 pid.map(|p| p.to_string())
@@ -526,7 +570,14 @@ impl CoreManager {
         let hash = self.write_runtime_config(&config)?;
 
         if self.is_running() {
-            if !force && self.applied_hash.lock().unwrap().as_deref() == Some(hash.as_str()) {
+            if !force
+                && self
+                    .applied_hash
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_deref()
+                    == Some(hash.as_str())
+            {
                 debug!("Runtime config unchanged (hash {}); skip hot reload", hash);
                 return Ok(());
             }
@@ -557,10 +608,16 @@ impl CoreManager {
                             if let Err(e) = self.controller.close_all_connections().await {
                                 warn!("Failed to drain stale connections after hot reload: {}", e);
                             }
-                            *self.applied_hash.lock().unwrap() = Some(hash);
+                            *self
+                                .applied_hash
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hash);
                             // 版本缓存失效，重取
                             if let Ok(v) = self.version().await {
-                                *self.version_cache.lock().unwrap() = Some(v);
+                                *self
+                                    .version_cache
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(v);
                             }
                             return Ok(());
                         }
