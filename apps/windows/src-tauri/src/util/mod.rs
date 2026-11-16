@@ -7,6 +7,7 @@ pub mod elevation;
 pub mod error;
 pub mod fetch;
 pub mod geoip;
+pub mod job;
 pub mod logging;
 pub mod node_servers;
 pub mod normalizer;

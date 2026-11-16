@@ -11,14 +11,14 @@ use crate::util::error::{Error, Result};
 
 const STATE_FILE: &str = "profile-failover.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveFailover {
     pub primary_profile: String,
     pub backup_profile: String,
     pub started_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 struct StoredState {
     #[serde(default)]
     backup_profile: Option<String>,
@@ -148,9 +148,14 @@ impl ProfileFailoverManager {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = state.clone();
         state.active = None;
         state.probe_in_progress = false;
-        self.persist(&state)
+        if let Err(error) = self.persist(&state) {
+            *state = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn probe_in_progress(&self) -> bool {
@@ -233,15 +238,15 @@ impl ProfileFailoverManager {
             return Ok(false);
         };
         let applied = pending_profile == profile;
+        let previous = state.clone();
         state.pending_manual_profile = None;
         if applied {
             state.active = None;
             state.probe_in_progress = false;
             state.manual_override_profile = Some(profile.to_string());
-            // The on-disk pending intent still protects this profile on restart.
-            self.persist(&state)?;
-        } else if let Err(error) = self.persist(&state) {
-            state.pending_manual_profile = Some(pending_profile);
+        }
+        if let Err(error) = self.persist(&state) {
+            *state = previous;
             return Err(error);
         }
         Ok(applied)
@@ -304,6 +309,7 @@ impl ProfileFailoverManager {
         if !should_dismiss && !should_clear_override && !should_clear_pending {
             return Ok(());
         }
+        let previous = state.clone();
         if should_dismiss {
             state.active = None;
             state.probe_in_progress = false;
@@ -312,7 +318,10 @@ impl ProfileFailoverManager {
             state.manual_override_profile = None;
         }
         state.pending_manual_profile = None;
-        self.persist(&state)?;
+        if let Err(error) = self.persist(&state) {
+            *state = previous;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -321,24 +330,37 @@ impl ProfileFailoverManager {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = state.clone();
+        let mut changed = false;
         if state.backup_profile.as_deref() == Some(old_name) {
             state.backup_profile = Some(new_name.to_string());
+            changed = true;
         }
         if let Some(active) = state.active.as_mut() {
             if active.primary_profile.as_str() == old_name {
                 active.primary_profile = new_name.to_string();
+                changed = true;
             }
             if active.backup_profile.as_str() == old_name {
                 active.backup_profile = new_name.to_string();
+                changed = true;
             }
         }
         if state.manual_override_profile.as_deref() == Some(old_name) {
             state.manual_override_profile = Some(new_name.to_string());
+            changed = true;
         }
         if state.pending_manual_profile.as_deref() == Some(old_name) {
             state.pending_manual_profile = Some(new_name.to_string());
+            changed = true;
         }
-        self.persist(&state)?;
+        if !changed {
+            return Ok(());
+        }
+        if let Err(error) = self.persist(&state) {
+            *state = previous;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -347,6 +369,7 @@ impl ProfileFailoverManager {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = state.clone();
         if state.backup_profile.as_deref() == Some(name) {
             state.backup_profile = None;
         }
@@ -362,7 +385,10 @@ impl ProfileFailoverManager {
         if state.pending_manual_profile.as_deref() == Some(name) {
             state.pending_manual_profile = None;
         }
-        self.persist(&state)?;
+        if let Err(error) = self.persist(&state) {
+            *state = previous;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -379,4 +405,90 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manager(path: PathBuf, state: StoredState) -> ProfileFailoverManager {
+        ProfileFailoverManager {
+            path,
+            state: Mutex::new(state),
+        }
+    }
+
+    fn failed_write_path(tag: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!(
+                "clashedge-failover-missing-{}-{}",
+                tag,
+                std::process::id()
+            ))
+            .join("profile-failover.json")
+    }
+
+    fn active_state() -> StoredState {
+        StoredState {
+            backup_profile: Some("backup".to_string()),
+            active: Some(ActiveFailover {
+                primary_profile: "primary".to_string(),
+                backup_profile: "backup".to_string(),
+                started_at_ms: 1,
+            }),
+            manual_override_profile: Some("manual".to_string()),
+            probe_in_progress: true,
+            pending_manual_profile: Some("manual".to_string()),
+        }
+    }
+
+    #[test]
+    fn clear_active_rolls_back_memory_when_persist_fails() {
+        let state = active_state();
+        let manager = manager(failed_write_path("clear"), state.clone());
+        assert!(manager.clear_active().is_err());
+        assert_eq!(*manager.state.lock().unwrap(), state);
+    }
+
+    #[test]
+    fn reconcile_applied_rolls_back_memory_when_persist_fails() {
+        let state = active_state();
+        let manager = manager(failed_write_path("reconcile"), state.clone());
+        assert!(manager
+            .reconcile_pending_manual_activation("manual")
+            .is_err());
+        assert_eq!(*manager.state.lock().unwrap(), state);
+    }
+
+    #[test]
+    fn note_manual_activation_rolls_back_memory_when_persist_fails() {
+        let state = active_state();
+        let manager = manager(failed_write_path("note"), state.clone());
+        assert!(manager.note_manual_profile_activation("manual").is_err());
+        assert_eq!(*manager.state.lock().unwrap(), state);
+    }
+
+    #[test]
+    fn rename_and_delete_roll_back_memory_when_persist_fails() {
+        let state = active_state();
+        let rename_manager = manager(failed_write_path("rename"), state.clone());
+        assert!(rename_manager.rename_profile("backup", "renamed").is_err());
+        assert_eq!(*rename_manager.state.lock().unwrap(), state);
+
+        let delete_manager = manager(failed_write_path("delete"), state.clone());
+        assert!(delete_manager.delete_profile("backup").is_err());
+        assert_eq!(*delete_manager.state.lock().unwrap(), state);
+    }
+
+    #[test]
+    fn rename_without_matching_reference_skips_persist() {
+        let path = std::env::temp_dir().join(format!(
+            "clashedge-failover-noop-{}-{}.json",
+            std::process::id(),
+            "rename"
+        ));
+        let manager = manager(path.clone(), StoredState::default());
+        manager.rename_profile("old", "new").unwrap();
+        assert!(!path.exists());
+    }
 }

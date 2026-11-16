@@ -20,10 +20,13 @@
 
 use std::path::Path;
 
+use std::future::Future;
+
 use tauri::{AppHandle, Manager};
 use tracing::{error, warn};
 
 use crate::config::model::Config;
+use crate::core::profile_failover::ProfileFailoverManager;
 use crate::proxy::system_proxy::SystemProxyConfig;
 use crate::util::error::{Error, Result};
 
@@ -89,11 +92,43 @@ impl AppController {
     /// start()/restart()（含就绪轮询，最长 ~10s），若在锁内执行会长期占住全局
     /// 事务锁，导致其余开关（TUN/代理模式/mixin/托盘）全部排队等待。
     pub async fn apply_system_proxy(&self, app: &AppHandle, enable: bool) -> Result<()> {
-        // Acquire the transaction lock before the readiness check: a concurrent
-        // stop must not race between readiness and registry ownership acquisition.
+        let ensured_port = if enable {
+            crate::core::runtime::ensure_core_serving(app).await?;
+            let state = app.state::<crate::AppState>();
+            let config = state
+                .config_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            config.mixed_port()
+        } else {
+            0
+        };
         let _tx = self.tx.lock().await;
         if enable {
-            crate::core::runtime::ensure_core_serving(app).await?;
+            let state = app.state::<crate::AppState>();
+            let current_port = state
+                .config_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .mixed_port();
+            if current_port != ensured_port {
+                return Err(Error::Other(
+                    "System proxy target changed while waiting for the transaction lock"
+                        .to_string(),
+                ));
+            }
+            let core = state
+                .core_manager
+                .get()
+                .ok_or_else(|| Error::InvalidState("Core not initialized".to_string()))?;
+            if core.status() != crate::core::manager::CoreStatus::Running
+                || !crate::core::runtime::port_alive(current_port).await
+            {
+                return Err(Error::Other(
+                    "Mihomo is not serving the expected mixed port; refusing to enable system proxy"
+                        .to_string(),
+                ));
+            }
         }
         // 降级模式下只允许"关闭"（不写配置的恢复路径由 *_unless_degraded 兜底），
         // 开启会持久化默认配置覆盖损坏原文件。
@@ -314,51 +349,46 @@ impl AppController {
             ));
         }
         failover.set_probe_in_progress(true)?;
-        if let Err(primary_error) =
-            crate::core::runtime::activate_profile_locked(app, primary).await
-        {
-            if let Err(restore_error) =
-                crate::core::runtime::activate_profile_locked(app, backup).await
-            {
-                return Err(Error::Other(format!(
-                    "primary recovery activation failed ({}); restoring backup '{}' also failed ({})",
-                    primary_error, backup, restore_error
-                )));
-            }
-            failover.set_probe_in_progress(false)?;
-            return Err(primary_error);
-        }
+        with_probe_guard(failover, async {
+            activate_primary_or_restore_backup(
+                crate::core::runtime::activate_profile_locked(app, primary),
+                crate::core::runtime::activate_profile_locked(app, backup),
+                primary,
+                backup,
+            )
+            .await?;
 
-        let healthy = async {
-            let state = app.state::<crate::AppState>();
-            let core = state
-                .core_manager
-                .get()
-                .ok_or_else(|| Error::InvalidState("Core not initialized".to_string()))?;
-            let groups = core.get_proxy_groups().await?;
-            let mut node_available = false;
-            for node in failback_probe_candidates(&groups) {
-                if core.probe_node_health(node).await?.last_available {
-                    node_available = true;
-                    break;
+            let healthy = async {
+                let state = app.state::<crate::AppState>();
+                let core = state
+                    .core_manager
+                    .get()
+                    .ok_or_else(|| Error::InvalidState("Core not initialized".to_string()))?;
+                let groups = core.get_proxy_groups().await?;
+                let mut node_available = false;
+                for node in failback_probe_candidates(&groups) {
+                    if core.probe_node_health(node).await?.last_available {
+                        node_available = true;
+                        break;
+                    }
                 }
+                if !node_available {
+                    return Ok::<bool, Error>(false);
+                }
+                let current_pool = core.get_proxies_raw().await?;
+                Ok(!crate::core::patrol::analyze(&current_pool).should_recover())
             }
-            if !node_available {
-                return Ok::<bool, Error>(false);
-            }
-            let current_pool = core.get_proxies_raw().await?;
-            Ok(!crate::core::patrol::analyze(&current_pool).should_recover())
-        }
-        .await
-        .unwrap_or(false);
+            .await
+            .unwrap_or(false);
 
-        if healthy {
-            Ok(true)
-        } else {
-            crate::core::runtime::activate_profile_locked(app, backup).await?;
-            failover.set_probe_in_progress(false)?;
-            Ok(false)
-        }
+            if healthy {
+                Ok(true)
+            } else {
+                crate::core::runtime::activate_profile_locked(app, backup).await?;
+                Ok(false)
+            }
+        })
+        .await
     }
 
     /// 用户在降级横幅里显式确认"覆盖损坏的配置文件"：持锁写盘并退出降级模式。
@@ -405,7 +435,10 @@ impl AppController {
         let _tx = self.tx.lock().await;
         let state = app.state::<crate::AppState>();
         let new_config = {
-            let config_guard = state.config_manager.lock().unwrap();
+            let config_guard = state
+                .config_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let mut current = serde_json::to_value(config_guard.get_config())?;
             let cur_obj = current
                 .as_object_mut()
@@ -422,7 +455,12 @@ impl AppController {
     /// 任何会 `set_config` 的入口都会静默覆盖损坏的原文件。普通设置必须先走
     /// 设置页的「我确认覆盖损坏的配置文件」流程（update_config_fields）。
     fn ensure_not_degraded(state: &tauri::State<'_, crate::AppState>) -> Result<()> {
-        if state.config_manager.lock().unwrap().is_degraded() {
+        if state
+            .config_manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_degraded()
+        {
             return Err(Error::Other(
                 "检测到 config.yaml 损坏，应用正以默认配置降级运行。为保护你的数据，\
                  原文件（已备份为 config.yaml.corrupt-*.bak）不会被静默覆盖。\
@@ -449,7 +487,10 @@ impl AppController {
         let state = app.state::<crate::AppState>();
         Self::ensure_not_degraded(&state)?;
         {
-            let mut cfg = state.config_manager.lock().unwrap();
+            let mut cfg = state
+                .config_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let mut c = cfg.get_config();
             c.locale = locale;
             cfg.set_config(c)?;
@@ -481,7 +522,10 @@ impl AppController {
         let _tx = self.tx.lock().await;
         let state = app.state::<crate::AppState>();
         Self::ensure_not_degraded(&state)?;
-        let mut cfg = state.config_manager.lock().unwrap();
+        let mut cfg = state
+            .config_manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut c = cfg.get_config();
         if let Some(u) = geoip_url {
             c.advanced.geoip_url = u.trim().to_string();
@@ -601,7 +645,13 @@ impl AppController {
         mut new_config: Config,
     ) -> Result<()> {
         // 1. 快照旧配置（回滚基准）
-        let old = { state.config_manager.lock().unwrap().get_config() };
+        let old = {
+            state
+                .config_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_config()
+        };
 
         // mixed-port 变化或关闭系统代理前，必须先释放旧 ownership 并确认用户基线，
         // 再停止/重启旧端口的 Mihomo。否则 runtime 先切到新端口的数秒内，Windows
@@ -617,7 +667,10 @@ impl AppController {
         //    旧端口 ownership，必须立即尝试恢复，否则出现「配置=旧意图=ON、
         //    注册表=用户基线=OFF、journal=已清」的分裂状态。
         {
-            let mut guard = state.config_manager.lock().unwrap();
+            let mut guard = state
+                .config_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Err(persist_err) = guard.set_config(new_config) {
                 let reacquire = match &proxy_transition {
                     ProxyTransition::Released(expected_baseline) => {
@@ -668,7 +721,13 @@ impl AppController {
 
             // 新端口 ownership 只有在能安全释放/确认后，才允许回滚 runtime；
             // 若当前仍指向新端口但字段已被并发修改，必须保留新核心避免死代理。
-            let attempted = { state.config_manager.lock().unwrap().get_config() };
+            let attempted = {
+                state
+                    .config_manager
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_config()
+            };
             let data_dir = crate::util::paths::get_app_data_dir(app)?;
             let unwind = if attempted.general.system_proxy {
                 match crate::proxy::journal::release_owned_proxy(
@@ -727,7 +786,10 @@ async fn rollback_config_and_runtime(
     old: Config,
 ) -> Result<()> {
     {
-        let mut guard = state.config_manager.lock().unwrap();
+        let mut guard = state
+            .config_manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.set_config(old)?;
     }
     if let Err(rb) = reload_running_core(state).await {
@@ -833,7 +895,13 @@ async fn sync_windows_side_effects(
 ) -> Result<()> {
     use tracing::info;
 
-    let cfg = { state.config_manager.lock().unwrap().get_config() };
+    let cfg = {
+        state
+            .config_manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_config()
+    };
     let data_dir = crate::util::paths::get_app_data_dir(app)?;
 
     if cfg.general.system_proxy {
@@ -880,6 +948,48 @@ async fn reload_running_core(state: &tauri::State<'_, crate::AppState>) -> Resul
     let core_guard = state.core_manager.get();
     if let Some(core) = core_guard.as_ref() {
         core.reload_config().await?;
+    }
+    Ok(())
+}
+
+struct ProbeGuard<'a> {
+    failover: &'a ProfileFailoverManager,
+}
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.failover.set_probe_in_progress(false) {
+            warn!("Failed to clear profile failover probe flag: {}", error);
+        }
+    }
+}
+
+async fn with_probe_guard<T, F>(failover: &ProfileFailoverManager, operation: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let _guard = ProbeGuard { failover };
+    operation.await
+}
+
+async fn activate_primary_or_restore_backup<P, B>(
+    primary_activation: P,
+    backup_activation: B,
+    _primary: &str,
+    backup: &str,
+) -> Result<()>
+where
+    P: Future<Output = Result<()>>,
+    B: Future<Output = Result<()>>,
+{
+    if let Err(primary_error) = primary_activation.await {
+        if let Err(restore_error) = backup_activation.await {
+            return Err(Error::Other(format!(
+                "primary recovery activation failed ({}); restoring backup '{}' also failed ({})",
+                primary_error, backup, restore_error
+            )));
+        }
+        return Err(primary_error);
     }
     Ok(())
 }
@@ -970,4 +1080,40 @@ fn failback_probe_candidates(groups: &[serde_json::Value]) -> Vec<String> {
         }
     }
     candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn probe_double_failure_clears_probe_in_progress() {
+        let dir = std::env::temp_dir().join(format!(
+            "clash-edge-probe-guard-{}-{}",
+            std::process::id(),
+            "double-failure"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let failover = ProfileFailoverManager::load(&dir);
+        failover
+            .set_backup_profile(Some("backup".to_string()))
+            .unwrap();
+        failover.begin("primary", "backup").unwrap();
+        failover.set_probe_in_progress(true).unwrap();
+
+        let result = with_probe_guard(&failover, async {
+            activate_primary_or_restore_backup(
+                async { Err(Error::Other("primary activation failed".to_string())) },
+                async { Err(Error::Other("backup activation failed".to_string())) },
+                "primary",
+                "backup",
+            )
+            .await
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(!failover.probe_in_progress());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

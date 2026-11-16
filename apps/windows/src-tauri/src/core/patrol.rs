@@ -65,7 +65,7 @@ async fn patrol_once(app: &tauri::AppHandle) -> Result<()> {
     let report_profile = state
         .config_manager
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get_config()
         .general
         .profile;
@@ -84,7 +84,7 @@ async fn patrol_once(app: &tauri::AppHandle) -> Result<()> {
         let current_profile = state
             .config_manager
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get_config()
             .general
             .profile;
@@ -122,7 +122,7 @@ async fn patrol_once(app: &tauri::AppHandle) -> Result<()> {
         let primary = state
             .config_manager
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get_config()
             .general
             .profile;

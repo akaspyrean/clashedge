@@ -137,7 +137,6 @@ pub fn restore_system_proxy(snapshot: &SystemProxyConfig) -> Result<()> {
 }
 
 /// 把代理设置写入指定的注册表键（生产 / 测试子键共用）。见 `set_system_proxy` 语义。
-#[cfg(test)]
 fn apply_to_key(
     key: &winreg::RegKey,
     enabled: bool,
@@ -171,6 +170,11 @@ fn apply_to_key(
     notify_wininet_changed();
 
     Ok(())
+}
+
+pub fn disable_system_proxy() -> Result<()> {
+    let key = open_key()?;
+    apply_to_key(&key, false, "", &[], None)
 }
 
 fn restore_to_key(key: &winreg::RegKey, snapshot: &SystemProxyConfig) -> Result<()> {

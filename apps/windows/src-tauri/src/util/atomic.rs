@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::util::error::Result;
+use crate::util::error::{Error, Result};
 
 /// 临时文件名计数器（与进程 id 组合成随机后缀，保证同一进程内不撞名）
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -23,17 +23,49 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// 不存在 POSIX 语义下「rename 后还需 fsync 父目录」的步骤。）
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = temp_path_for(path);
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        file.write_all(bytes)?;
-        file.flush()?;
-        file.sync_all()?;
+    let result: Result<()> = (|| {
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            file.write_all(bytes)?;
+            file.flush()?;
+            file.sync_all()?;
+        }
+        rename_with_retry(&tmp, path).map_err(|e| Error::Other(e.to_string()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    result
+}
+
+#[cfg(windows)]
+fn rename_with_retry(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    const RETRY_DELAYS_MS: [u64; 3] = [20, 50, 100];
+    let mut attempt = 0usize;
+    loop {
+        match std::fs::rename(tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error
+                    .raw_os_error()
+                    .is_some_and(|code| code == 5 || code == 32)
+                    && attempt < RETRY_DELAYS_MS.len() =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt]));
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn rename_with_retry(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(tmp, path)
 }
 
 /// 生成临时文件路径：`{path}.tmp.{pid}-{n}`（随机后缀，与目标同目录同文件系统）。
@@ -42,4 +74,35 @@ fn temp_path_for(path: &Path) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".tmp.{}-{}", std::process::id(), n));
     path.with_file_name(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_atomic_write_removes_temporary_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "clash-edge-atomic-{}-{}",
+            std::process::id(),
+            "cleanup"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+
+        assert!(atomic_write(&target, b"content").is_err());
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files leaked: {leftovers:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
