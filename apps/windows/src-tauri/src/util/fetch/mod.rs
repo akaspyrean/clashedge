@@ -36,7 +36,7 @@
 
 mod client;
 mod doh;
-mod guards;
+pub(crate) mod guards;
 
 pub use client::{
     fake_ip_range_from_config, get_direct_first, get_direct_first_streaming,

@@ -23,14 +23,14 @@ pub const CORE_DOWNLOAD_URL_PREFIX: &str =
     "https://github.com/akaspyrean/clashedge/releases/download/mihomo-core-v";
 
 /// Directory containing independently updated, versioned core installations.
-pub fn updated_core_dir(data_dir: &Path, version: &str) -> PathBuf {
-    data_dir
+pub fn updated_core_dir(data_dir: &Path, version: &str) -> Result<PathBuf> {
+    Ok(data_dir
         .join(UPDATED_CORE_DIR)
-        .join(safe_version_component(version))
+        .join(safe_version_component(version)?))
 }
 
-pub fn updated_core_binary_path(data_dir: &Path, version: &str) -> PathBuf {
-    updated_core_dir(data_dir, version).join(CORE_BINARY_NAME)
+pub fn updated_core_binary_path(data_dir: &Path, version: &str) -> Result<PathBuf> {
+    Ok(updated_core_dir(data_dir, version)?.join(CORE_BINARY_NAME))
 }
 
 /// Return installed update candidates in descending semantic-version order.
@@ -75,9 +75,15 @@ pub fn verify_core_binary(path: &Path, data_dir: &Path) -> Result<()> {
 }
 
 fn is_updated_core(path: &Path, data_dir: &Path) -> bool {
-    let root = data_dir.join(UPDATED_CORE_DIR);
-    path.parent()
-        .is_some_and(|parent| parent.starts_with(&root))
+    let Ok(canonical_path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(canonical_root) = std::fs::canonicalize(data_dir.join(UPDATED_CORE_DIR)) else {
+        return false;
+    };
+    canonical_path
+        .parent()
+        .is_some_and(|parent| parent.starts_with(&canonical_root))
 }
 
 fn signed_updated_core_hash(core_dir: &Path) -> Result<String> {
@@ -188,8 +194,13 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn safe_version_component(version: &str) -> String {
-    version
+fn safe_version_component(version: &str) -> Result<String> {
+    if version == "." || version == ".." || version.contains("..") {
+        return Err(Error::InvalidArgument(format!(
+            "invalid version component: {version}"
+        )));
+    }
+    let sanitized: String = version
         .chars()
         .take(32)
         .map(|c| {
@@ -199,7 +210,8 @@ fn safe_version_component(version: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    Ok(sanitized)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -216,4 +228,55 @@ fn parse_version(version: &str) -> Option<CoreVersion> {
         .next()
         .is_none()
         .then_some(CoreVersion(major, minor, patch))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_version_component_rejects_dot_and_dotdot() {
+        assert!(safe_version_component(".").is_err());
+        assert!(safe_version_component("..").is_err());
+    }
+
+    #[test]
+    fn safe_version_component_rejects_dotdot_in_version() {
+        assert!(safe_version_component("1.0..2").is_err());
+        assert!(safe_version_component("a../b").is_err());
+    }
+
+    #[test]
+    fn safe_version_component_accepts_normal_semver() {
+        assert_eq!(safe_version_component("1.2.3").unwrap(), "1.2.3");
+    }
+
+    #[test]
+    fn updated_core_detection_resolves_canonical_paths() {
+        let base = std::env::temp_dir().join(format!(
+            "clash-edge-integrity-{}-{}",
+            std::process::id(),
+            "canonical"
+        ));
+        let data_dir = base.join("data");
+        let updates = data_dir.join(UPDATED_CORE_DIR);
+        let version_dir = updates.join("1.2.3");
+        let outside_dir = data_dir.join("outside");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let inside = version_dir.join(CORE_BINARY_NAME);
+        std::fs::write(&inside, b"inside").unwrap();
+        assert!(is_updated_core(&inside, &data_dir));
+
+        #[cfg(windows)]
+        {
+            let linked = updates.join("linked");
+            if std::os::windows::fs::symlink_dir(&outside_dir, &linked).is_ok() {
+                let escaped = outside_dir.join(CORE_BINARY_NAME);
+                std::fs::write(&escaped, b"escaped").unwrap();
+                assert!(!is_updated_core(&escaped, &data_dir));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

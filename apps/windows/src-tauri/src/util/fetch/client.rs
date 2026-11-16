@@ -11,7 +11,7 @@ use reqwest::{Proxy, Url};
 use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
-use super::guards::{redact_url_for_log, validate_url_with};
+use super::guards::{redact_url_for_log, validate_url_sync, validate_url_with};
 use crate::config::model::Config;
 use crate::util::error::{Error, Result};
 
@@ -152,6 +152,7 @@ async fn get_direct_first_impl(
     // SSRF 防护：目标 URL 必须通过校验（含 DNS 白名单检查，返回已验地址）。
     // 返回空列表 = TUN + fake-ip 下的"未解析域名"，只能走本地代理（见 A3）。
     let resolved = validate_url_with(url, fake.as_ref()).await?;
+    ensure_resolved_target_allowed(url, &resolved)?;
     let proxy_url = local_proxy_url(app);
 
     if resolved.is_empty() {
@@ -162,7 +163,7 @@ async fn get_direct_first_impl(
         let proxied = apply_route(
             build_client_with_resolved(url, &resolved, total_timeout)?,
             FetchRoute::LocalProxy,
-            &to_remote_dns(&proxy_url),
+            &to_remote_dns(&proxy_url, url)?,
         )?
         .redirect(no_redirect_policy())
         .build()?;
@@ -211,8 +212,27 @@ async fn get_direct_first_impl(
 
 /// `socks5://` -> `socks5h://`（由代理端解析域名）。仅用于 fake-ip 场景：此时
 /// 本机解析结果是假地址，必须把域名交给 mihomo 解析。
-fn to_remote_dns(proxy_url: &str) -> String {
-    proxy_url.replacen("socks5://", "socks5h://", 1)
+fn ensure_resolved_target_allowed(url: &str, resolved: &[SocketAddr]) -> Result<()> {
+    if resolved.is_empty() {
+        return Ok(());
+    }
+    let parsed = Url::parse(url)
+        .map_err(|e| Error::InvalidArgument(format!("Invalid target URL: {}", e)))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| Error::InvalidArgument("Target URL has no host".to_string()))?;
+    super::guards::ensure_all_globally_routable(host, resolved)
+}
+
+fn to_remote_dns(proxy_url: &str, target_url: &str) -> Result<String> {
+    validate_url_sync(target_url)?;
+    let parsed = Url::parse(target_url)
+        .map_err(|e| Error::InvalidArgument(format!("Invalid target URL: {}", e)))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| Error::InvalidArgument("Target URL has no host".to_string()))?;
+    super::guards::validate_node_server(host)?;
+    Ok(proxy_url.replacen("socks5://", "socks5h://", 1))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -375,7 +395,7 @@ async fn send_and_follow(
                         redact_url_for_log(&req_url)
                     )));
                 }
-                to_remote_dns(proxy_url)
+                to_remote_dns(proxy_url, &req_url)?
             } else {
                 proxy_url.to_string()
             };
@@ -482,6 +502,30 @@ mod tests {
         assert_eq!(abs.as_str(), "https://example.com/a/c");
         let abs = parsed_join("https://example.com/", "https://other.com/x").unwrap();
         assert_eq!(abs.as_str(), "https://other.com/x");
+    }
+
+    #[test]
+    fn remote_dns_proxy_rejects_unsafe_targets() {
+        for url in [
+            "http://localhost/resource",
+            "http://node.local/resource",
+            "http://127.0.0.1/resource",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1/resource",
+        ] {
+            assert!(
+                to_remote_dns("socks5://127.0.0.1:7890", url).is_err(),
+                "unsafe target must not reach local proxy: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_dns_proxy_accepts_validated_public_target() {
+        assert_eq!(
+            to_remote_dns("socks5://127.0.0.1:7890", "https://example.com/resource").unwrap(),
+            "socks5h://127.0.0.1:7890"
+        );
     }
 
     // --- SSRF local-proxy fallback 验证 ------------------------------------

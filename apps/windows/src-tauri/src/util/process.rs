@@ -12,6 +12,12 @@ use std::path::{Path, PathBuf};
 
 use crate::util::error::{Error, Result};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub image_path: PathBuf,
+    pub creation_time: u64,
+}
+
 /// 路径归一化比较键：canonicalize（失败则原样）→ 去 verbatim 前缀 → 大写。
 pub fn path_key(p: &Path) -> String {
     let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
@@ -32,15 +38,16 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 #[cfg(target_os = "windows")]
 mod imp {
     use super::*;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
         TCP_TABLE_OWNER_PID_LISTENER,
     };
     use windows_sys::Win32::Networking::WinSock::AF_INET;
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+        WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE,
     };
 
     /// 句柄 RAII，保证任何分支都会 CloseHandle。
@@ -79,6 +86,28 @@ mod imp {
     pub fn image_path(pid: u32) -> Option<PathBuf> {
         let h = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
         image_of_handle(&h)
+    }
+
+    fn creation_time_of_handle(h: &OwnedHandle) -> Option<u64> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let ok = unsafe { GetProcessTimes(h.0, &mut creation, &mut exit, &mut kernel, &mut user) };
+        if ok == 0 {
+            return None;
+        }
+        Some(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
+    }
+
+    pub fn identity(pid: u32) -> Option<ProcessIdentity> {
+        let h = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+        let image_path = image_of_handle(&h)?;
+        let creation_time = creation_time_of_handle(&h)?;
+        Some(ProcessIdentity {
+            image_path,
+            creation_time,
+        })
     }
 
     pub fn terminate_owned(pid: u32, expected: &Path, wait_ms: u32) -> Result<bool> {
@@ -161,6 +190,9 @@ mod imp {
     pub fn image_path(_pid: u32) -> Option<PathBuf> {
         None
     }
+    pub fn identity(_pid: u32) -> Option<ProcessIdentity> {
+        None
+    }
     pub fn terminate_owned(_pid: u32, _expected: &Path, _wait_ms: u32) -> Result<bool> {
         Ok(false)
     }
@@ -178,6 +210,24 @@ pub fn owns_pid(pid: u32, expected: Option<&Path>) -> bool {
         Some(image) => same_path(&image, expected),
         None => false,
     }
+}
+
+pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    imp::identity(pid)
+}
+
+pub fn owns_pid_with_creation_time(
+    pid: u32,
+    expected: Option<&Path>,
+    expected_creation_time: u64,
+) -> bool {
+    let Some(expected) = expected else {
+        return false;
+    };
+    let Some(identity) = process_identity(pid) else {
+        return false;
+    };
+    identity.creation_time == expected_creation_time && same_path(&identity.image_path, expected)
 }
 
 /// 持句柄校验映像路径后终止进程，并等待至多 `wait_ms` 毫秒确认退出。
@@ -207,6 +257,27 @@ mod tests {
         let b = Path::new(r"c:\windows\system32\CMD.EXE");
         assert!(same_path(a, b));
         assert!(!same_path(a, Path::new(r"C:\Windows\notepad.exe")));
+    }
+
+    #[test]
+    fn process_identity_matches_live_process() {
+        let pid = std::process::id();
+        let identity = process_identity(pid).expect("current process identity");
+        assert!(same_path(
+            &identity.image_path,
+            &std::env::current_exe().unwrap()
+        ));
+        assert!(identity.creation_time > 0);
+        assert!(owns_pid_with_creation_time(
+            pid,
+            Some(&identity.image_path),
+            identity.creation_time
+        ));
+        assert!(!owns_pid_with_creation_time(
+            pid,
+            Some(&identity.image_path),
+            identity.creation_time + 1
+        ));
     }
 
     #[test]
