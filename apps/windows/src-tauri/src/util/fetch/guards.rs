@@ -130,7 +130,7 @@ fn all_in_fake_ip_range(addrs: &[SocketAddr], fake_ip: Option<&ipnet::IpNet>) ->
 
 /// DNS 校验循环（独立成函数便于单测）：解析结果中只要存在任一非全球可路由
 /// 地址即整体拒绝（DNS rebinding / 混合解析防护），纯公网结果放行。
-fn ensure_all_globally_routable(host: &str, addrs: &[SocketAddr]) -> Result<()> {
+pub(crate) fn ensure_all_globally_routable(host: &str, addrs: &[SocketAddr]) -> Result<()> {
     for a in addrs {
         if !is_globally_routable(a.ip()) {
             return Err(Error::InvalidArgument(format!(
@@ -173,6 +173,34 @@ pub fn validate_url_sync(url: &str) -> Result<()> {
         if !is_globally_routable(ip) {
             return Err(Error::InvalidArgument(format!(
                 "URL host '{}' is not a globally routable public address",
+                ip
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_node_server(server: &str) -> Result<()> {
+    let host = server.trim();
+    if host.is_empty() {
+        return Err(Error::InvalidArgument(
+            "Node server host cannot be empty".to_string(),
+        ));
+    }
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    if normalized == "localhost"
+        || normalized.ends_with(".localhost")
+        || normalized.ends_with(".local")
+    {
+        return Err(Error::InvalidArgument(format!(
+            "Node server host '{}' is not allowed",
+            host
+        )));
+    }
+    if let Some(ip) = parse_host_ip(&normalized) {
+        if !is_globally_routable(ip) {
+            return Err(Error::InvalidArgument(format!(
+                "Node server host '{}' is not a globally routable public address",
                 ip
             )));
         }
