@@ -70,14 +70,10 @@ static SNIFFER_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLo
 static PROFILE_SECTION_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLock::new();
 
 fn sniffer_val() -> &'static serde_norway::Value {
-    SNIFFER_VAL.get_or_init(|| {
-        serde_norway::from_str(SNIFFER_YAML).expect("SNIFFER_YAML 静态解析失败")
-    })
+    SNIFFER_VAL.get_or_init(|| serde_norway::from_str(SNIFFER_YAML).expect("SNIFFER_YAML 静态解析失败"))
 }
 fn profile_section_val() -> &'static serde_norway::Value {
-    PROFILE_SECTION_VAL.get_or_init(|| {
-        serde_norway::from_str(PROFILE_SECTION_YAML).expect("PROFILE_SECTION_YAML 静态解析失败")
-    })
+    PROFILE_SECTION_VAL.get_or_init(|| serde_norway::from_str(PROFILE_SECTION_YAML).expect("PROFILE_SECTION_YAML 静态解析失败"))
 }
 
 /// 合并配置规则 - 运行时语义校验与归一：
@@ -250,10 +246,7 @@ pub fn build_runtime_config(
     put!("tun", serde_norway::to_value(&app.tun)?);
     // 域名嗅探（可选）：应用自己的 sniffer 配置；订阅里的 sniffer 仍一律不透传。
     if app.general.sniffer {
-        put!(
-            "sniffer",
-            sniffer_val().clone()
-        );
+        put!("sniffer", sniffer_val().clone());
     }
     // DNS 运行时处理：
     // 当 TUN 开启时，mihomo 要求 DNS 处于启用状态以支撑虚拟网卡流量的域名解析；
