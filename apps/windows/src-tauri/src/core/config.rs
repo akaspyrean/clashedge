@@ -70,10 +70,14 @@ static SNIFFER_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLo
 static PROFILE_SECTION_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLock::new();
 
 fn sniffer_val() -> &'static serde_norway::Value {
-    SNIFFER_VAL.get_or_init(|| serde_norway::from_str(SNIFFER_YAML).expect("SNIFFER_YAML 静态解析失败"))
+    SNIFFER_VAL.get_or_init(|| {
+        serde_norway::from_str(SNIFFER_YAML).expect("SNIFFER_YAML 静态解析失败")
+    })
 }
 fn profile_section_val() -> &'static serde_norway::Value {
-    PROFILE_SECTION_VAL.get_or_init(|| serde_norway::from_str(PROFILE_SECTION_YAML).expect("PROFILE_SECTION_YAML 静态解析失败"))
+    PROFILE_SECTION_VAL.get_or_init(|| {
+        serde_norway::from_str(PROFILE_SECTION_YAML).expect("PROFILE_SECTION_YAML 静态解析失败")
+    })
 }
 
 /// 合并配置规则 - 运行时语义校验与归一：

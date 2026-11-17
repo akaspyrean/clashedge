@@ -3,7 +3,7 @@
 // 后端 core::logs 连接控制器 SSE，逐行转发 `log-line` 事件。本 composable 必须在组件 setup
 // 内调用：挂载时启动流、卸载时停止，保证不残留后台连接。
 
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, markRaw, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logsApi } from "@/api/logs";
 import { maskUrlsInText } from "@/utils/format";
@@ -39,9 +39,8 @@ function isAtBottom(el: HTMLElement): boolean {
 }
 
 export function useLogStream() {
-  // 使用 shallowRef 避免为 500 条日志及其嵌套字段创建深层 Proxy，
-  // 大幅减少每次追加日志的响应式追踪与 GC 压力。
-  const entries = shallowRef<LogEntry[]>([]);
+  // 使用 ref 保证响应式，对每条 entry 用 markRaw 避免深层 Proxy 开销。
+  const entries = ref<LogEntry[]>([]);
   const connected = ref(false);
   const connecting = ref(false);
   const errorMsg = ref("");
@@ -81,6 +80,8 @@ export function useLogStream() {
       const lvl = e.level.toLowerCase();
       if (counts.value[lvl] !== undefined) counts.value[lvl] = Math.max(0, counts.value[lvl] - 1);
     }
+    // markRaw 单条 entry 避免深层 Proxy，arr.push 仍能触发 ref 的响应式
+    for (const e of list) markRaw(e);
     arr.push(...list);
     // 加上新条目的计数
     for (const e of list) {
