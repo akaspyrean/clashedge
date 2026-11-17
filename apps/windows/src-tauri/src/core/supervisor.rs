@@ -117,6 +117,8 @@ impl CoreManager {
 
                 // generation 已变化 → 新流程接管，本 watcher 立即退出。
                 // 这是消除「多个 watcher 同时盯一个 child、重复重启」的关键。
+                // 前置校验：在加锁内部先比对 generation，避免旧 watcher 在
+                // 取走新 Child 后才发现已被取代而清空新进程的 PID 缓存。
                 if !gen_valid(&gen_counter, generation) {
                     debug!("supervisor watcher {} superseded; exiting", generation);
                     break;
@@ -124,33 +126,41 @@ impl CoreManager {
 
                 // 子进程是否已退出：try_wait 非空（进程自然退出/崩溃），
                 // 或 child 已被 stop() 取走（None）。
-                let gone = {
+                // 在同一次持锁作用域内完成 try_wait 与 take，消除 stop→start
+                // 竞态窗口（旧 watcher 误将新 Child take 走）。
+                let (gone, took_child) = {
                     let mut guard = child_handle
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     match guard.as_mut() {
-                        Some(c) => c.try_wait().ok().flatten().is_some(),
-                        None => true,
+                        Some(c) => match c.try_wait() {
+                            Ok(Some(_)) => {
+                                // 进程已退出，取走句柄并清 PID 缓存
+                                guard.take();
+                                let state = app_handle.state::<crate::AppState>();
+                                state
+                                    .core_pid_cache
+                                    .store(0, std::sync::atomic::Ordering::SeqCst);
+                                (true, true)
+                            }
+                            Ok(None) => (false, false),
+                            Err(e) => {
+                                // 错误不再静默吞掉，记录告警并视为未退出
+                                warn!("try_wait failed: {}; treating child as not exited", e);
+                                (false, false)
+                            }
+                        },
+                        None => (true, true),
                     }
                 };
+
                 if !gone {
                     continue;
                 }
 
-                // 置 child 为 None，is_running() 随之返回 false
-                child_handle
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take();
-                // 子进程确认退出后必须立即清空 PID 缓存：否则崩溃/熔断/重启
-                // 失败后旧 PID 可能被系统复用，应用退出清理会 taskkill 掉
-                // 无关进程（PID 误杀风险）。
-                {
-                    let state = app_handle.state::<crate::AppState>();
-                    state
-                        .core_pid_cache
-                        .store(0, std::sync::atomic::Ordering::SeqCst);
-                }
+                // took_child 为 true 表示已在上面清空了 child_handle 和 PID 缓存
+                // 无需重复操作
+                let _ = took_child;
 
                 // 用户主动停止 / 正在停止：不重启，watcher 退出
                 {
@@ -238,7 +248,7 @@ impl CoreManager {
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let stable = started_at
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .map(|s| now.duration_since(s) >= STABLE_RUN_DURATION)
                         .unwrap_or(false);
                     if stable {
@@ -520,7 +530,7 @@ impl AutoRestartChecker {
             let exited = self
                 .child
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_mut()
                 .and_then(|c| c.try_wait().ok().flatten());
             if let Some(st) = exited {

@@ -3,7 +3,7 @@
 // 后端 core::logs 连接控制器 SSE，逐行转发 `log-line` 事件。本 composable 必须在组件 setup
 // 内调用：挂载时启动流、卸载时停止，保证不残留后台连接。
 
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logsApi } from "@/api/logs";
 import { maskUrlsInText } from "@/utils/format";
@@ -39,7 +39,9 @@ function isAtBottom(el: HTMLElement): boolean {
 }
 
 export function useLogStream() {
-  const entries = ref<LogEntry[]>([]);
+  // 使用 shallowRef 避免为 500 条日志及其嵌套字段创建深层 Proxy，
+  // 大幅减少每次追加日志的响应式追踪与 GC 压力。
+  const entries = shallowRef<LogEntry[]>([]);
   const connected = ref(false);
   const connecting = ref(false);
   const errorMsg = ref("");
@@ -51,6 +53,9 @@ export function useLogStream() {
   const pending: LogEntry[] = [];
   /** 视图是否停在底部；离开底部时显示「回到最新」。 */
   const atBottom = ref(true);
+
+  // 增量维护各级别计数，避免每次追加日志全量遍历 500 条。
+  const counts = ref<Record<string, number>>({ debug: 0, info: 0, warning: 0, error: 0 });
 
   let idSeq = 0;
   let everConnected = false;
@@ -67,9 +72,20 @@ export function useLogStream() {
   }
 
   function append(list: LogEntry[]) {
-    entries.value.push(...list);
-    if (entries.value.length > MAX_LOG_LINES) {
-      entries.value.splice(0, entries.value.length - MAX_LOG_LINES);
+    const arr = entries.value;
+    const removed = arr.length + list.length > MAX_LOG_LINES
+      ? arr.splice(0, arr.length + list.length - MAX_LOG_LINES)
+      : [];
+    // 减去被移除条目的计数
+    for (const e of removed) {
+      const lvl = e.level.toLowerCase();
+      if (counts.value[lvl] !== undefined) counts.value[lvl] = Math.max(0, counts.value[lvl] - 1);
+    }
+    arr.push(...list);
+    // 加上新条目的计数
+    for (const e of list) {
+      const lvl = e.level.toLowerCase();
+      if (counts.value[lvl] !== undefined) counts.value[lvl] = (counts.value[lvl] ?? 0) + 1;
     }
     requestAnimationFrame(() => {
       const el = listEl.value;
@@ -116,6 +132,7 @@ export function useLogStream() {
   function clear() {
     entries.value = [];
     pending.length = 0;
+    counts.value = { debug: 0, info: 0, warning: 0, error: 0 };
   }
 
   async function connect() {
@@ -151,12 +168,26 @@ export function useLogStream() {
   onMounted(async () => {
     document.addEventListener("visibilitychange", onVisibilityChange);
     unlisteners.push(
-      await listen<{ level: string; message: string }>("log-line", (ev) => {
-        connected.value = true;
-        everConnected = true;
-        errorMsg.value = "";
-        push(ev.payload.level, ev.payload.message);
-      }),
+      await listen<{ level?: string; message?: string; batch?: Array<{ level: string; message: string } } }>(
+        "log-line",
+        (ev) => {
+          connected.value = true;
+          everConnected = true;
+          errorMsg.value = "";
+          if (ev.payload.batch) {
+            // 批量推送：一次性并入多条日志，减少响应式触发次数
+            const entries = ev.payload.batch.map((e) => ({
+              id: idSeq++,
+              time: clock(),
+              level: e.level,
+              message: maskUrlsInText(e.message),
+            }));
+            append(entries);
+          } else {
+            push(ev.payload.level ?? "info", ev.payload.message ?? "");
+          }
+        },
+      ),
       await listen("log-connected", () => {
         connected.value = true;
         everConnected = true;
@@ -187,6 +218,7 @@ export function useLogStream() {
     paused,
     atBottom,
     statusKey,
+    counts,
     connect,
     clear,
     pause,

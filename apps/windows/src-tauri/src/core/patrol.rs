@@ -18,7 +18,9 @@
 //! - 内核未运行 / 控制器暂不可达视为常态（静默跳过），巡检永不告警刷屏。
 
 use serde_json::Value as Json;
+use std::time::Duration;
 use tauri::Manager;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::util::error::Result;
@@ -40,13 +42,18 @@ const MIN_ROUTING_GROUPS: usize = 2;
 const BUILTIN_NON_NODES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"];
 
 /// 巡检主循环（应用启动时 spawn 一次，随进程退出）。
+///
+/// 每轮巡检均包裹在 [`timeout`] 中，防止底层调用长时间
+/// 不返回导致巡检线程卡死。
+const PATROL_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub async fn run(app: tauri::AppHandle) {
-    if let Err(e) = patrol_once(&app).await {
+    if let Err(e) = timeout(PATROL_TIMEOUT, patrol_once(&app)).await {
         debug!("Initial node pool patrol skipped: {}", e);
     }
     loop {
         tokio::time::sleep(PATROL_INTERVAL).await;
-        if let Err(e) = patrol_once(&app).await {
+        if let Err(e) = timeout(PATROL_TIMEOUT, patrol_once(&app)).await {
             debug!("Node pool patrol skipped: {}", e);
         }
     }
@@ -157,24 +164,17 @@ async fn patrol_once(app: &tauri::AppHandle) -> Result<()> {
         }
     }
 
-    let recovery_report = if let Some(core) = state.core_manager.get() {
-        if core.is_running() {
-            analyze(&core.get_proxies_raw().await?)
-        } else {
-            report
-        }
-    } else {
-        report
-    };
-    if recovery_report.should_recover() {
+    // 复用第一次获取的 report，避免重复调用 get_proxies_raw()。
+    // 若恢复期间核心已停止，report 仍为有效分析结果。
+    if report.should_recover() {
         warn!(
             "Node pool degraded (tested={}, dead={}, ratio={:.2}, routing groups broken {}/{}); \
              triggering auto recovery",
-            recovery_report.tested,
-            recovery_report.dead,
-            recovery_report.dead_ratio,
-            recovery_report.routing_broken,
-            recovery_report.routing_total
+            report.tested,
+            report.dead,
+            report.dead_ratio,
+            report.routing_broken,
+            report.routing_total
         );
         let outcome = crate::commands::update_status::run_auto_recovery(app).await?;
         info!("Auto recovery outcome: {}", outcome);

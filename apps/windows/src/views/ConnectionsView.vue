@@ -33,14 +33,18 @@ function toggleChartTable() {
 
 const rows = computed(() => {
   const q = query.value.trim().toLowerCase();
-  const all = store.connections.map((c) => ({
+  // 先过滤再映射：避免对全量数组做无用的 map 与字符串拼接。
+  const filtered = store.connections.filter((c) => {
+    if (!q) return true;
+    const kind = c.type ? `${c.network} · ${c.type}` : c.network;
+    return [c.host, c.rule, kind].some((s) => s.toLowerCase().includes(q));
+  });
+  return filtered.map((c) => ({
     ...c,
     // mihomo 的 chains 以最终出口节点开头，反转后按「入口组 → … → 节点」阅读。
     chain: [...c.chains].reverse().join(" → "),
     kind: c.type ? `${c.network} · ${c.type}` : c.network,
   }));
-  if (!q) return all;
-  return all.filter((c) => [c.host, c.rule, c.chain, c.kind].some((s) => s.toLowerCase().includes(q)));
 });
 
 /** start 为 Unix 毫秒时间戳 → 显示连接已持续的时长（mm:ss / hh:mm:ss）。 */

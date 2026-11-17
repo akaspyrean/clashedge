@@ -1,6 +1,7 @@
 // src/stores/connections.ts - 连接列表快照（轮询由视图的生命周期驱动）。
 
 import { defineStore } from "pinia";
+import { markRaw, shallowRef } from "vue";
 import { connectionsApi, type ConnectionInfo } from "@/api/connections";
 
 /** 连接越多轮询越慢，避免大量连接时拖垮 IPC / WebView。 */
@@ -18,7 +19,8 @@ const RATE_GAP_RESET_SECONDS = 20;
 
 export const useConnectionsStore = defineStore("connections", {
   state: () => ({
-    connections: [] as ConnectionInfo[],
+    // 使用 markRaw + 浅层结构，避免为最多 500 条连接及其嵌套对象创建深层 Proxy。
+    connections: markRaw([]) as ConnectionInfo[],
     /** 真实总数（后端可能已裁剪列表） */
     count: 0,
     truncated: false,
@@ -37,7 +39,8 @@ export const useConnectionsStore = defineStore("connections", {
       const all = data.connections ?? [];
       this.count = data.total ?? all.length;
       this.truncated = data.truncated ?? false;
-      this.connections = all;
+      // markRaw 逐条：数组本身替换即可触发更新，条目不再创建深层 Proxy。
+      this.connections = markRaw(all);
       this.downloadTotal = data.download_total ?? 0;
       this.uploadTotal = data.upload_total ?? 0;
       this.recordRate(this.downloadTotal, this.uploadTotal, Date.now());

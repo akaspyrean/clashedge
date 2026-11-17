@@ -12,7 +12,7 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, ReadBuf};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -259,8 +259,9 @@ pub(crate) async fn request(
     pipe.write_all(&request).await?;
     pipe.flush().await?;
 
-    let mut reader = BufReader::new(pipe);
-    read_response(&mut reader, method).await
+    // 直接使用 pipe 作为 AsyncRead，read_response 内部会创建单层 BufReader
+    // 避免双重 BufReader 嵌套带来的额外分配与拷贝
+    read_response(&mut pipe, method).await
 }
 
 #[cfg(not(windows))]
@@ -290,6 +291,8 @@ async fn connect_pipe(
         ));
     }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    // 指数退避：1ms → 2ms → 4ms → ... 上限 100ms，避免固定 25ms 造成的无谓延迟
+    let mut backoff_ms = 1u64;
     loop {
         match ClientOptions::new().open(pipe_name) {
             Ok(client) => return Ok(client),
@@ -297,7 +300,8 @@ async fn connect_pipe(
                 if tokio::time::Instant::now() >= deadline {
                     return Err(PipeHttpError::Io(error));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(100);
             }
             Err(error) => return Err(PipeHttpError::Io(error)),
         }
@@ -398,6 +402,7 @@ async fn read_response<R: AsyncRead + Unpin>(
     reader: &mut R,
     request_method: &str,
 ) -> Result<PipeHttpResponse, PipeHttpError> {
+    // 单层 BufReader，避免调用端再次包装导致双重缓冲
     let mut buffered = BufReader::new(reader);
     let mut interim_count = 0usize;
     loop {
@@ -562,9 +567,11 @@ async fn read_body<R: AsyncBufRead + Unpin>(
             "Content-Length is invalid or exceeds size limit",
         ));
     }
-    let mut body = vec![0; length];
+    // 使用 take() + read_to_end() 避免 vec![0; length] 预分配并清零内存
+    let mut body = Vec::with_capacity(length.min(1024 * 1024)); // 避免过大预分配，read_to_end 会自动扩容
     reader
-        .read_exact(&mut body)
+        .take(length as u64)
+        .read_to_end(&mut body)
         .await
         .map_err(|_| PipeHttpError::Protocol("truncated Content-Length body"))?;
     Ok(body)
@@ -620,10 +627,10 @@ async fn read_chunked<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Vec<u8>
         {
             return Err(PipeHttpError::Protocol("chunked body exceeds size limit"));
         }
-        let old_len = body.len();
-        body.resize(old_len + size, 0);
+        // 使用 take() + read_to_end() 避免 resize(..., 0) 预清零内存
         reader
-            .read_exact(&mut body[old_len..])
+            .take(size as u64)
+            .read_to_end(&mut body)
             .await
             .map_err(|_| PipeHttpError::Protocol("truncated chunk"))?;
         let mut crlf = [0; 2];
