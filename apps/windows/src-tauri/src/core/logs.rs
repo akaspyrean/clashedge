@@ -90,7 +90,8 @@ pub fn spawn_log_stream(
                     let mut stream = resp;
                     let mut buffer = Vec::new();
                     // 批量积攒的日志条目，满 32 条或 50ms 统一 emit。
-                    let mut batch: Vec<serde_json::Value> = Vec::with_capacity(LOG_BATCH_MAX_ENTRIES);
+                    let mut batch: Vec<serde_json::Value> =
+                        Vec::with_capacity(LOG_BATCH_MAX_ENTRIES);
                     let mut last_emit = std::time::Instant::now();
                     loop {
                         match stream.chunk().await {
@@ -108,7 +109,9 @@ pub fn spawn_log_stream(
                                 // 使用游标索引 + copy_within，避免 drain(..=pos) 的 O(N) 搬移。
                                 let mut pos = 0usize;
                                 while pos < buffer.len() {
-                                    if let Some(newline_pos) = buffer[pos..].iter().position(|&b| b == b'\n') {
+                                    if let Some(newline_pos) =
+                                        buffer[pos..].iter().position(|&b| b == b'\n')
+                                    {
                                         let line_end = pos + newline_pos + 1;
                                         let line = &buffer[pos..line_end];
                                         if let Some(entry) = parse_line(line) {
@@ -195,15 +198,16 @@ fn parse_line(line: &[u8]) -> Option<serde_json::Value> {
 }
 
 /// 将批量积攒的日志条目以单个 IPC 事件发送给前端。
-fn flush_batch(app: &AppHandle, batch: &mut Vec<serde_json::Value>, last_emit: &mut std::time::Instant) {
+fn flush_batch(
+    app: &AppHandle,
+    batch: &mut Vec<serde_json::Value>,
+    last_emit: &mut std::time::Instant,
+) {
     if batch.is_empty() {
         return;
     }
     let entries = std::mem::take(batch);
-    let _ = app.emit(
-        EVENT_LOG_LINE,
-        serde_json::json!({ "batch": entries }),
-    );
+    let _ = app.emit(EVENT_LOG_LINE, serde_json::json!({ "batch": entries }));
     *last_emit = std::time::Instant::now();
 }
 

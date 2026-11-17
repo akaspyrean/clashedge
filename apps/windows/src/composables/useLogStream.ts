@@ -16,6 +16,13 @@ export interface LogEntry {
   message: string;
 }
 
+/// 后端 log-line 事件载荷：逐行模式用 { level, message }；批量模式用 { batch }。
+export interface LogLinePayload {
+  level?: string;
+  message?: string;
+  batch?: Array<{ level: string; message: string }>;
+}
+
 function clock(d = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
@@ -31,6 +38,12 @@ export function levelClass(level: string): string {
       : level === "debug"
         ? "lv-debug"
         : "lv-info";
+}
+
+/// 统一与 LogsView.levelOf 一致的计数级别：unknown 级别全部归为 info，
+/// 使增量 counts 与 full-scan computed 的结果保持一致。
+function countableLevel(raw: string): "debug" | "info" | "warning" | "error" {
+  return raw === "error" || raw === "warning" || raw === "debug" ? raw : "info";
 }
 
 /** 触底判定：scrollTop + clientHeight >= scrollHeight - 8。 */
@@ -72,21 +85,21 @@ export function useLogStream() {
 
   function append(list: LogEntry[]) {
     const arr = entries.value;
-    const removed = arr.length + list.length > MAX_LOG_LINES
-      ? arr.splice(0, arr.length + list.length - MAX_LOG_LINES)
-      : [];
-    // 减去被移除条目的计数
-    for (const e of removed) {
-      const lvl = e.level.toLowerCase();
-      if (counts.value[lvl] !== undefined) counts.value[lvl] = Math.max(0, counts.value[lvl] - 1);
-    }
     // markRaw 单条 entry 避免深层 Proxy，arr.push 仍能触发 ref 的响应式
     for (const e of list) markRaw(e);
     arr.push(...list);
-    // 加上新条目的计数
+    // 环形缓冲裁剪 + 增量计数：减去被移除条目、加上新条目，
+    // 避免每次追加日志全量遍历 500 条。
+    if (arr.length > MAX_LOG_LINES) {
+      const removed = arr.splice(0, arr.length - MAX_LOG_LINES);
+      for (const e of removed) {
+        const lvl = countableLevel(e.level);
+        counts.value[lvl] = Math.max(0, (counts.value[lvl] ?? 0) - 1);
+      }
+    }
     for (const e of list) {
-      const lvl = e.level.toLowerCase();
-      if (counts.value[lvl] !== undefined) counts.value[lvl] = (counts.value[lvl] ?? 0) + 1;
+      const lvl = countableLevel(e.level);
+      counts.value[lvl] = (counts.value[lvl] ?? 0) + 1;
     }
     requestAnimationFrame(() => {
       const el = listEl.value;
@@ -169,9 +182,7 @@ export function useLogStream() {
   onMounted(async () => {
     document.addEventListener("visibilitychange", onVisibilityChange);
     unlisteners.push(
-      await listen<{ level?: string; message?: string; batch?: Array<{ level: string; message: string } } }>(
-        "log-line",
-        (ev) => {
+      await listen<LogLinePayload>("log-line", (ev) => {
           connected.value = true;
           everConnected = true;
           errorMsg.value = "";
@@ -187,8 +198,7 @@ export function useLogStream() {
           } else {
             push(ev.payload.level ?? "info", ev.payload.message ?? "");
           }
-        },
-      ),
+        }),
       await listen("log-connected", () => {
         connected.value = true;
         everConnected = true;

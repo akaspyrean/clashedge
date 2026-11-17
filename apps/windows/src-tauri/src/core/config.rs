@@ -70,10 +70,13 @@ static SNIFFER_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLo
 static PROFILE_SECTION_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLock::new();
 
 fn sniffer_val() -> &'static serde_norway::Value {
-    SNIFFER_VAL.get_or_init(|| serde_norway::from_str(SNIFFER_YAML).expect("SNIFFER_YAML 静态解析失败"))
+    SNIFFER_VAL
+        .get_or_init(|| serde_norway::from_str(SNIFFER_YAML).expect("SNIFFER_YAML 静态解析失败"))
 }
 fn profile_section_val() -> &'static serde_norway::Value {
-    PROFILE_SECTION_VAL.get_or_init(|| serde_norway::from_str(PROFILE_SECTION_YAML).expect("PROFILE_SECTION_YAML 静态解析失败"))
+    PROFILE_SECTION_VAL.get_or_init(|| {
+        serde_norway::from_str(PROFILE_SECTION_YAML).expect("PROFILE_SECTION_YAML 静态解析失败")
+    })
 }
 
 /// 合并配置规则 - 运行时语义校验与归一：
@@ -314,10 +317,7 @@ pub fn build_runtime_config(
 
     // P0-1 选择持久化：见 PROFILE_SECTION_YAML 注释。热重载（force reload
     // 整组重建）后手动选择由 mihomo cache.db 恢复，不再被重置。
-    put!(
-        "profile",
-        profile_section_val().clone()
-    );
+    put!("profile", profile_section_val().clone());
 
     // P0-5 TCP keep-alive：显式固定（与 mihomo 推荐值一致，防默认随版本漂移）。
     // NAT 掐断 / 休眠唤醒后的半开连接在约 2 分钟内被内核回收，不再“假在线”。
@@ -439,7 +439,9 @@ pub fn build_runtime_config(
     //    与 node_names 提取逻辑对齐，避免出现“自动优选被删但仍被引用”的无效配置。
     let mut drop_auto_group = false;
     let has_real_nodes = effective_proxies.as_ref().is_some_and(|proxies| {
-        proxies.iter().any(|p| p.get("name").and_then(|n| n.as_str()).is_some())
+        proxies
+            .iter()
+            .any(|p| p.get("name").and_then(|n| n.as_str()).is_some())
     });
     for group in groups.iter_mut() {
         let Some(gmap) = group.as_mapping_mut() else {
