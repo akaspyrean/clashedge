@@ -12,9 +12,7 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use tokio::io::{
-    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader,
-};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
