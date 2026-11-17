@@ -33,25 +33,6 @@ pub const MAX_GROUP_HOPS: usize = 4;
 
 const MANUAL_FALLBACK_GROUP: &str = "人工兜底";
 
-/// 订阅内容允许透传到运行时配置的顶层键白名单。
-///
-/// 设计原则：订阅默认仅提供代理节点。应用采用内置代理组骨架（GLOBAL + 5 组）
-/// 与内置规则链，订阅自带的 proxy-groups/rules/rule-providers/proxy-providers/
-/// script/hosts/sniffer/listeners/external-controller/external-ui/dns/tun 等一律
-/// 不透传——防止订阅任意改写控制器/绕过应用分流结构/注入恶意 hosts 或 sniffer。
-///
-/// 仅 `proxies`（真实代理节点列表）允许从订阅进入运行时配置，由 step 5 注入
-/// 内置叶子组。
-const PROFILE_ALLOWED_KEYS: &[&str] = &["proxies"];
-
-/// AppConfig.extra 允许透传到运行时配置的顶层键白名单。
-///
-/// `extra` 兜底键来自用户导入的完整 mihomo 配置（import_config）。与订阅不同，
-/// 导入是用户显式行为，但仍有未知顶层字段不得无差别透传的要求。`proxies` 由
-/// step 5 统一处理；其余键（proxy-providers/hosts/sniffer/script/listeners 等）
-/// 不透传，防止导入配置携带的恶意 hosts/sniffer/script 进入运行时。
-const EXTRA_ALLOWED_KEYS: &[&str] = &[];
-
 /// 应用级 geodata-mode 值（描述 GeoData 更新来源，与 mihomo 的 geodata-mode
 /// 语义不同，这些值不会写给 mihomo）。
 const APP_GEODATA_MODES: &[&str] = &["manual", "use-external", "remote"];
@@ -83,6 +64,20 @@ const PROFILE_SECTION_YAML: &str = r#"
 store-selected: true
 store-fake-ip: true
 "#;
+
+/// 预解析静态 YAML 块，避免每次 build_runtime_config 重复 from_str
+static SNIFFER_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLock::new();
+static PROFILE_SECTION_VAL: std::sync::OnceLock<serde_norway::Value> = std::sync::OnceLock::new();
+
+fn sniffer_val() -> &'static serde_norway::Value {
+    SNIFFER_VAL
+        .get_or_init(|| serde_norway::from_str(SNIFFER_YAML).expect("SNIFFER_YAML 静态解析失败"))
+}
+fn profile_section_val() -> &'static serde_norway::Value {
+    PROFILE_SECTION_VAL.get_or_init(|| {
+        serde_norway::from_str(PROFILE_SECTION_YAML).expect("PROFILE_SECTION_YAML 静态解析失败")
+    })
+}
 
 /// 合并配置规则 - 运行时语义校验与归一：
 /// - 校验并修正代理模式（rule / global / direct）
@@ -254,10 +249,7 @@ pub fn build_runtime_config(
     put!("tun", serde_norway::to_value(&app.tun)?);
     // 域名嗅探（可选）：应用自己的 sniffer 配置；订阅里的 sniffer 仍一律不透传。
     if app.general.sniffer {
-        put!(
-            "sniffer",
-            serde_norway::from_str::<serde_norway::Value>(SNIFFER_YAML)?
-        );
+        put!("sniffer", sniffer_val().clone());
     }
     // DNS 运行时处理：
     // 当 TUN 开启时，mihomo 要求 DNS 处于启用状态以支撑虚拟网卡流量的域名解析；
@@ -325,10 +317,7 @@ pub fn build_runtime_config(
 
     // P0-1 选择持久化：见 PROFILE_SECTION_YAML 注释。热重载（force reload
     // 整组重建）后手动选择由 mihomo cache.db 恢复，不再被重置。
-    put!(
-        "profile",
-        serde_norway::from_str::<serde_norway::Value>(PROFILE_SECTION_YAML)?
-    );
+    put!("profile", profile_section_val().clone());
 
     // P0-5 TCP keep-alive：显式固定（与 mihomo 推荐值一致，防默认随版本漂移）。
     // NAT 掐断 / 休眠唤醒后的半开连接在约 2 分钟内被内核回收，不再“假在线”。
@@ -357,15 +346,8 @@ pub fn build_runtime_config(
         put!("geodata-mode", app.general.geodata_mode.clone());
     }
 
-    // 2) AppConfig.extra 兜底键：仅白名单内键透传（防止导入配置携带的
-    //    hosts/sniffer/script/proxy-providers 等未知顶层字段进入运行时配置）。
-    //    `proxies` 由 step 5 统一处理，不在此重复透传。
-    for (k, v) in &app.extra {
-        let Some(s) = k.as_str() else { continue };
-        if EXTRA_ALLOWED_KEYS.contains(&s) {
-            map.insert(k.clone(), v.clone());
-        }
-    }
+    // 2) AppConfig.extra 兜底键：EXTRA_ALLOWED_KEYS 为空，不透传任何额外键。
+    //    `proxies` 由 step 5 统一处理。保留注释以备将来扩展白名单。
 
     // 3) 解析激活 Profile 内容（空/缺失 → 空映射）
     let profile_map = match profile_content {
@@ -385,21 +367,8 @@ pub fn build_runtime_config(
         .filter(|s| !s.is_empty())
         .cloned();
 
-    // 4) 订阅仅提供代理节点：profile 顶层键只透传白名单（`proxies`），
-    //    其余一律忽略（rules/proxy-groups/rule-providers/proxy-providers/
-    //    script/hosts/sniffer/listeners/external-controller/external-ui/dns/tun
-    //    等均不透传——应用采用内置分流结构，订阅不得改写控制器或注入 hosts）。
-    for (k, v) in &profile_map {
-        let Some(key) = k.as_str() else { continue };
-        if !PROFILE_ALLOWED_KEYS.contains(&key) {
-            continue;
-        }
-        // `proxies` 保留到 step 5 注入内置叶子组
-        if key == "proxies" {
-            continue;
-        }
-        map.insert(k.clone(), v.clone());
-    }
+    // 4) 订阅顶层键严格白名单：仅 `proxies` 进入 step 5，其余全部忽略。
+    //    删除死循环代码（PROFILE_ALLOWED_KEYS 仅含 "proxies" 且被 continue 跳过）。
 
     // 5) proxies / proxy-groups / rules：
     //    应用始终采用内置组骨架（GLOBAL + 5 组）与内置规则链。订阅只提供节点。
@@ -459,16 +428,21 @@ pub fn build_runtime_config(
                 }
             }
         }
-        put!("proxies", serde_norway::to_value(proxies)?);
+        // proxies 已是 Vec<Value>，直接包装为 Sequence 避免二次序列化
+        put!("proxies", serde_norway::Value::Sequence(proxies.clone()));
     }
 
     // 6) 零节点兜底：mihomo 拒绝 proxies 为空的代理组。
     //    自动优选是 url-test 组，零节点时删除整组并从引用中剔除；
     //    人工优选（select）补 DIRECT 兜底。
+    //    关键修正：has_real_nodes 必须要求“至少有一个 proxy 拥有合法 name 字段”，
+    //    与 node_names 提取逻辑对齐，避免出现“自动优选被删但仍被引用”的无效配置。
     let mut drop_auto_group = false;
-    let has_real_nodes = effective_proxies
-        .as_ref()
-        .is_some_and(|proxies| !proxies.is_empty());
+    let has_real_nodes = effective_proxies.as_ref().is_some_and(|proxies| {
+        proxies
+            .iter()
+            .any(|p| p.get("name").and_then(|n| n.as_str()).is_some())
+    });
     for group in groups.iter_mut() {
         let Some(gmap) = group.as_mapping_mut() else {
             continue;

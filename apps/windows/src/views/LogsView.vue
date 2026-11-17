@@ -28,6 +28,7 @@ const {
   resume,
   onScroll,
   jumpToLatest,
+  counts,
 } = useLogStream();
 // `listEl` 只通过模板 ref="listEl" 绑定（vue-tsc 看不到这种使用）。
 void listEl;
@@ -45,11 +46,13 @@ const levelOf = (raw: string): LevelId =>
 const level = ref<LevelId | "all">("all");
 const query = ref("");
 
-const counts = computed(() => {
-  const c: Record<LevelId, number> = { debug: 0, info: 0, warning: 0, error: 0 };
-  for (const e of entries.value) c[levelOf(e.level)]++;
-  return c;
-});
+// 使用 useLogStream 提供的增量计数，避免每次追加日志全量遍历 500 条。
+const levelCounts = computed(() => ({
+  debug: counts.value?.debug ?? 0,
+  info: counts.value?.info ?? 0,
+  warning: counts.value?.warning ?? 0,
+  error: counts.value?.error ?? 0,
+}));
 
 /** Search plain text by default: user-supplied regular expressions can block the UI. */
 const matcher = computed<(s: string) => boolean>(() => {
@@ -118,7 +121,7 @@ async function onClear() {
         @click="level = l.id"
       >
         <i class="mark" :class="`mark-${l.id}`" aria-hidden="true"></i>{{ l.label }}
-        <span class="chip-n">{{ counts[l.id] }}</span>
+        <span class="chip-n">{{ levelCounts[l.id] }}</span>
       </button>
     </div>
 

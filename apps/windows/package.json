@@ -33,7 +33,11 @@
     "vue-tsc": "^3.3.13"
   },
   "overrides": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "glob": "^11.0.0",
+    "minimatch": "^11.0.1",
+    "js-beautify": "^1.15.0",
+    "editorconfig": "^2.0.0"
   },
   "allowScripts": {
     "esbuild": true

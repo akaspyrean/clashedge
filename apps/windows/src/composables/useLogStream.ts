@@ -3,7 +3,7 @@
 // 后端 core::logs 连接控制器 SSE，逐行转发 `log-line` 事件。本 composable 必须在组件 setup
 // 内调用：挂载时启动流、卸载时停止，保证不残留后台连接。
 
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, markRaw, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logsApi } from "@/api/logs";
 import { maskUrlsInText } from "@/utils/format";
@@ -14,6 +14,13 @@ export interface LogEntry {
   time: string;
   level: string;
   message: string;
+}
+
+/// 后端 log-line 事件载荷：逐行模式用 { level, message }；批量模式用 { batch }。
+export interface LogLinePayload {
+  level?: string;
+  message?: string;
+  batch?: Array<{ level: string; message: string }>;
 }
 
 function clock(d = new Date()): string {
@@ -33,12 +40,19 @@ export function levelClass(level: string): string {
         : "lv-info";
 }
 
+/// 统一与 LogsView.levelOf 一致的计数级别：unknown 级别全部归为 info，
+/// 使增量 counts 与 full-scan computed 的结果保持一致。
+function countableLevel(raw: string): "debug" | "info" | "warning" | "error" {
+  return raw === "error" || raw === "warning" || raw === "debug" ? raw : "info";
+}
+
 /** 触底判定：scrollTop + clientHeight >= scrollHeight - 8。 */
 function isAtBottom(el: HTMLElement): boolean {
   return el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
 }
 
 export function useLogStream() {
+  // 使用 ref 保证响应式，对每条 entry 用 markRaw 避免深层 Proxy 开销。
   const entries = ref<LogEntry[]>([]);
   const connected = ref(false);
   const connecting = ref(false);
@@ -51,6 +65,9 @@ export function useLogStream() {
   const pending: LogEntry[] = [];
   /** 视图是否停在底部；离开底部时显示「回到最新」。 */
   const atBottom = ref(true);
+
+  // 增量维护各级别计数，避免每次追加日志全量遍历 500 条。
+  const counts = ref<Record<string, number>>({ debug: 0, info: 0, warning: 0, error: 0 });
 
   let idSeq = 0;
   let everConnected = false;
@@ -67,9 +84,22 @@ export function useLogStream() {
   }
 
   function append(list: LogEntry[]) {
-    entries.value.push(...list);
-    if (entries.value.length > MAX_LOG_LINES) {
-      entries.value.splice(0, entries.value.length - MAX_LOG_LINES);
+    const arr = entries.value;
+    // markRaw 单条 entry 避免深层 Proxy，arr.push 仍能触发 ref 的响应式
+    for (const e of list) markRaw(e);
+    arr.push(...list);
+    // 环形缓冲裁剪 + 增量计数：减去被移除条目、加上新条目，
+    // 避免每次追加日志全量遍历 500 条。
+    if (arr.length > MAX_LOG_LINES) {
+      const removed = arr.splice(0, arr.length - MAX_LOG_LINES);
+      for (const e of removed) {
+        const lvl = countableLevel(e.level);
+        counts.value[lvl] = Math.max(0, (counts.value[lvl] ?? 0) - 1);
+      }
+    }
+    for (const e of list) {
+      const lvl = countableLevel(e.level);
+      counts.value[lvl] = (counts.value[lvl] ?? 0) + 1;
     }
     requestAnimationFrame(() => {
       const el = listEl.value;
@@ -116,6 +146,7 @@ export function useLogStream() {
   function clear() {
     entries.value = [];
     pending.length = 0;
+    counts.value = { debug: 0, info: 0, warning: 0, error: 0 };
   }
 
   async function connect() {
@@ -151,12 +182,23 @@ export function useLogStream() {
   onMounted(async () => {
     document.addEventListener("visibilitychange", onVisibilityChange);
     unlisteners.push(
-      await listen<{ level: string; message: string }>("log-line", (ev) => {
-        connected.value = true;
-        everConnected = true;
-        errorMsg.value = "";
-        push(ev.payload.level, ev.payload.message);
-      }),
+      await listen<LogLinePayload>("log-line", (ev) => {
+          connected.value = true;
+          everConnected = true;
+          errorMsg.value = "";
+          if (ev.payload.batch) {
+            // 批量推送：一次性并入多条日志，减少响应式触发次数
+            const entries = ev.payload.batch.map((e) => ({
+              id: idSeq++,
+              time: clock(),
+              level: e.level,
+              message: maskUrlsInText(e.message),
+            }));
+            append(entries);
+          } else {
+            push(ev.payload.level ?? "info", ev.payload.message ?? "");
+          }
+        }),
       await listen("log-connected", () => {
         connected.value = true;
         everConnected = true;
@@ -187,6 +229,7 @@ export function useLogStream() {
     paused,
     atBottom,
     statusKey,
+    counts,
     connect,
     clear,
     pause,
