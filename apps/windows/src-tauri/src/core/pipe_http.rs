@@ -567,13 +567,18 @@ async fn read_body<R: AsyncBufRead + Unpin>(
             "Content-Length is invalid or exceeds size limit",
         ));
     }
-    // 使用 take() + read_to_end() 避免 vec![0; length] 预分配并清零内存
+    // 使用 take() + read_to_end() 避免 vec![0; length] 预分配并清零内存。
+    // read_to_end 在管道提前关闭时不报错（只返回已读字节），必须再显式校验长度：
+    // Content-Length 声明 N 字节但实际不足 N（截断响应）必须判为协议错误。
     let mut body = Vec::with_capacity(length.min(1024 * 1024)); // 避免过大预分配，read_to_end 会自动扩容
     reader
         .take(length as u64)
         .read_to_end(&mut body)
         .await
         .map_err(|_| PipeHttpError::Protocol("truncated Content-Length body"))?;
+    if body.len() != length {
+        return Err(PipeHttpError::Protocol("truncated Content-Length body"));
+    }
     Ok(body)
 }
 
@@ -627,12 +632,17 @@ async fn read_chunked<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Vec<u8>
         {
             return Err(PipeHttpError::Protocol("chunked body exceeds size limit"));
         }
-        // 使用 take() + read_to_end() 避免 resize(..., 0) 预清零内存
+        // 使用 take() + read_to_end() 避免 resize(..., 0) 预清零内存。
+        // read_to_end 在管道提前关闭时不报错，必须再显式校验本块实际读到的字节数。
+        let before = body.len();
         reader
             .take(size as u64)
             .read_to_end(&mut body)
             .await
             .map_err(|_| PipeHttpError::Protocol("truncated chunk"))?;
+        if body.len() - before != size {
+            return Err(PipeHttpError::Protocol("truncated chunk"));
+        }
         let mut crlf = [0; 2];
         reader
             .read_exact(&mut crlf)
