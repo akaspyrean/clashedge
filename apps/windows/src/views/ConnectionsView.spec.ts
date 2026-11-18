@@ -16,7 +16,7 @@ import ElementPlus from "element-plus";
 import { stubBrowserApis, testI18n } from "@/test/harness";
 import ConnectionsView from "@/views/ConnectionsView.vue";
 
-function makeConn(id: string) {
+function makeConn(id: string, start: number | string = Date.now()) {
   return {
     id,
     host: "h" + id,
@@ -25,7 +25,7 @@ function makeConn(id: string) {
     rule: "DIRECT",
     upload: 0,
     download: 0,
-    start: Date.now(),
+    start,
     chains: [],
   };
 }
@@ -148,6 +148,23 @@ describe("ConnectionsView (v-if/v-else 三态)", () => {
     expect(wrapper.findAll(".conn-list li")).toHaveLength(1);
     await wrapper.find(".search-box input").setValue("nothing");
     expect(wrapper.find(".no-match").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("时长列解析后端透传的 RFC3339 start 字符串；0/无效值显示占位符", async () => {
+    const rfc3339 = new Date(Date.now() - 65_000).toISOString(); // 65 秒前
+    const conns = [
+      makeConn("1", rfc3339),
+      makeConn("2", 0),
+      makeConn("3", "not-a-date"),
+    ];
+    mockList(conns);
+    const wrapper = mount(ConnectionsView, mountOptions);
+    await flushPromises();
+    const times = wrapper.findAll(".conn-list li .dim");
+    expect(times[0].text()).toBe("01:05");
+    expect(times[1].text()).toBe("—");
+    expect(times[2].text()).toBe("—");
     wrapper.unmount();
   });
 
