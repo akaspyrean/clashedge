@@ -47,10 +47,11 @@ const rows = computed(() => {
   }));
 });
 
-/** start 为 Unix 毫秒时间戳 → 显示连接已持续的时长（mm:ss / hh:mm:ss）。 */
-function formatStart(start: number): string {
-  if (!Number.isFinite(start) || start <= 0) return "—";
-  const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
+/** start 为 Unix 毫秒时间戳或 mihomo 的 RFC3339 字符串 → 显示连接已持续的时长（mm:ss / hh:mm:ss）。 */
+function formatStart(start: number | string): string {
+  const ms = typeof start === "number" ? start : Date.parse(start);
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  const elapsed = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   const h = Math.floor(elapsed / 3600);
   const m = Math.floor((elapsed % 3600) / 60);
   const s = elapsed % 60;

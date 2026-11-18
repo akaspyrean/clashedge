@@ -759,7 +759,14 @@ impl ControllerClient {
                     .to_string();
                 let upload = value_as_u64(conn.get("upload"));
                 let download = value_as_u64(conn.get("download"));
-                let start = value_as_u64(conn.get("start"));
+                // mihomo 的 start 是 RFC3339 字符串（如
+                // "2024-01-02T03:04:05.678+08:00"），value_as_u64 对字符串恒返回
+                // 0（时长列恒为 "—"）。原样透传：数字保持数字，字符串交给前端
+                // Date.parse 解析。
+                let start = conn
+                    .get("start")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 let chains = conn
                     .get("chains")
                     .and_then(|v| v.as_array())

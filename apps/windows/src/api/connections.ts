@@ -11,8 +11,8 @@ export interface ConnectionInfo {
   rule: string;
   upload: number;
   download: number;
-  /** Unix 毫秒时间戳，连接建立时刻。 */
-  start: number;
+  /** 连接建立时刻：Unix 毫秒时间戳（number）或 mihomo 返回的 RFC3339 字符串。 */
+  start: number | string;
   chains: string[];
 }
 
