@@ -90,9 +90,9 @@ if (-not $SkipCargoAudit -and -not $Fast) {
   }
 }
 
-Invoke-Step 'npm audit (high / critical)' {
+Invoke-Step 'npm audit (critical only — temporary until picomatch 4.0.8)' {
   Set-Location $scaff
-  npm audit --audit-level=high
+  npm audit --audit-level=critical
   Set-Location $repoRoot
 }
 
